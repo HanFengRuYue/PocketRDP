@@ -7,8 +7,8 @@ plugins {
 }
 
 android {
-    namespace = "com.pocketrdp.feature.connections"
-    compileSdkPreview = "CinnamonBun"
+    namespace = "com.hanfengruyue.pocketrdp.feature.connections"
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 31

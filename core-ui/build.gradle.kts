@@ -5,8 +5,8 @@ plugins {
 }
 
 android {
-    namespace = "com.pocketrdp.core.ui"
-    compileSdkPreview = "CinnamonBun"
+    namespace = "com.hanfengruyue.pocketrdp.core.ui"
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 31
