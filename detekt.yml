@@ -1,0 +1,44 @@
+# PocketRDP detekt overrides. Inherits everything else from the bundled defaults
+# (buildUponDefaultConfig = true in the root build.gradle.kts).
+
+build:
+  maxIssues: 0   # fail the build on any unbaselined finding
+  weights:
+    complexity: 2
+    style: 1
+
+complexity:
+  LongMethod:
+    threshold: 100        # Compose screens get long; 60 default is too strict.
+  LongParameterList:
+    functionThreshold: 8  # ConnectionEntity / RdpConnectionParams are wide on purpose.
+    constructorThreshold: 12
+  CyclomaticComplexMethod:
+    threshold: 20
+
+style:
+  MagicNumber:
+    ignorePropertyDeclaration: true
+    ignoreCompanionObjectPropertyDeclaration: true
+    ignoreEnums: true
+    ignoreNumbers: ['-1', '0', '1', '2', '3', '4', '8', '16', '32', '100', '255']
+  MaxLineLength:
+    maxLineLength: 120
+  ReturnCount:
+    max: 4
+  UnusedPrivateMember:
+    allowedNames: '(_|ignored|expected)'
+  FunctionOnlyReturningConstant:
+    ignoreAnnotated: ['Composable']
+
+naming:
+  FunctionNaming:
+    # @Composable functions are PascalCase by convention.
+    ignoreAnnotated: ['Composable']
+    functionPattern: '[a-z][a-zA-Z0-9]*'
+  TopLevelPropertyNaming:
+    constantPattern: '[A-Z][_A-Z0-9]*|[a-z][a-zA-Z0-9]*'
+
+empty-blocks:
+  EmptyFunctionBlock:
+    active: false   # Listener stubs intentionally have empty bodies (M1 placeholders).
