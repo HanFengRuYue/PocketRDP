@@ -1,0 +1,48 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:Connection.kt$ConnectionEntity$override fun equals(other: Any?): Boolean</ID>
+    <ID>LongMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
+    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, useGfx: Boolean, dynamicResolution: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, )</ID>
+    <ID>MagicNumber:ConnectionEditScreen.kt$24</ID>
+    <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$5</ID>
+    <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$65535</ID>
+    <ID>MagicNumber:CredentialCipher.kt$CredentialCipher$256</ID>
+    <ID>MagicNumber:RdpClient.kt$RdpClient$300</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x38</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x53</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$0xFF</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$1.6f</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$127</ID>
+    <ID>MagicNumber:RdpInputController.kt$RdpInputController$25f</ID>
+    <ID>MagicNumber:SessionScreen.kt$0x5B</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$0x38</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$0x53</ID>
+    <ID>MatchingDeclarationName:Connection.kt$ConnectionEntity</ID>
+    <ID>MatchingDeclarationName:ConnectionsNavigation.kt$ConnectionsRoutes</ID>
+    <ID>MatchingDeclarationName:PocketRdpNavHost.kt$AppRoutes</ID>
+    <ID>MaxLineLength:RdpClient.kt$RdpClient$emit(RdpEvent.Failed("freerdp_connect returned false: ${LibFreeRDP.freerdp_get_last_error_string(inst)}"))</ID>
+    <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override</ID>
+    <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean</ID>
+    <ID>MaxLineLength:RdpInputController.kt$RdpInputController$sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON1)</ID>
+    <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp</ID>
+    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.Disconnected -&gt; _state.update { it.copy(status = SessionConnectionStatus.Disconnected(event.reason)) }</ID>
+    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.Failed -&gt; _state.update { it.copy(status = SessionConnectionStatus.Failed(event.error)) }</ID>
+    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.GraphicsResized -&gt; _state.update { it.copy(remoteWidth = event.width, remoteHeight = event.height) }</ID>
+    <ID>MaxLineLength:Type.kt$bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.5.sp)</ID>
+    <ID>MaxLineLength:Type.kt$bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)</ID>
+    <ID>MaxLineLength:Type.kt$displayLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 57.sp, lineHeight = 64.sp, letterSpacing = (-0.25).sp)</ID>
+    <ID>MaxLineLength:Type.kt$headlineLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 32.sp, lineHeight = 40.sp)</ID>
+    <ID>MaxLineLength:Type.kt$headlineMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 28.sp, lineHeight = 36.sp)</ID>
+    <ID>MaxLineLength:Type.kt$headlineSmall = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 24.sp, lineHeight = 32.sp)</ID>
+    <ID>MaxLineLength:Type.kt$labelLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.1.sp)</ID>
+    <ID>MaxLineLength:Type.kt$labelMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.5.sp)</ID>
+    <ID>MaxLineLength:Type.kt$titleLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 22.sp, lineHeight = 28.sp)</ID>
+    <ID>MaxLineLength:Type.kt$titleMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.15.sp)</ID>
+    <ID>TooManyFunctions:ConnectionEditViewModel.kt$ConnectionEditViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:RdpClient.kt$RdpClient</ID>
+    <ID>TooManyFunctions:RdpInputController.kt$RdpInputController</ID>
+    <ID>TooManyFunctions:SessionViewModel.kt$SessionViewModel : ViewModel</ID>
+  </CurrentIssues>
+</SmellBaseline>
