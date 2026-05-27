@@ -16,20 +16,15 @@ android {
         minSdk = 31
     }
 
-    // -------------------------------------------------------------------------------------
-    // Native build is **wired but currently disabled** because FreeRDP's CMake superbuild
-    // fetches OpenSSL (~52 MB) and OpenH264 from GitHub Releases, which is unreliable from
-    // mainland China without a stable proxy. Re-enable on a machine that can hit
-    // dl.google.com / github.com reliably, then run `:core-rdp:assembleDebug` once.
-    //
-    // To enable:
-    //   1. Make sure pkg-config is on PATH (already installed at
-    //      %LOCALAPPDATA%\pkg-config\pkg-config-lite-0.28-1\bin).
-    //   2. Uncomment the externalNativeBuild blocks below.
-    //   3. First build will take 30-60 minutes and download ~150 MB.
-    //   4. Once libfreerdp-android.so etc. are in app/build/intermediates/cxx, RdpClient
-    //      will actually exchange RDP wire bytes; SessionScreen will show real desktops.
-    // -------------------------------------------------------------------------------------
+    // Native build is wired in (CMake config, submodule, NDK 27, pkg-config, perl, make
+    // all set up) but the externalNativeBuild block stays commented because OpenSSL's
+    // Configure script needs a Perl distribution with the Locale::Maketext::Simple
+    // module — Git for Windows' perl 5.42.2 doesn't ship it, and Strawberry Perl
+    // portable downloads kept hitting 404 from current network. To finish native:
+    //   1. Install Strawberry Perl: https://strawberryperl.com (any 5.32+ portable).
+    //   2. Make sure `perl -MLocale::Maketext::Simple -e 1` returns no error.
+    //   3. Uncomment the externalNativeBuild + ndk + packaging blocks below.
+    //   4. ./gradlew :core-rdp:externalNativeBuildDebug (30-60 min for arm64-v8a).
     /*
     defaultConfig {
         externalNativeBuild {
@@ -38,7 +33,7 @@ android {
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
                     "-DWITH_OPENSSL=ON",
-                    "-DWITH_OPENH264=ON",
+                    "-DWITH_OPENH264=OFF",
                     "-DWITH_CJSON=ON",
                     "-DWITH_FFMPEG=OFF",
                     "-DWITH_OPUS=OFF",
@@ -48,9 +43,7 @@ android {
                 )
             }
         }
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     externalNativeBuild {
         cmake {
