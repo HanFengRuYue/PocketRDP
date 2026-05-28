@@ -22,17 +22,27 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     /*
-    // Native build (disabled — using prebuilt .so from jniLibs/). To re-enable
-    // for a fresh source build, uncomment this whole region AND remove the
-    // .so files from src/main/jniLibs/arm64-v8a/. Build via WSL2 only (Windows
-    // host has too many Unix/Win32 perl + path mismatches in the OpenSSL
-    // Configure chain — see NATIVE_BUILD_NOTES.md "What blocks ... on Windows").
+    // Native build via CMake superbuild — disabled, using prebuilt .so in jniLibs/.
+    // To rebuild (e.g. after FreeRDP submodule bump), uncomment this whole region
+    // AND delete the .so files from src/main/jniLibs/arm64-v8a/. Build via WSL2
+    // only (OpenSSL Configure has perl/path bugs on Windows — see NATIVE_BUILD_NOTES.md).
+    //
+    // Hard-won flags below: ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES + max-page-size=16384
+    // are mandatory for Android 15+ (SDK 35+) 16 KB-page devices. Without them,
+    // NDK 27.1 leaves LOAD segments at 4 KB alignment and dlopen rejects them.
+    // The submodule's freeRDPCore/cpp/CMakeLists.txt and ExternalFreeRDP.cmake were
+    // also patched to forward these flags into the ExternalProject children — see
+    // NATIVE_BUILD_NOTES.md "16 KB page-size" section.
     defaultConfig {
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
+                    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
+                    "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
                     "-DWITH_OPENSSL=ON",
                     "-DWITH_OPENH264=OFF",
                     "-DWITH_CJSON=ON",
@@ -61,6 +71,8 @@ android {
                 "lib/arm64-v8a/libc++_shared.so",
                 "lib/arm64-v8a/libssl.so",
                 "lib/arm64-v8a/libcrypto.so",
+                "lib/arm64-v8a/libcjson.so",
+                "lib/arm64-v8a/liburiparser.so",
             )
         }
     }

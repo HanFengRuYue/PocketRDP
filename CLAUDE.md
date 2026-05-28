@@ -29,9 +29,20 @@ Module layout: `:app` / `:feature-session` / `:feature-connections` / `:core-rdp
 
 ## Native (FreeRDP) build
 
-**Active via prebuilt jniLibs.** `core-rdp/src/main/jniLibs/arm64-v8a/` ships 7 .so files compiled in WSL2 Ubuntu (`libfreerdp-android` + `libfreerdp3` + `libfreerdp-client3` + `libwinpr3` + `libssl` + `libcrypto` + `libc++_shared`). `core-rdp/build.gradle.kts` has `externalNativeBuild` commented out — Windows-side gradle just packages the prebuilts, no native toolchain needed.
+**Active via prebuilt jniLibs.** `core-rdp/src/main/jniLibs/arm64-v8a/` ships 9 .so files compiled in WSL2 Ubuntu: `libfreerdp-android` + `libfreerdp3` + `libfreerdp-client3` + `libwinpr3` + `libssl` + `libcrypto` + `libcjson` + `liburiparser` + `libc++_shared`. `core-rdp/build.gradle.kts` has `externalNativeBuild` commented out — Windows-side gradle just packages the prebuilts, no native toolchain needed. **`libcjson.so` and `liburiparser.so` are mandatory** — they are `DT_NEEDED` of `libwinpr3.so`; without them `dlopen(libfreerdp-android.so)` fails on the recursive dependency resolve. They must also stay in `packaging { jniLibs { pickFirsts } }` so AGP doesn't drop them at merge time.
+
+**Prebuilt .so are minimal feature set**: `WITH_OPENH264=OFF`, `WITH_OPUS=OFF`, `WITH_FFMPEG=OFF`, `WITH_WEBP=OFF`, `WITH_JPEG=OFF`, `WITH_PNG=OFF`. `LibFreeRDP.hasH264Support()` returns false — RDP CLI args that depend on those codecs must be guarded in `RdpClient.kt` before being passed to `freerdp_parse_arguments`. Already done for `/gfx:AVC444`. **Still wrong**: `RdpClient.kt:196` allows `/scale` in `100..300` but FreeRDP 3.x `parse_command_line` only accepts 100 / 140 / 180. Fix when next touching that file.
+
+**16 KB page-size is mandatory** for Android 15+ (SDK 35+) devices and the `sdk_gphone16k_*` emulators — dlopen rejects any .so whose LOAD segments are 4 KB-aligned with `program alignment (4096) cannot be smaller than system page size (16384)`. NDK 27.1 only injects `-Wl,-z,max-page-size=16384` when `ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` is passed to cmake, AND ExternalProject children don't inherit init linker flags so each child needs the flag explicitly forwarded. The fix lives in three places and **must** stay synced when re-enabling native build:
+1. `core-rdp/build.gradle.kts`: cmake `arguments` block (currently commented inside the disabled native-build region — uncomment alongside the rest).
+2. `third_party/FreeRDP/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt`: `ANDROID_CMAKE_ARGS` forwards the flags to cjson/uriparser/openssl ExternalProjects (local patch on top of the pinned submodule).
+3. `third_party/FreeRDP/client/Android/cmake/ExternalFreeRDP.cmake`: `FREERDP_LINKER_FLAGS` includes `-Wl,-z,max-page-size=16384` because that line explicitly overrides `CMAKE_SHARED_LINKER_FLAGS` for the freerdp3/freerdp-client3/winpr3 child build.
+
+Verify with `llvm-readelf -l <so> | grep LOAD` — every .so's LOAD segments must show `0x4000`, not `0x1000`. (cjson/uriparser produce 16 KB-aligned binaries in their *own* build dirs but the merged_native_libs step can be re-poisoned by stale 4 KB copies in jniLibs/, so always re-verify the files actually under `core-rdp/src/main/jniLibs/arm64-v8a/`.)
 
 **To rebuild native** (e.g. after FreeRDP submodule bump): run `scripts/build-native-in-wsl.sh` from WSL2 Ubuntu. Script installs JDK 21 + Linux NDK 27 + cmake via sdkmanager, runs `:core-rdp:externalNativeBuildDebug` (~13 min after deps cached), then copies `.so` back to jniLibs. See `@NATIVE_BUILD_NOTES.md` for the why-not-Windows-native rationale (6 layers of perl/path mismatches in OpenSSL Configure).
+
+While that script runs it backs `local.properties` up to `local.properties.windows-backup` (gitignored) and rewrites `local.properties` to point at the Linux SDK; restores at exit. If `local.properties.windows-backup` shows up in `git status` after an interrupted run, **don't delete it** — copy it back over `local.properties` to recover the Windows SDK path.
 
 **Don't attempt Windows-native rebuild** — every successful patch uncovers a deeper one, abandoned at OpenSSL Configure's out-of-tree path resolution.
 
@@ -41,6 +52,7 @@ Module layout: `:app` / `:feature-session` / `:feature-connections` / `:core-rdp
 - **`com.freerdp.freerdpcore.services.LibFreeRDP` class FQN is locked** by `third_party/FreeRDP/.../android_freerdp_jni.h:JAVA_LIBFREERDP_CLASS`. Don't rename or move the file. The shim at `core-rdp/src/main/java/com/freerdp/freerdpcore/services/LibFreeRDP.java` deliberately keeps this path while dropping upstream's BookmarkBase/SessionState/ApplicationSettingsActivity deps.
 - **Do NOT re-add `:freeRDPCore` to `settings.gradle.kts`**. Already attempted in commit history — pulls in androidx.appcompat / room 2.8.4 / sqlcipher / preference / recyclerview which conflict with our Compose + Room 2.6.1 stack. The current strategy (compile cpp + minimal LibFreeRDP.java in `:core-rdp`) is deliberate.
 - **FreeRDP submodule is pinned at master commit `9b04e3b`** (FreeRDP 3.x). Don't `git submodule update --remote` without verifying the CMake superbuild still works — upstream's `client/Android/cmake/External*.cmake` files have known Windows portability bugs (Unix `:` path separators) that we'd have to re-patch.
+- **`app/proguard-rules.pro` must keep `com.freerdp.freerdpcore.**`** — the FreeRDP JNI bridge calls Java callbacks (`OnConnectionSuccess`, `OnGraphicsUpdate`, `OnAuthenticate`, …) via reflection. Without the keep rule, R8 strips them and release builds crash on first connect with `NoSuchMethodError`. The Hilt and Room keep rules in that file are also load-bearing — don't trim "unused" entries.
 
 ## Common commands
 
@@ -62,6 +74,8 @@ Module layout: `:app` / `:feature-session` / `:feature-connections` / `:core-rdp
 ## What's missing (intentionally, not gaps to fill silently)
 
 No unit tests, no instrumented tests, no CI workflow. detekt (`detekt.yml` + `detekt-baseline.xml`) and `.editorconfig` are in place. Don't add the missing pieces without explicit ask — keep the project minimal until M3+ stabilizes the input/render layer.
+
+detekt is configured with `maxIssues: 0` plus a baseline — any new finding fails the build. To accept legitimate new findings (e.g. after a refactor): `./gradlew detektMain --create-baseline` regenerates `detekt-baseline.xml`. Prefer that over scattering `@Suppress` annotations.
 
 ## Milestone status
 

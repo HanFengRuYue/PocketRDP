@@ -190,7 +190,10 @@ class RdpClient @Inject constructor(
         )
         if (p.password.isNotEmpty()) args += "/p:${p.password}"
         if (p.domain.isNotEmpty()) args += "/d:${p.domain}"
-        if (p.useH264) args += "/gfx:AVC444"
+        // /gfx:AVC444 needs H.264 support compiled into FreeRDP (WITH_OPENH264=ON).
+        // Our prebuilt jniLibs are built with OPENH264=OFF; silently downgrade so
+        // the connection attempt doesn't die at parse_command_line.
+        if (p.useH264 && LibFreeRDP.hasH264Support()) args += "/gfx:AVC444"
         if (p.useGfx) args += "/rfx"
         if (p.dynamicResolution) args += "/dynamic-resolution"
         if (p.desktopScaleFactor in 100..300) args += "/scale:${p.desktopScaleFactor}"
