@@ -16,6 +16,7 @@ captures/
 
 # Local config
 local.properties
+local.properties.windows-backup
 keystore.properties
 *.jks
 *.keystore
