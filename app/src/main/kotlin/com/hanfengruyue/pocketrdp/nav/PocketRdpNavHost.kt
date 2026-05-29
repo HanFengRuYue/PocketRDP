@@ -10,9 +10,11 @@ import com.hanfengruyue.pocketrdp.feature.connections.edit.ConnectionEditScreen
 import com.hanfengruyue.pocketrdp.feature.connections.list.ConnectionListScreen
 import com.hanfengruyue.pocketrdp.feature.connections.nav.ConnectionsRoutes
 import com.hanfengruyue.pocketrdp.feature.session.SessionScreen
+import com.hanfengruyue.pocketrdp.logs.LogScreen
 
 object AppRoutes {
     const val SESSION_PATTERN = "session/{id}"
+    const val LOGS = "logs"
     fun session(id: Long): String = "session/$id"
 }
 
@@ -28,7 +30,12 @@ fun PocketRdpNavHost() {
                 onAddNew = { navController.navigate(ConnectionsRoutes.edit()) },
                 onEdit = { id -> navController.navigate(ConnectionsRoutes.edit(id)) },
                 onConnect = { id -> navController.navigate(AppRoutes.session(id)) },
+                onOpenLogs = { navController.navigate(AppRoutes.LOGS) },
             )
+        }
+
+        composable(AppRoutes.LOGS) {
+            LogScreen(onClose = { navController.popBackStack() })
         }
 
         composable(

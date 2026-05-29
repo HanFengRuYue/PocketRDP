@@ -90,6 +90,8 @@ kotlin {
 }
 
 dependencies {
+    api(project(":core-logging"))
+
     api(libs.androidx.core.ktx)
     api(libs.hilt.android)
     ksp(libs.hilt.compiler)

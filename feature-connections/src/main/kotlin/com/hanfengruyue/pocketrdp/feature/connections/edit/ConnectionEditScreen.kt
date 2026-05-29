@@ -160,6 +160,28 @@ fun ConnectionEditScreen(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("固定帧率", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                frameRateOptions.forEach { fps ->
+                    AssistChip(
+                        onClick = { viewModel.updateFrameRate(fps) },
+                        label = { Text(if (fps == 0) "自动" else "$fps") },
+                        leadingIcon = null,
+                        enabled = state.targetFrameRate != fps,
+                    )
+                }
+            }
+            Text(
+                "画面以此帧率持续刷新（不再随内容静止归零），实际不超过本机屏幕刷新率。" +
+                    "远端可提供的帧率仍取决于被控电脑（Windows 远程桌面默认约 30fps），请按其能力设上限。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             SwitchRow(
                 title = "启用 H.264/AVC 444 编码",
                 subtitle = "需要 Windows 11 远程桌面 + 组策略开启",
@@ -258,3 +280,6 @@ private fun SwitchRow(
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
+
+/** Fixed frame-rate presets shown as chips; 0 = 自动 (follow the device screen refresh rate). */
+private val frameRateOptions = listOf(0, 30, 60, 120)

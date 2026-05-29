@@ -31,7 +31,14 @@ class BitmapBuffer {
         if (old != null && old.width == width && old.height == height) return old
         val fresh = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         _current.value = fresh
-        old?.recycle()
+        // Deliberately do NOT recycle the old bitmap here. Native FreeRDP thread runs resize()
+        // (e.g. when the server emits a desktop-resize on rotation), but RdpSurface.onDraw on
+        // the UI thread still holds the previous bitmap reference for a few VSync frames until
+        // Compose's update lambda swaps it. Calling recycle() here led to drawBitmap() hitting
+        // a freed pixel buffer → SIGSEGV crash, with no logcat reaching disk because the
+        // process died before the async writer flushed. The bitmap is heap-allocated and
+        // collected by GC once the renderer drops its reference; the ~8 MB transient
+        // duplication is harmless.
         return fresh
     }
 
@@ -40,7 +47,7 @@ class BitmapBuffer {
     }
 
     fun release() {
-        _current.value?.recycle()
+        // Same reason as resize(): don't recycle, let GC reclaim.
         _current.value = null
     }
 }

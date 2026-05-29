@@ -1,6 +1,5 @@
 package com.hanfengruyue.pocketrdp.feature.connections.list
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
@@ -34,13 +34,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
-import com.hanfengruyue.pocketrdp.feature.connections.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +46,7 @@ fun ConnectionListScreen(
     onAddNew: () -> Unit,
     onEdit: (Long) -> Unit,
     onConnect: (Long) -> Unit,
+    onOpenLogs: () -> Unit,
     viewModel: ConnectionListViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -56,14 +55,10 @@ fun ConnectionListScreen(
         topBar = {
             TopAppBar(
                 title = { Text("PocketRDP") },
-                navigationIcon = {
-                    Image(
-                        painter = painterResource(R.drawable.pocketrdp_logo),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .padding(start = 12.dp, end = 4.dp)
-                            .size(32.dp),
-                    )
+                actions = {
+                    IconButton(onClick = onOpenLogs) {
+                        Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = "日志")
+                    }
                 },
             )
         },

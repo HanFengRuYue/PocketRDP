@@ -32,6 +32,7 @@ data class ConnectionEditUiState(
     val sharedFolderUri: String? = null,
     val soundMode: Int = 0,
     val desktopScaleFactor: Int = 200,
+    val targetFrameRate: Int = 0,
     val saving: Boolean = false,
     val saved: Boolean = false,
     val errors: List<String> = emptyList(),
@@ -77,6 +78,7 @@ class ConnectionEditViewModel @Inject constructor(
                             sharedFolderUri = entity.sharedFolderUri,
                             soundMode = entity.soundMode,
                             desktopScaleFactor = entity.desktopScaleFactor,
+                            targetFrameRate = entity.targetFrameRate,
                         )
                     }
                 } else {
@@ -101,6 +103,7 @@ class ConnectionEditViewModel @Inject constructor(
     fun updateSharedFolder(uri: String?) = _state.update { it.copy(sharedFolderUri = uri) }
     fun updateSoundMode(value: Int) = _state.update { it.copy(soundMode = value) }
     fun updateScaleFactor(value: Int) = _state.update { it.copy(desktopScaleFactor = value) }
+    fun updateFrameRate(value: Int) = _state.update { it.copy(targetFrameRate = value) }
 
     fun save() {
         val s = _state.value
@@ -135,6 +138,7 @@ class ConnectionEditViewModel @Inject constructor(
                 sharedFolderUri = s.sharedFolderUri,
                 soundMode = s.soundMode,
                 desktopScaleFactor = s.desktopScaleFactor,
+                targetFrameRate = s.targetFrameRate,
             )
             _state.update { it.copy(saving = false, saved = true) }
         }

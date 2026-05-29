@@ -23,6 +23,7 @@ data class ConnectionEntity(
     @ColumnInfo(name = "shared_folder_uri") val sharedFolderUri: String? = null,
     @ColumnInfo(name = "sound_mode") val soundMode: Int = 0,
     @ColumnInfo(name = "desktop_scale_factor") val desktopScaleFactor: Int = 200,
+    @ColumnInfo(name = "target_frame_rate") val targetFrameRate: Int = 0,
     @ColumnInfo(name = "performance_flags") val performanceFlags: Int = 0,
     @ColumnInfo(name = "last_used_at") val lastUsedAt: Long = 0L,
     @ColumnInfo(name = "cert_thumb_sha256") val certThumbSha256: String? = null,
@@ -47,6 +48,7 @@ data class ConnectionEntity(
             sharedFolderUri == other.sharedFolderUri &&
             soundMode == other.soundMode &&
             desktopScaleFactor == other.desktopScaleFactor &&
+            targetFrameRate == other.targetFrameRate &&
             performanceFlags == other.performanceFlags &&
             lastUsedAt == other.lastUsedAt &&
             certThumbSha256 == other.certThumbSha256
@@ -70,6 +72,7 @@ data class ConnectionEntity(
         result = 31 * result + (sharedFolderUri?.hashCode() ?: 0)
         result = 31 * result + soundMode
         result = 31 * result + desktopScaleFactor
+        result = 31 * result + targetFrameRate
         result = 31 * result + performanceFlags
         result = 31 * result + lastUsedAt.hashCode()
         result = 31 * result + (certThumbSha256?.hashCode() ?: 0)
