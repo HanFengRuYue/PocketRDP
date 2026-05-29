@@ -26,6 +26,8 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:windowLayoutInDisplayCutoutMode="shortEdges"
             android:theme="@style/Theme.PocketRDP">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

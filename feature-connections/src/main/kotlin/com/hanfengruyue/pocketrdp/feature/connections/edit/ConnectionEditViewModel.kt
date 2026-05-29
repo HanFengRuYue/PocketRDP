@@ -27,11 +27,19 @@ data class ConnectionEditUiState(
     val useH264: Boolean = true,
     val useGfx: Boolean = true,
     val dynamicResolution: Boolean = true,
+    val useMultitransport: Boolean = true,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,
     val sharedFolderUri: String? = null,
     val soundMode: Int = 0,
     val desktopScaleFactor: Int = 200,
+    // Custom fixed remote resolution (issue 自定义分辨率). When [useCustomResolution] is on, the
+    // session connects at customWidth×customHeight and dynamic-resolution is forced off.
+    val useCustomResolution: Boolean = false,
+    val customWidth: String = "1920",
+    val customHeight: String = "1080",
+    // 0 = 模拟鼠标 (TRACKPAD), 1 = 直接触屏 (TOUCH / native multi-touch).
+    val defaultInputMode: Int = 0,
     val targetFrameRate: Int = 0,
     val saving: Boolean = false,
     val saved: Boolean = false,
@@ -73,11 +81,16 @@ class ConnectionEditViewModel @Inject constructor(
                             useH264 = entity.useH264,
                             useGfx = entity.useGfx,
                             dynamicResolution = entity.dynamicResolution,
+                            useMultitransport = entity.useMultitransport,
                             redirectClipboard = entity.redirectClipboard,
                             redirectFiles = entity.redirectFiles,
                             sharedFolderUri = entity.sharedFolderUri,
                             soundMode = entity.soundMode,
                             desktopScaleFactor = entity.desktopScaleFactor,
+                            useCustomResolution = entity.customWidth > 0 && entity.customHeight > 0,
+                            customWidth = if (entity.customWidth > 0) entity.customWidth.toString() else "1920",
+                            customHeight = if (entity.customHeight > 0) entity.customHeight.toString() else "1080",
+                            defaultInputMode = entity.defaultInputMode,
                             targetFrameRate = entity.targetFrameRate,
                         )
                     }
@@ -98,12 +111,21 @@ class ConnectionEditViewModel @Inject constructor(
     fun toggleH264(value: Boolean) = _state.update { it.copy(useH264 = value) }
     fun toggleGfx(value: Boolean) = _state.update { it.copy(useGfx = value) }
     fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
+    fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }
     fun toggleClipboard(value: Boolean) = _state.update { it.copy(redirectClipboard = value) }
     fun toggleFiles(value: Boolean) = _state.update { it.copy(redirectFiles = value) }
     fun updateSharedFolder(uri: String?) = _state.update { it.copy(sharedFolderUri = uri) }
     fun updateSoundMode(value: Int) = _state.update { it.copy(soundMode = value) }
     fun updateScaleFactor(value: Int) = _state.update { it.copy(desktopScaleFactor = value) }
     fun updateFrameRate(value: Int) = _state.update { it.copy(targetFrameRate = value) }
+    fun toggleCustomResolution(value: Boolean) = _state.update {
+        // Turning custom resolution ON forces dynamic-resolution OFF (they are mutually exclusive:
+        // a fixed remote size must not be resized by monitor-layout PDUs).
+        it.copy(useCustomResolution = value, dynamicResolution = if (value) false else it.dynamicResolution)
+    }
+    fun updateCustomWidth(value: String) = _state.update { it.copy(customWidth = value.filter { ch -> ch.isDigit() }.take(5)) }
+    fun updateCustomHeight(value: String) = _state.update { it.copy(customHeight = value.filter { ch -> ch.isDigit() }.take(5)) }
+    fun updateDefaultInputMode(value: Int) = _state.update { it.copy(defaultInputMode = value) }
 
     fun save() {
         val s = _state.value
@@ -114,6 +136,12 @@ class ConnectionEditViewModel @Inject constructor(
             if (p == null || p !in 1..65535) add("端口需为 1-65535")
             if (s.username.isBlank()) add("用户名不能为空")
             if (s.password.isEmpty() && !s.hasExistingPassword) add("密码不能为空")
+            if (s.useCustomResolution) {
+                val w = s.customWidth.toIntOrNull()
+                val h = s.customHeight.toIntOrNull()
+                if (w == null || w !in 200..8192) add("自定义宽度需为 200-8192")
+                if (h == null || h !in 200..8192) add("自定义高度需为 200-8192")
+            }
         }
         if (errors.isNotEmpty()) {
             _state.update { it.copy(errors = errors) }
@@ -133,11 +161,15 @@ class ConnectionEditViewModel @Inject constructor(
                 useH264 = s.useH264,
                 useGfx = s.useGfx,
                 dynamicResolution = s.dynamicResolution,
+                useMultitransport = s.useMultitransport,
                 redirectClipboard = s.redirectClipboard,
                 redirectFiles = s.redirectFiles,
                 sharedFolderUri = s.sharedFolderUri,
                 soundMode = s.soundMode,
                 desktopScaleFactor = s.desktopScaleFactor,
+                customWidth = if (s.useCustomResolution) s.customWidth.toIntOrNull() ?: 0 else 0,
+                customHeight = if (s.useCustomResolution) s.customHeight.toIntOrNull() ?: 0 else 0,
+                defaultInputMode = s.defaultInputMode,
                 targetFrameRate = s.targetFrameRate,
             )
             _state.update { it.copy(saving = false, saved = true) }

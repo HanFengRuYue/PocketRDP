@@ -3,47 +3,50 @@ package com.hanfengruyue.pocketrdp.feature.session.input
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.positionChanged
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Multi-touch gesture recognizer for the RDP session canvas. Lives in [Modifier.sessionGestures]
- * and replaces the old `detectTapGestures` + `detectTransformGestures` pair, which couldn't
- * distinguish single/double/triple finger and didn't support pinch-then-pan separation.
+ * Multi-touch gesture recognizer for the RDP session canvas. Lives in [Modifier.sessionGestures].
  *
- * Gesture vocabulary (mouse mode = TRACKPAD):
+ * It branches on the active [InputMode] at the start of each gesture:
+ *
+ * **TOUCH (native Windows multi-touch):** every finger is forwarded verbatim as an RDPEI touch
+ * contact (down/move/up) via the controller. No tap/click synthesis, no mouse — Windows itself
+ * decides what a tap / two-finger scroll / pinch means, exactly like a physical touchscreen.
+ *
+ * **TRACKPAD (mouse emulation):**
  *   1-finger tap            → left click
- *   1-finger drag           → move virtual cursor (no button)
- *   double-tap then drag    → hold-left-button drag (e.g. window move / text selection)
+ *   1-finger drag           → move virtual cursor (view follows when zoomed)
+ *   long-press then drag    → hold-left-button drag (issue #4)
+ *   double-tap then drag    → hold-left-button drag
  *   double-tap (zoomed in)  → reset local zoom/pan
  *   2-finger tap            → right click
- *   2-finger vertical pan   → wheel scroll
+ *   2-finger vertical pan   → wheel scroll (issue #7)
  *   2-finger pinch          → local pinch-zoom (graphicsLayer)
  *   3-finger tap            → middle click
  *
- * In TOUCH mode we keep the simpler "direct-mapping" behaviour:
- *   1-finger tap/drag       → left click / left-button drag (absolute coords)
- *   2-finger tap            → right click
- *   2-finger vertical pan   → wheel scroll
- *
  * Implementation notes:
- *  - `awaitEachGesture` lets a try/finally guarantee dragHold is released even if the
- *    pointer leaves the view mid-gesture.
- *  - Tracks the PEAK pointer count across the entire gesture so a 3-finger tap is detected
- *    even if the fingers don't lift exactly simultaneously.
- *  - Tap-slop = 16 px, tap-timeout = 250 ms, double-tap-window = 280 ms — values match the
- *    Android platform defaults so the gesture feels like a native trackpad.
+ *  - `awaitEachGesture` + try/finally guarantees held buttons / touch contacts are released even
+ *    if a pointer leaves the view mid-gesture.
+ *  - TRACKPAD tracks the PEAK pointer count so a 3-finger tap is detected even if fingers don't
+ *    lift simultaneously.
  */
 private const val TAP_SLOP_PX = 16f
 private const val TAP_TIMEOUT_MS = 250L
 private const val DOUBLE_TAP_WINDOW_MS = 280L
+private const val LONG_PRESS_MS = 400L
 private const val PINCH_THRESHOLD = 0.05f
 private const val SCROLL_DOMINANCE = 1.4f
 private const val SCROLL_MIN_DELTA_PX = 4f
+private const val MAX_TOUCH_CONTACTS = 10
 
 fun Modifier.sessionGestures(
     controller: RdpInputController,
@@ -56,152 +59,256 @@ fun Modifier.sessionGestures(
     var lastSingleTapY = 0f
 
     awaitEachGesture {
-        val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
-        val gestureStartMs = System.currentTimeMillis()
-        val startX = first.position.x
-        val startY = first.position.y
+        if (modeProvider() == InputMode.TOUCH) {
+            awaitNativeTouchGesture(controller)
+        } else {
+            awaitTrackpadGesture(
+                controller = controller,
+                onPinchReset = onPinchReset,
+                lastSingleTapEndMs = lastSingleTapEndMs,
+                lastSingleTapX = lastSingleTapX,
+                lastSingleTapY = lastSingleTapY,
+            ) { endMs, x, y ->
+                lastSingleTapEndMs = endMs
+                lastSingleTapX = x
+                lastSingleTapY = y
+            }
+        }
+    }
+}
 
-        var pointerCountPeak = 1
-        var totalMove = 0f
-        var consumed = false           // scroll or pinch consumed this gesture
-        var doubleTapDragHeld = false  // we entered double-tap-then-drag mode
-        var touchDragInFlight = false  // TOUCH mode single-finger drag has emitted button-down
+/**
+ * Forward raw multi-touch to Windows via RDPEI. Each Compose pointer is assigned a small finger
+ * slot (RDPEI externalId); down→[RdpInputController.touchDown], move→touchMove, up→touchUp. The
+ * finally block releases any contact still down if the gesture aborts (finger left the view).
+ */
+private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitNativeTouchGesture(
+    controller: RdpInputController,
+) {
+    val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
+    val fingerOf = HashMap<Long, Int>()           // PointerId.value → finger slot
+    val slotUsed = BooleanArray(MAX_TOUCH_CONTACTS)
+    val lastPos = HashMap<Int, Offset>()           // finger slot → last position
 
-        // Two-finger tracking (initialised when 2nd finger arrives).
-        var twoStartDist = 0f
-        var twoStartZoom = controller.userZoom()
+    // Returns -1 when all contact slots are taken (>MAX_TOUCH_CONTACTS simultaneous fingers).
+    // MUST NOT fall back to slot 0 — that would alias finger 0, double-send its TouchBegin and, on
+    // the extra finger's lift, prematurely TouchEnd finger 0's still-active contact (stuck contact).
+    fun allocSlot(): Int {
+        for (i in slotUsed.indices) if (!slotUsed[i]) { slotUsed[i] = true; return i }
+        return -1
+    }
 
-        val sinceLastTap = gestureStartMs - lastSingleTapEndMs
-        val nearLast = abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
-        val doubleTapCandidate = sinceLastTap in 1L..DOUBLE_TAP_WINDOW_MS && nearLast &&
-            modeProvider() == InputMode.TRACKPAD
+    try {
+        val f0 = allocSlot()
+        if (f0 >= 0) {
+            fingerOf[first.id.value] = f0
+            lastPos[f0] = first.position
+            controller.touchDown(f0, first.position.x, first.position.y)
+        }
+        first.consume()
 
-        try {
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Main)
-                val pressed = event.changes.filter { it.pressed }
-                val currentCount = pressed.size
-                if (currentCount == 0) break
-                pointerCountPeak = maxOf(pointerCountPeak, currentCount)
-
-                when (currentCount) {
-                    1 -> {
-                        val ch = pressed.first()
-                        val dx = ch.positionChange().x
-                        val dy = ch.positionChange().y
-                        totalMove += abs(dx) + abs(dy)
-                        // Promote to drag only after we leave the tap-slop region so pure
-                        // taps don't emit a stray MOVE from finger jitter.
-                        if (!consumed && totalMove > TAP_SLOP_PX) {
-                            if (doubleTapCandidate && !doubleTapDragHeld &&
-                                modeProvider() == InputMode.TRACKPAD) {
-                                controller.beginDragHold()
-                                doubleTapDragHeld = true
-                            }
-                            if (modeProvider() == InputMode.TOUCH) touchDragInFlight = true
-                            controller.drag(dx, dy, ch.position.x, ch.position.y, size.width, size.height)
-                            ch.consume()
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Main)
+            for (ch in event.changes) {
+                val id = ch.id.value
+                if (ch.pressed) {
+                    val existing = fingerOf[id]
+                    if (existing == null) {
+                        val slot = allocSlot()
+                        if (slot >= 0) {
+                            fingerOf[id] = slot
+                            lastPos[slot] = ch.position
+                            controller.touchDown(slot, ch.position.x, ch.position.y)
                         }
+                        // slot < 0 → over the contact cap; ignore this finger entirely (still
+                        // consumed below so it doesn't leak to other handlers).
+                    } else if (ch.positionChanged()) {
+                        lastPos[existing] = ch.position
+                        controller.touchMove(existing, ch.position.x, ch.position.y)
                     }
-                    2 -> {
-                        if (twoStartDist == 0f) {
-                            // First entry into 2-finger phase — capture baseline distance.
-                            val a = pressed[0].position
-                            val b = pressed[1].position
-                            twoStartDist = hypot((a.x - b.x), (a.y - b.y))
-                            twoStartZoom = controller.userZoom()
-                            // Hand off cleanly from any single-finger drag in flight.
-                            if (doubleTapDragHeld) {
-                                controller.endDragHold()
-                                doubleTapDragHeld = false
-                            }
-                            if (touchDragInFlight) {
-                                controller.releaseTouchDrag()
-                                touchDragInFlight = false
-                            }
-                        } else {
-                            val a = pressed[0].position
-                            val b = pressed[1].position
-                            val dist = hypot((a.x - b.x), (a.y - b.y))
-                            val ratio = if (twoStartDist > 0f) dist / twoStartDist else 1f
-
-                            val avgDx = (pressed[0].positionChange().x + pressed[1].positionChange().x) * 0.5f
-                            val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
-
-                            val pinchActive = abs(ratio - 1f) > PINCH_THRESHOLD
-                            val scrollActive = abs(avgDy) > abs(avgDx) * SCROLL_DOMINANCE &&
-                                abs(avgDy) > SCROLL_MIN_DELTA_PX
-
-                            when {
-                                pinchActive -> {
-                                    val newZoom = (twoStartZoom * ratio).coerceIn(1f, 4f)
-                                    controller.setUserZoom(newZoom)
-                                    // While pinching, also follow the gesture midpoint so the
-                                    // image feels anchored under the fingers (photo-viewer style).
-                                    controller.setUserPan(
-                                        controller.userPanX() + avgDx,
-                                        controller.userPanY() + avgDy,
-                                    )
-                                    consumed = true
-                                    pressed.forEach { it.consume() }
-                                }
-                                scrollActive -> {
-                                    controller.scroll(avgDy)
-                                    consumed = true
-                                    pressed.forEach { it.consume() }
-                                }
-                            }
-                        }
+                    ch.consume()
+                } else {
+                    val slot = fingerOf.remove(id)
+                    if (slot != null) {
+                        slotUsed[slot] = false
+                        lastPos.remove(slot)
+                        controller.touchUp(slot, ch.position.x, ch.position.y)
+                        ch.consume()
                     }
-                    3 -> {
-                        if (doubleTapDragHeld) {
-                            controller.endDragHold()
-                            doubleTapDragHeld = false
-                        }
-                        if (touchDragInFlight) {
-                            controller.releaseTouchDrag()
-                            touchDragInFlight = false
-                        }
-                    }
-                    else -> Unit // 4+ fingers: noise, ignore
                 }
             }
-        } finally {
-            if (doubleTapDragHeld) controller.endDragHold()
-            if (touchDragInFlight) controller.releaseTouchDrag()
+            if (fingerOf.isEmpty()) break
+        }
+    } finally {
+        // Release any contact still held (pointer left the view without an up event) so Windows
+        // doesn't keep a finger "stuck" on the desktop.
+        for ((id, slot) in fingerOf) {
+            val p = lastPos[slot] ?: Offset.Zero
+            controller.touchUp(slot, p.x, p.y)
+        }
+    }
+}
 
-            val now = System.currentTimeMillis()
-            val dur = now - gestureStartMs
-            val mode = modeProvider()
-            if (!consumed && !doubleTapDragHeld && !touchDragInFlight &&
-                dur < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
-                when (pointerCountPeak) {
-                    1 -> {
-                        val sinceLast = now - lastSingleTapEndMs
-                        val zoomedIn = controller.userZoom() > 1.01f
-                        val isDoubleTap = sinceLast in 1..DOUBLE_TAP_WINDOW_MS &&
-                            abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
-                        if (isDoubleTap && zoomedIn && mode == InputMode.TRACKPAD) {
-                            controller.resetUserTransform()
-                            onPinchReset()
-                            lastSingleTapEndMs = 0L
-                        } else {
-                            controller.tap(startX, startY, size.width, size.height)
-                            lastSingleTapEndMs = now
-                            lastSingleTapX = startX
-                            lastSingleTapY = startY
+/** TRACKPAD-mode mouse emulation. [commitTap] reports the (time,x,y) of a single tap for the
+ *  caller's persistent double-tap bookkeeping. */
+private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture(
+    controller: RdpInputController,
+    onPinchReset: () -> Unit,
+    lastSingleTapEndMs: Long,
+    lastSingleTapX: Float,
+    lastSingleTapY: Float,
+    commitTap: (endMs: Long, x: Float, y: Float) -> Unit,
+) {
+    val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
+    val gestureStartMs = System.currentTimeMillis()
+    val startX = first.position.x
+    val startY = first.position.y
+
+    var pointerCountPeak = 1
+    var totalMove = 0f
+    var consumed = false            // scroll or pinch consumed this gesture
+    var holdDragActive = false      // we entered a held-button drag (double-tap OR long-press)
+    var longPressFired = false
+
+    // Two-finger tracking (initialised when 2nd finger arrives).
+    var twoStartDist = 0f
+    var twoStartZoom = controller.userZoom()
+
+    val sinceLastTap = gestureStartMs - lastSingleTapEndMs
+    val nearLast = abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
+    val doubleTapCandidate = sinceLastTap in 1L..DOUBLE_TAP_WINDOW_MS && nearLast
+
+    try {
+        while (true) {
+            // Arm a long-press timeout only while still a stationary single-finger press.
+            val armLongPress = !consumed && !holdDragActive && !longPressFired &&
+                pointerCountPeak == 1 && totalMove <= TAP_SLOP_PX
+            val event = if (armLongPress) {
+                val remaining = (LONG_PRESS_MS - (System.currentTimeMillis() - gestureStartMs)).coerceAtLeast(1L)
+                withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Main) }
+            } else {
+                awaitPointerEvent(PointerEventPass.Main)
+            }
+
+            if (event == null) {
+                // Long-press fired: finger held still long enough → start a hold-left-button drag.
+                controller.beginDragHold()
+                holdDragActive = true
+                longPressFired = true
+                continue
+            }
+
+            val pressed = event.changes.filter { it.pressed }
+            val currentCount = pressed.size
+            if (currentCount == 0) break
+            pointerCountPeak = maxOf(pointerCountPeak, currentCount)
+
+            // Re-arm the pinch baseline whenever not in a 2-finger phase, so a 2→1→2 transition
+            // within one gesture re-captures a fresh distance/zoom instead of computing ratio
+            // against a stale baseline (which snapped the zoom). Safe: twoStartDist is read only
+            // in the 2-finger branch.
+            if (currentCount != 2) twoStartDist = 0f
+
+            when (currentCount) {
+                1 -> {
+                    val ch = pressed.first()
+                    val dx = ch.positionChange().x
+                    val dy = ch.positionChange().y
+                    totalMove += abs(dx) + abs(dy)
+                    if (!consumed && (totalMove > TAP_SLOP_PX || holdDragActive)) {
+                        // Double-tap-then-drag promotes to hold-drag on first move.
+                        if ((doubleTapCandidate || holdDragActive) && !longPressFired) {
+                            if (doubleTapCandidate && !holdDragActive) {
+                                controller.beginDragHold()
+                                holdDragActive = true
+                            }
+                        }
+                        controller.drag(dx, dy, ch.position.x, ch.position.y, size.width, size.height)
+                        ch.consume()
+                    }
+                }
+                2 -> {
+                    if (twoStartDist == 0f) {
+                        val a = pressed[0].position
+                        val b = pressed[1].position
+                        twoStartDist = hypot((a.x - b.x), (a.y - b.y))
+                        twoStartZoom = controller.userZoom()
+                        controller.resetScrollAccum()
+                        if (holdDragActive) {
+                            controller.endDragHold()
+                            holdDragActive = false
+                        }
+                    } else {
+                        val a = pressed[0].position
+                        val b = pressed[1].position
+                        val dist = hypot((a.x - b.x), (a.y - b.y))
+                        val ratio = if (twoStartDist > 0f) dist / twoStartDist else 1f
+
+                        val avgDx = (pressed[0].positionChange().x + pressed[1].positionChange().x) * 0.5f
+                        val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
+
+                        val pinchActive = abs(ratio - 1f) > PINCH_THRESHOLD
+                        val scrollActive = abs(avgDy) > abs(avgDx) * SCROLL_DOMINANCE &&
+                            abs(avgDy) > SCROLL_MIN_DELTA_PX
+
+                        when {
+                            pinchActive -> {
+                                val newZoom = (twoStartZoom * ratio).coerceIn(1f, 4f)
+                                controller.setUserZoom(newZoom)
+                                controller.setUserPan(
+                                    controller.userPanX() + avgDx,
+                                    controller.userPanY() + avgDy,
+                                )
+                                consumed = true
+                                pressed.forEach { it.consume() }
+                            }
+                            scrollActive -> {
+                                controller.scroll(avgDy)
+                                consumed = true
+                                pressed.forEach { it.consume() }
+                            }
                         }
                     }
-                    2 -> {
-                        controller.rightClick(startX, startY)
-                        lastSingleTapEndMs = 0L
-                    }
-                    3 -> if (mode == InputMode.TRACKPAD) {
-                        controller.middleClick(startX, startY)
-                        lastSingleTapEndMs = 0L
-                    }
-                    else -> Unit
                 }
+                3 -> {
+                    if (holdDragActive) {
+                        controller.endDragHold()
+                        holdDragActive = false
+                    }
+                }
+                else -> Unit // 4+ fingers: noise, ignore
+            }
+        }
+    } finally {
+        if (holdDragActive) controller.endDragHold()
+
+        val now = System.currentTimeMillis()
+        val dur = now - gestureStartMs
+        if (!consumed && !holdDragActive && !longPressFired &&
+            dur < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
+            when (pointerCountPeak) {
+                1 -> {
+                    val sinceLast = now - lastSingleTapEndMs
+                    val isDoubleTap = sinceLast in 1..DOUBLE_TAP_WINDOW_MS &&
+                        abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
+                    if (isDoubleTap && controller.isZoomed()) {
+                        controller.resetUserTransform()
+                        onPinchReset()
+                        commitTap(0L, startX, startY)
+                    } else {
+                        controller.tap(startX, startY, size.width, size.height)
+                        commitTap(now, startX, startY)
+                    }
+                }
+                2 -> {
+                    controller.rightClick(startX, startY)
+                    commitTap(0L, startX, startY)
+                }
+                3 -> {
+                    controller.middleClick(startX, startY)
+                    commitTap(0L, startX, startY)
+                }
+                else -> Unit
             }
         }
     }

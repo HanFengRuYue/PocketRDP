@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -182,9 +183,29 @@ fun ConnectionEditScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("默认输入模式", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                inputModeOptions.forEach { (value, label) ->
+                    AssistChip(
+                        onClick = { viewModel.updateDefaultInputMode(value) },
+                        label = { Text(label) },
+                        enabled = state.defaultInputMode != value,
+                    )
+                }
+            }
+            Text(
+                "模拟鼠标=虚拟光标+点按拖动；直接触屏=手指作为 Windows 原生触摸点（多点/捏合交给 Windows）。进入会话后仍可随时切换。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             SwitchRow(
-                title = "启用 H.264/AVC 444 编码",
-                subtitle = "需要 Windows 11 远程桌面 + 组策略开启",
+                title = "启用 H.264 视频加速",
+                subtitle = "用 AVC420 硬件编码大幅降低视频/动画卡顿；关闭则用 RemoteFX。需主机支持，不支持时自动回退",
                 checked = state.useH264,
                 onChange = viewModel::toggleH264,
             )
@@ -198,7 +219,61 @@ fun ConnectionEditScreen(
                 title = "动态分辨率",
                 subtitle = "屏幕旋转/拉伸时远端跟随调整",
                 checked = state.dynamicResolution,
+                enabled = !state.useCustomResolution,
                 onChange = viewModel::toggleDynamicRes,
+            )
+            SwitchRow(
+                title = "固定自定义分辨率",
+                subtitle = "连接时远端固定为指定宽高（开启后将关闭动态分辨率）",
+                checked = state.useCustomResolution,
+                onChange = viewModel::toggleCustomResolution,
+            )
+            if (state.useCustomResolution) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.customWidth,
+                        onValueChange = viewModel::updateCustomWidth,
+                        label = { Text("宽度") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("×", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        value = state.customHeight,
+                        onValueChange = viewModel::updateCustomHeight,
+                        label = { Text("高度") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(1920 to 1080, 1280 to 720, 2560 to 1440, 3840 to 2160).forEach { (w, h) ->
+                        AssistChip(
+                            onClick = {
+                                viewModel.updateCustomWidth(w.toString())
+                                viewModel.updateCustomHeight(h.toString())
+                            },
+                            label = { Text("${w}×$h") },
+                        )
+                    }
+                }
+            }
+            SwitchRow(
+                title = "UDP 多路传输",
+                subtitle = "RDP-UDP 通道，弱网/高延迟下更流畅；服务器不支持时自动回退 TCP",
+                checked = state.useMultitransport,
+                onChange = viewModel::toggleMultitransport,
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -212,8 +287,9 @@ fun ConnectionEditScreen(
             )
             SwitchRow(
                 title = "文件夹重定向",
-                subtitle = "在 Windows 资源管理器看到一个 PocketRDP 盘符（M5）",
+                subtitle = "开发中，暂未生效（M5：在 Windows 资源管理器看到一个 PocketRDP 盘符）",
                 checked = state.redirectFiles,
+                enabled = false,
                 onChange = viewModel::toggleFiles,
             )
 
@@ -262,6 +338,7 @@ private fun SwitchRow(
     subtitle: String?,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -277,9 +354,12 @@ private fun SwitchRow(
                 )
             }
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 
 /** Fixed frame-rate presets shown as chips; 0 = 自动 (follow the device screen refresh rate). */
 private val frameRateOptions = listOf(0, 30, 60, 120)
+
+/** Default input-mode chips: value (entity.defaultInputMode) → label. 0 = TRACKPAD, 1 = TOUCH. */
+private val inputModeOptions = listOf(0 to "模拟鼠标", 1 to "直接触屏")

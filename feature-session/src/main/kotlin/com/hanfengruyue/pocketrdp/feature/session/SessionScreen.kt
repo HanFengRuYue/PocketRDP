@@ -13,19 +13,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.BottomAppBar
@@ -45,6 +49,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +75,7 @@ import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.SessionImeBridge
+import com.hanfengruyue.pocketrdp.feature.session.input.UserTransform
 import com.hanfengruyue.pocketrdp.feature.session.input.sessionGestures
 import com.hanfengruyue.pocketrdp.feature.session.render.RdpSurface
 import com.hanfengruyue.pocketrdp.feature.session.ui.SessionStatusTitle
@@ -92,6 +98,7 @@ fun SessionScreen(
             sendCursor = rdpClient::sendCursorEvent,
             sendKey = rdpClient::sendKeyEvent,
             sendUnicode = rdpClient::sendUnicodeKey,
+            sendTouch = rdpClient::sendTouch,
             isUnicodeSupported = rdpClient::isUnicodeInputSupported,
         )
     }
@@ -113,22 +120,11 @@ fun SessionScreen(
         }
     }
 
-    // Track local zoom/pan as Compose state so graphicsLayer recomposes; mirror to the
-    // controller so coordinate math stays in sync.
-    var userZoom by remember { mutableStateOf(1f) }
-    var userPan by remember { mutableStateOf(Offset.Zero) }
-    // The gesture recognizer writes directly into the controller. We sample its zoom/pan
-    // each frame the user is touching to drive the Compose state.
-    LaunchedEffect(controller) {
-        controller.virtualPosition.collect {
-            // Cheap to read; the StateFlow is updated on every drag anyway.
-            val z = controller.userZoom()
-            val px = controller.userPanX()
-            val py = controller.userPanY()
-            if (z != userZoom) userZoom = z
-            if (px != userPan.x || py != userPan.y) userPan = Offset(px, py)
-        }
-    }
+    // Local pinch zoom/pan is owned by the controller and exposed as a StateFlow (userTransform).
+    // SessionCanvas collects it into a State that is read DEFERRED inside the graphicsLayer{}
+    // lambda, so a gesture frame re-records only the GPU layer instead of recomposing the canvas.
+    // (The old approach hoisted zoom/pan into Compose state via a virtualPosition sampler that
+    // never fired during a pinch — the transform froze until the gesture ended.)
 
     // Drive the system-bars (immersive) state.
     val view = LocalView.current
@@ -173,6 +169,8 @@ fun SessionScreen(
                             remoteHeight = state.remoteHeight,
                             durationSec = state.durationSec,
                             fps = state.fps,
+                            latencyMs = state.latencyMs,
+                            transport = state.transport,
                             mode = state.mode,
                             host = state.connectionHost,
                             stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
@@ -223,30 +221,42 @@ fun SessionScreen(
                 )
             }
         },
-        bottomBar = {
-            AnimatedVisibility(
-                visible = state.toolbarVisible && state.systemBarsVisible,
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
-            ) {
-                SessionToolbar(viewModel = viewModel, state = state)
-            }
-        },
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
-            SessionCanvas(
-                padding = padding,
-                controller = controller,
-                buffer = rdpClient.buffer,
-                remoteWidth = state.remoteWidth,
-                remoteHeight = state.remoteHeight,
-                mode = state.mode,
-                userZoom = userZoom,
-                userPan = userPan,
-                onViewSizeChanged = viewModel::onSurfaceResized,
-                targetFrameRate = state.targetFrameRate,
-                onFrameRendered = viewModel::onFrameRendered,
-            )
+        // consumeWindowInsets(padding) marks the Scaffold insets (status/nav bars + top app bar) as
+        // consumed so the toolbar's imePadding() below nets out the navigation-bar inset and sits
+        // flush above the keyboard (no gap). A plain padding(padding) does NOT consume, which would
+        // leave a nav-bar-height gap.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding),
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SessionCanvas(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    controller = controller,
+                    buffer = rdpClient.buffer,
+                    remoteWidth = state.remoteWidth,
+                    remoteHeight = state.remoteHeight,
+                    mode = state.mode,
+                    onViewSizeChanged = viewModel::onSurfaceResized,
+                    targetFrameRate = state.targetFrameRate,
+                    onFrameRendered = viewModel::onFrameRendered,
+                )
+
+                // Function-key toolbar (issues 1 + 8): shown only while the soft keyboard is up,
+                // sitting BELOW the framebuffer so the canvas's weight(1f) shrinks above it, and
+                // ABOVE the keyboard via SessionToolbar's imePadding(). Because it's a sibling row
+                // in the Column (not an overlay), it never leaks taps into the gesture surface.
+                AnimatedVisibility(
+                    visible = state.imeVisible && state.systemBarsVisible,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut(),
+                ) {
+                    SessionToolbar(viewModel = viewModel, state = state)
+                }
+            }
 
             // Immersive exit affordance: a translucent FAB sitting above the framebuffer in
             // the top-right corner. Only visible when system bars are hidden — otherwise
@@ -265,6 +275,18 @@ fun SessionScreen(
                 ) {
                     Icon(Icons.Default.FullscreenExit, contentDescription = "退出全屏")
                 }
+            }
+
+            // Local zoom controls (issue #3) — shown in BOTH input modes (per user choice). Their
+            // own composable collects userTransform so only this small overlay recomposes on zoom,
+            // never the framebuffer. Hidden while the soft keyboard is up to avoid clutter.
+            if (!state.imeVisible) {
+                ZoomControls(
+                    controller = controller,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(12.dp),
+                )
             }
 
             // Hidden IME bridge — Compose tree always contains it, but it only requests
@@ -294,16 +316,30 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
     if (mask and ScancodeMap.Modifier.WIN != 0) add("Win")
 }
 
+/**
+ * Applies the local pinch zoom/pan as a graphicsLayer transform. The [transform] State is read
+ * INSIDE the layer block, so it runs in the layer-record (draw) phase — a transform change
+ * re-records only the GPU layer and never recomposes the caller. Used by BOTH the framebuffer
+ * AndroidView and the crosshair Canvas so they share one transform and stay in lock-step.
+ */
+private fun Modifier.userTransformLayer(transform: State<UserTransform>): Modifier =
+    graphicsLayer {
+        val t = transform.value
+        scaleX = t.zoom
+        scaleY = t.zoom
+        translationX = t.panX
+        translationY = t.panY
+        transformOrigin = TransformOrigin.Center
+    }
+
 @Composable
 private fun SessionCanvas(
-    padding: PaddingValues,
+    modifier: Modifier,
     controller: RdpInputController,
     buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
     remoteWidth: Int,
     remoteHeight: Int,
     mode: InputMode,
-    userZoom: Float,
-    userPan: Offset,
     onViewSizeChanged: (width: Int, height: Int) -> Unit,
     targetFrameRate: Int,
     onFrameRendered: () -> Unit,
@@ -311,7 +347,11 @@ private fun SessionCanvas(
     val current by buffer.current.collectAsStateWithLifecycle(initialValue = null)
     var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
     var viewSize by remember { mutableStateOf(0 to 0) }
-    val virtualPos by controller.virtualPosition.collectAsStateWithLifecycle()
+    // Keep these as State<...> (NOT `by`): read .value ONLY inside the graphicsLayer / Canvas draw
+    // lambdas below so a pinch/pan/cursor move re-records the layer/draw phase without recomposing
+    // SessionCanvas (which would re-run the AndroidView update lambda every frame).
+    val transformState = controller.userTransform.collectAsStateWithLifecycle()
+    val virtualPosState = controller.virtualPosition.collectAsStateWithLifecycle()
 
     // Same fit-to-view math RdpSurface.onDraw uses. Kept in sync so touch coordinates and
     // the on-screen cursor overlay all share one transform.
@@ -330,12 +370,11 @@ private fun SessionCanvas(
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
+        modifier = modifier
             .background(Color.Black)
             .onSizeChanged { size ->
                 viewSize = size.width to size.height
+                controller.setViewSize(size.width, size.height)
                 onViewSizeChanged(size.width, size.height)
             }
             // sessionGestures sits ABOVE the graphicsLayer so pointer events arrive in
@@ -344,7 +383,7 @@ private fun SessionCanvas(
             .sessionGestures(
                 controller = controller,
                 modeProvider = { mode },
-                onPinchReset = { /* state mirroring driven by controller.virtualPosition flow */ },
+                onPinchReset = { /* no-op: resetUserTransform() already publishes to userTransform */ },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -360,22 +399,18 @@ private fun SessionCanvas(
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = userZoom
-                    scaleY = userZoom
-                    translationX = userPan.x
-                    translationY = userPan.y
-                    transformOrigin = TransformOrigin.Center
-                },
+                .userTransformLayer(transformState),
             factory = { ctx ->
                 RdpSurface(ctx).also { surface ->
                     surface.setBackgroundColor(Color.Black.toArgb())
                     surface.onFrameRendered = onFrameRendered
+                    // Read frames straight from the double buffer's front (complete) buffer; the
+                    // render loop pulls peekFront() each tick (no per-frame setBacking/recompose).
+                    surface.buffer = buffer
                     surfaceRef = surface
                 }
             },
             update = { surface ->
-                surface.setBacking(current)
                 surface.targetFrameRate = targetFrameRate
             },
         )
@@ -389,16 +424,11 @@ private fun SessionCanvas(
                     .fillMaxSize()
                     // Crosshair sits on the same transformed layer as the framebuffer so it
                     // tracks pinch-zoom/pan correctly.
-                    .graphicsLayer {
-                        scaleX = userZoom
-                        scaleY = userZoom
-                        translationX = userPan.x
-                        translationY = userPan.y
-                        transformOrigin = TransformOrigin.Center
-                    },
+                    .userTransformLayer(transformState),
             ) {
-                val cx = virtualPos.first * scale + dx
-                val cy = virtualPos.second * scale + dy
+                val vp = virtualPosState.value
+                val cx = vp.first * scale + dx
+                val cy = vp.second * scale + dy
                 val arm = 12f
                 val stroke = 2f
                 // Outline (black) — visible against light backgrounds.
@@ -420,7 +450,9 @@ private fun SessionCanvas(
 @Composable
 private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
     BottomAppBar(
-        modifier = Modifier.fillMaxWidth(),
+        // imePadding lifts the toolbar to sit directly above the soft keyboard instead of being
+        // covered by it — the Scaffold's content padding then also shifts the framebuffer up.
+        modifier = Modifier.fillMaxWidth().imePadding(),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -446,8 +478,42 @@ private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
             ToolbarKey("Win") { viewModel.sendKey(ScancodeMap.VK.LWIN) }
             ToolbarKey("Tab") { viewModel.sendKey(ScancodeMap.VK.TAB) }
             ToolbarKey("CAD") { viewModel.sendCtrlAltDel() }
-            IconButton(onClick = viewModel::toggleToolbar) {
-                Icon(Icons.Default.Keyboard, contentDescription = "工具栏")
+            IconButton(onClick = viewModel::toggleIme) {
+                Icon(Icons.Default.KeyboardHide, contentDescription = "收起键盘")
+            }
+        }
+    }
+}
+
+/**
+ * Floating zoom controls (＋ / －, and a reset that appears only while zoomed). Collects
+ * userTransform internally so a zoom change recomposes ONLY this small overlay — the framebuffer
+ * AndroidView reads the transform deferred inside its graphicsLayer and never recomposes.
+ */
+@Composable
+private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Modifier) {
+    val transform by controller.userTransform.collectAsStateWithLifecycle()
+    val zoomed = transform.zoom > 1.01f
+    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SmallFloatingActionButton(onClick = controller::zoomIn, containerColor = containerColor) {
+            Icon(Icons.Default.Add, contentDescription = "放大")
+        }
+        Text(
+            text = "${(transform.zoom * 100).toInt()}%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        SmallFloatingActionButton(onClick = controller::zoomOut, containerColor = containerColor) {
+            Icon(Icons.Default.Remove, contentDescription = "缩小")
+        }
+        if (zoomed) {
+            SmallFloatingActionButton(onClick = controller::resetZoom, containerColor = containerColor) {
+                Icon(Icons.Default.Refresh, contentDescription = "复位缩放")
             }
         }
     }

@@ -21,10 +21,12 @@ android {
         // the externalNativeBuild blocks below — see NATIVE_BUILD_NOTES.md.
         ndk { abiFilters += listOf("arm64-v8a") }
     }
-    /*
-    // Native build via CMake superbuild — disabled, using prebuilt .so in jniLibs/.
-    // To rebuild (e.g. after FreeRDP submodule bump), uncomment this whole region
-    // AND delete the .so files from src/main/jniLibs/arm64-v8a/. Build via WSL2
+    /* ===== NATIVE BUILD REGION — WSL2 rebuild only; COMMENTED for Windows packaging =====
+    // To rebuild: delete this opening "/* ===== … =====" line and the closing "===== … ===== */"
+    // line below, run scripts/build-native-in-wsl.sh, then restore both markers.
+    // A Windows native build fails at OpenSSL Configure (see CLAUDE.md).
+    // Native build via CMake superbuild.
+    // To rebuild (e.g. after FreeRDP submodule bump), keep this region uncommented. Build via WSL2
     // only (OpenSSL Configure has perl/path bugs on Windows — see NATIVE_BUILD_NOTES.md).
     //
     // Hard-won flags below: ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES + max-page-size=16384
@@ -44,9 +46,16 @@ android {
                     "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
                     "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
                     "-DWITH_OPENSSL=ON",
+                    // H.264 via FFmpeg, NOT OpenH264. FFmpeg's software h264 decoder (+ swscale) is
+                    // the ONLY H.264 subsystem (WITH_VIDEO_FFMPEG, set in ExternalFreeRDP.cmake). This
+                    // is what makes /gfx:AVC444 render cleanly — the OpenH264 backend's decoded plane
+                    // strides mis-fed FreeRDP's YUV444 combine (diagonal chroma grid, field-confirmed);
+                    // FFmpeg's output feeds it correctly. FFmpeg is built STATIC (ExternalFFmpeg.cmake)
+                    // and linked into libfreerdp3, so there's no extra .so / versioned-soname problem
+                    // (a shared FFmpeg bakes libavcodec.so.61 DT_NEEDED which Android can't package).
                     "-DWITH_OPENH264=OFF",
                     "-DWITH_CJSON=ON",
-                    "-DWITH_FFMPEG=OFF",
+                    "-DWITH_FFMPEG=ON",
                     "-DWITH_OPUS=OFF",
                     "-DWITH_WEBP=OFF",
                     "-DWITH_JPEG=OFF",
@@ -61,7 +70,7 @@ android {
             version = "3.22.1+"
         }
     }
-    */
+    ===== END NATIVE BUILD REGION ===== */
     packaging {
         jniLibs {
             pickFirsts += listOf(

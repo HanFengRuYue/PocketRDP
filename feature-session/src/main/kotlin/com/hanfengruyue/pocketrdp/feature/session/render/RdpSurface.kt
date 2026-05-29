@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
+import com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer
 
 /**
  * Backing canvas for the RDP framebuffer.
@@ -29,6 +30,13 @@ import android.view.View
  * fixed instead of tracking the bursty content-update rate. Compose's AndroidView wrapper draws
  * this view inline with the rest of the tree, so there is no surface layer to fight with.
  *
+ * **Double-buffered source:** onDraw reads the framebuffer from [BitmapBuffer.peekFront] every
+ * frame — the *front* buffer, a complete and stable frame. The native worker writes the *back*
+ * buffer and swaps on commit, so the UI never blits a half-written bitmap. This is what removes the
+ * large-update tearing ("逐行扫描"). Pulling the bitmap from the buffer each frame (instead of via a
+ * Compose-pushed `setBacking`) keeps the displayed rate decoupled from the content rate: a new
+ * committed frame is simply picked up on the next scheduled tick, never forcing an extra invalidate.
+ *
  * The view itself does NOT consume touch events — Compose handles gestures via
  * Modifier.pointerInput on the AndroidView wrapper. See feature-session/SessionScreen.
  */
@@ -38,9 +46,15 @@ class RdpSurface @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private val lock = Any()
-    private var backing: Bitmap? = null
     private val viewportMatrix: Matrix = Matrix()
+    // Reused in onDraw for the (rare) non-identity viewport path so we don't allocate a Matrix on
+    // every frame — at 60 fps that was 60 short-lived Matrix objects/s of pure GC churn.
+    private val drawMatrix: Matrix = Matrix()
     private val paint: Paint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    /** Source of frames. The render loop reads [BitmapBuffer.peekFront] each onDraw. */
+    @Volatile
+    var buffer: BitmapBuffer? = null
 
     /**
      * Target render frame rate (fps). 0 = uncapped → follow VSync (the historical behaviour);
@@ -63,9 +77,11 @@ class RdpSurface @JvmOverloads constructor(
         setBackgroundColor(Color.BLACK)
     }
 
-    fun setBacking(bitmap: Bitmap?) {
-        synchronized(lock) { backing = bitmap }
-        postInvalidate()
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // Kick the self-loop so the first frame shows promptly (cold-start guard against the
+        // historical "connected but black screen" window). onDraw re-schedules itself thereafter.
+        postInvalidateOnAnimation()
     }
 
     fun applyViewport(matrix: Matrix) {
@@ -90,14 +106,16 @@ class RdpSurface @JvmOverloads constructor(
         // Stamp the frame-start time first so scheduleNextFrame paces the *next* frame from here,
         // keeping the cadence exactly 1/fps regardless of how long this draw takes.
         lastFrameAtMs = SystemClock.uptimeMillis()
-        val bm: Bitmap?
-        val matrix: Matrix
+        // Pull the current complete frame (front buffer) — never a buffer being written by the
+        // worker, so no mid-write tearing.
+        val bm: Bitmap? = buffer?.peekFront()
+        val identity: Boolean
         synchronized(lock) {
-            bm = backing
-            matrix = Matrix(viewportMatrix)
+            identity = viewportMatrix.isIdentity
+            if (!identity) drawMatrix.set(viewportMatrix)
         }
         if (bm != null) {
-            if (matrix.isIdentity) {
+            if (identity) {
                 val viewW = width.toFloat()
                 val viewH = height.toFloat()
                 val bmW = bm.width.toFloat()
@@ -119,7 +137,7 @@ class RdpSurface @JvmOverloads constructor(
                 }
             } else {
                 canvas.save()
-                canvas.concat(matrix)
+                canvas.concat(drawMatrix)
                 canvas.drawBitmap(bm, 0f, 0f, paint)
                 canvas.restore()
             }

@@ -28,11 +28,15 @@ class ConnectionRepository @Inject constructor(
         useH264: Boolean,
         useGfx: Boolean,
         dynamicResolution: Boolean,
+        useMultitransport: Boolean,
         redirectClipboard: Boolean,
         redirectFiles: Boolean,
         sharedFolderUri: String?,
         soundMode: Int,
         desktopScaleFactor: Int,
+        customWidth: Int,
+        customHeight: Int,
+        defaultInputMode: Int,
         targetFrameRate: Int,
     ): Long {
         val sealed = if (plainPassword.isEmpty() && existing != null) {
@@ -52,11 +56,15 @@ class ConnectionRepository @Inject constructor(
             useH264 = useH264,
             useGfx = useGfx,
             dynamicResolution = dynamicResolution,
+            useMultitransport = useMultitransport,
             redirectClipboard = redirectClipboard,
             redirectFiles = redirectFiles,
             sharedFolderUri = sharedFolderUri,
             soundMode = soundMode,
             desktopScaleFactor = desktopScaleFactor,
+            customWidth = customWidth,
+            customHeight = customHeight,
+            defaultInputMode = defaultInputMode,
             targetFrameRate = targetFrameRate,
         )
         return dao.upsert(entity)
