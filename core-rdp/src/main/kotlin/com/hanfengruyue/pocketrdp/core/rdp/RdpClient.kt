@@ -5,9 +5,13 @@ import android.util.Log
 import com.freerdp.freerdpcore.services.LibFreeRDP
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
+import java.net.Socket
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,6 +40,10 @@ class RdpClient @Inject constructor(
     private var connectThread: Thread? = null
     private var acceptedCertThumb: String? = null
 
+    // Host/port of the active session — used by [measureLatencyMs] for the latency probe.
+    @Volatile private var lastHost: String? = null
+    @Volatile private var lastPort: Int = DEFAULT_RDP_PORT
+
     // Throttled keyboard-input debug counters. Logging every keystroke would drown the log
     // viewer when the user holds a key or pastes long text; logging nothing makes it
     // impossible to verify "keyboard input → disconnect" timing in a bug report. We log the
@@ -57,6 +65,8 @@ class RdpClient @Inject constructor(
 
         emit(RdpEvent.Connecting)
         acceptedCertThumb = params.acceptedCertThumbprint
+        lastHost = params.host
+        lastPort = params.port
         val inst = LibFreeRDP.newInstance(context)
         if (inst == 0L) {
             PocketLogger.e(TAG, "LibFreeRDP.newInstance returned 0")
@@ -154,6 +164,27 @@ class RdpClient @Inject constructor(
         if (inst != 0L) LibFreeRDP.sendCursorEvent(inst, x, y, flags)
     }
 
+    /**
+     * Forward a native multi-touch contact (issue: 调用 Windows 原生触屏). [action] is one of
+     * [RdpTouchAction] (DOWN/MOVE/UP); [contactId] is the finger id tracked across the gesture.
+     * Silently dropped (returns) when there's no live instance or the rdpei channel isn't up yet —
+     * never tears down the session.
+     */
+    fun sendTouch(contactId: Int, x: Int, y: Int, action: Int) {
+        val inst = nativeInstance
+        if (inst != 0L) LibFreeRDP.sendTouch(inst, contactId, x, y, action)
+    }
+
+    /**
+     * Negotiated transport bitfield (see [LibFreeRDP.getTransportInfo]); -1 when no live session.
+     * bit0 = RDP-UDP multitransport active (UDP), bits 1+ = selected security protocol. The status
+     * badge maps this to [RdpTransport].
+     */
+    fun transportInfo(): Int {
+        val inst = nativeInstance
+        return if (inst == 0L) -1 else LibFreeRDP.getTransportInfo(inst)
+    }
+
     fun sendClipboard(data: String) {
         val inst = nativeInstance
         if (inst != 0L) LibFreeRDP.sendClipboardData(inst, data)
@@ -176,6 +207,24 @@ class RdpClient @Inject constructor(
 
     fun hasH264(): Boolean = LibFreeRDP.hasH264Support()
     fun version(): String = LibFreeRDP.freerdp_get_version()
+
+    /**
+     * Approximate network latency (round-trip, ms) to the RDP host by timing a fresh TCP handshake
+     * to host:port. This is a proxy for the true RDP-layer RTT (which FreeRDP's autodetect module
+     * tracks internally but is not exposed through the current prebuilt JNI bridge — surfacing that
+     * would need a native rebuild). Runs on the IO dispatcher; returns -1 on failure / no session.
+     */
+    suspend fun measureLatencyMs(): Int = withContext(Dispatchers.IO) {
+        val host = lastHost ?: return@withContext -1
+        if (nativeInstance == 0L) return@withContext -1
+        runCatching {
+            Socket().use { socket ->
+                val start = System.nanoTime()
+                socket.connect(InetSocketAddress(host, lastPort), LATENCY_PROBE_TIMEOUT_MS)
+                ((System.nanoTime() - start) / NANOS_PER_MILLI).toInt().coerceIn(0, MAX_LATENCY_MS)
+            }
+        }.getOrDefault(-1)
+    }
 
     private fun emit(event: RdpEvent) {
         _events.tryEmit(event)
@@ -222,9 +271,23 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnGraphicsUpdate(inst: Long, x: Int, y: Int, w: Int, h: Int) {
-            val bm = buffer.current.value ?: return
-            LibFreeRDP.updateGraphics(inst, bm, x, y, w, h)
-            buffer.notifyDirty(x, y, w, h)
+            // Write this frame's dirty region into the BACK buffer (never the one the UI is drawing).
+            val target = buffer.nativeBuffer() ?: return
+            LibFreeRDP.updateGraphics(inst, target, x, y, w, h)
+            // The back buffer is one published generation behind — re-apply the region that changed
+            // in the previous frame so the buffer we're about to publish is a complete mirror of the
+            // gdi framebuffer (otherwise the swapped-in frame would be missing last frame's update).
+            // BUT skip that second copy when this frame's rect already fully covers the stale region
+            // (the common case for video / full-screen repaints) — re-copying it would just be a
+            // redundant full-screen blit, the dominant per-frame cost behind the "卡顿". (issue #1)
+            buffer.staleRect()?.let { r ->
+                if (!r.isEmpty && !(x <= r.left && y <= r.top && x + w >= r.right && y + h >= r.bottom)) {
+                    LibFreeRDP.updateGraphics(inst, target, r.left, r.top, r.width(), r.height())
+                }
+            }
+            // Swap back→front: the UI's free-running render loop now reads a complete, stable frame,
+            // eliminating the mid-write tearing on large updates ("逐行扫描").
+            buffer.commitFrame(x, y, w, h)
             emit(RdpEvent.GraphicsUpdated(x, y, w, h))
         }
 
@@ -267,12 +330,33 @@ class RdpClient @Inject constructor(
         )
         if (p.password.isNotEmpty()) args += "/p:${p.password}"
         if (p.domain.isNotEmpty()) args += "/d:${p.domain}"
-        // /gfx:AVC444 needs H.264 support compiled into FreeRDP (WITH_OPENH264=ON).
-        // Our prebuilt jniLibs are built with OPENH264=OFF; silently downgrade so
-        // the connection attempt doesn't die at parse_command_line.
-        if (p.useH264 && LibFreeRDP.hasH264Support()) args += "/gfx:AVC444"
-        if (p.useGfx) args += "/rfx"
+        // Graphics pipeline selection. H.264 is the decisive fix for the video "画面卡顿": the Windows
+        // host runs AVC444ModePreferred=1, so once the client can decode H.264 the server uses a
+        // hardware-encoded path (tiny bandwidth + cheap decode) instead of software RemoteFX
+        // full-screen blits.
+        //
+        // We request AVC444 (full 4:4:4 chroma — crisp coloured text/edges). This is sound ONLY
+        // because the H.264 decoder is FFmpeg (the native build is WITH_OPENH264=OFF + WITH_FFMPEG=ON,
+        // FFmpeg static-linked into libfreerdp3). AVC444 is a dual H.264 stream that FreeRDP recombines
+        // into YUV444 via its own prim_YUV; with the OLD OpenH264 backend that combine produced a
+        // diagonal magenta/green chroma grid (the plane strides OpenH264 emitted didn't line up),
+        // field-confirmed. FFmpeg's decoder output strides feed the combine correctly → clean AVC444.
+        // If the decoder ever reverts to OpenH264, drop this back to /gfx:AVC420 (single YUV420 stream,
+        // no auxiliary-chroma combine, the only H.264 mode that's clean on OpenH264). When H.264 isn't
+        // available at all we use GFX RemoteFX progressive (/gfx:RFX) — mutually exclusive with AVC.
+        when {
+            p.useH264 && LibFreeRDP.hasH264Support() -> args += "/gfx:AVC444"
+            p.useGfx -> args += "/gfx:RFX"
+        }
+        // Enable the rdpei dynamic channel so InputMode.TOUCH can forward native Windows multi-touch
+        // contacts. Harmless when unused (TRACKPAD mode never sends touch) and auto-skipped by the
+        // server if it doesn't support RDPEI.
+        args += "/multitouch"
         if (p.dynamicResolution) args += "/dynamic-resolution"
+        // RDP-UDP multitransport (UDP-R + UDP-L/FEC). Core RDP protocol, present in the prebuilt
+        // .so (not a codec), and auto-falls-back to TCP if the server doesn't negotiate it — so it
+        // is safe to request. Improves responsiveness on lossy/high-latency links.
+        if (p.useMultitransport) args += "/multitransport"
         // FreeRDP 3.x parse_scale_options() hard-rejects anything outside {100, 140, 180}.
         // Snap the stored DPI to the nearest legal bucket so a saved value like 200 (the
         // ConnectionEntity default) doesn't cause freerdp_parse_arguments to fail with
@@ -307,5 +391,9 @@ class RdpClient @Inject constructor(
         // pattern (which is what we need to investigate "input → disconnect" timing) without
         // flooding logs when the user holds a key or pastes long text.
         private const val KEY_LOG_LIMIT = 50
+        private const val DEFAULT_RDP_PORT = 3389
+        private const val LATENCY_PROBE_TIMEOUT_MS = 2000
+        private const val NANOS_PER_MILLI = 1_000_000L
+        private const val MAX_LATENCY_MS = 9999
     }
 }

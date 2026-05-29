@@ -10,36 +10,90 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Shared frame surface between native draw thread and the renderer.
+ * Double-buffered frame surface between the native FreeRDP worker thread and the renderer.
  *
- * - `current` holds the active ARGB_8888 Bitmap that JNI writes into.
- * - `dirty` carries rectangular regions that need to be re-blit to the visible Surface.
+ * **Why double-buffer (the "逐行扫描"/tearing fix):** the native worker copies decoded pixels into
+ * a Bitmap (via `LibFreeRDP.updateGraphics`) while the UI thread blits that same Bitmap to the
+ * screen on a free-running render loop ([com.hanfengruyue.pocketrdp.feature.session.render.RdpSurface]).
+ * Drawing a Bitmap on a hardware-accelerated Canvas schedules an async texture upload that reads the
+ * Bitmap's pixels *later* on the RenderThread — so if the worker is mid-way through a large region
+ * copy, the upload captures a half-written frame and the user sees a progressive-scan tear during big
+ * repaints (small updates finish within one frame so they looked fine). The fix is a classic
+ * front/back swap: the worker writes the **back** buffer, and only once a frame is complete is it
+ * swapped to the **front** buffer that the UI draws — so the UI never reads a buffer being written.
  *
- * RdpSurface (UI thread) subscribes; RdpClient (native callback thread) emits.
+ * - [nativeBuffer] is the back buffer the worker writes into.
+ * - [peekFront] returns the front buffer the UI draws (a complete, stable frame).
+ * - [commitFrame] swaps back→front after the worker finishes a region update.
+ * - `current` exposes whether a buffer exists at all (drives the "waiting for frame" placeholder);
+ *   it is updated on resize/release only, NOT per frame, so the session canvas does not recompose
+ *   at the content rate.
+ *
+ * Memory cost is two same-size bitmaps (~2×8 MB at 1080p). Like the previous single-buffer
+ * implementation, old bitmaps are never `recycle()`d — the UI thread may still hold a reference for
+ * a frame or two; let GC reclaim them (a recycle-then-draw race previously caused SIGSEGV).
  */
 class BitmapBuffer {
 
+    private val lock = Any()
+    private var front: Bitmap? = null
+    private var back: Bitmap? = null
+    // Region updated in the previously-published frame. The back buffer is exactly one published
+    // generation behind (that update went to the other buffer), so it must be re-synced over this
+    // rect before the next swap or the published frame would be missing it.
+    private var lastRect: Rect? = null
+
     private val _current = MutableStateFlow<Bitmap?>(null)
+    /** Non-null once a framebuffer has been allocated. Identity is NOT meaningful per frame — used
+     *  only to flip the "waiting for remote frame" placeholder. */
     val current: StateFlow<Bitmap?> = _current.asStateFlow()
 
     private val _dirty = MutableSharedFlow<Rect>(extraBufferCapacity = 256)
     val dirty: SharedFlow<Rect> = _dirty.asSharedFlow()
 
-    @Synchronized
+    /** Back buffer the native worker writes pixel updates into. Null until [resize]. */
+    fun nativeBuffer(): Bitmap? = synchronized(lock) { back }
+
+    /** Region updated in the previous published frame; the back buffer must be re-synced over it
+     *  before publishing so the swapped-in frame is a complete mirror of the gdi framebuffer. */
+    fun staleRect(): Rect? = synchronized(lock) { lastRect }
+
+    /** Front buffer the UI draws — a complete, stable frame. Drawn outside the lock; safe because
+     *  the worker only ever writes the back buffer (see class doc). */
+    fun peekFront(): Bitmap? = synchronized(lock) { front }
+
     fun resize(width: Int, height: Int): Bitmap {
-        val old = _current.value
-        if (old != null && old.width == width && old.height == height) return old
-        val fresh = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        _current.value = fresh
-        // Deliberately do NOT recycle the old bitmap here. Native FreeRDP thread runs resize()
-        // (e.g. when the server emits a desktop-resize on rotation), but RdpSurface.onDraw on
-        // the UI thread still holds the previous bitmap reference for a few VSync frames until
-        // Compose's update lambda swaps it. Calling recycle() here led to drawBitmap() hitting
-        // a freed pixel buffer → SIGSEGV crash, with no logcat reaching disk because the
-        // process died before the async writer flushed. The bitmap is heap-allocated and
-        // collected by GC once the renderer drops its reference; the ~8 MB transient
-        // duplication is harmless.
-        return fresh
+        synchronized(lock) {
+            val f = front
+            if (f != null && f.width == width && f.height == height) return f
+        }
+        // Allocate outside the lock (two ~8 MB bitmaps) so the UI's peekFront isn't blocked on it;
+        // resize is only ever called from the single native worker thread, so there's no concurrent
+        // resize to race the swap below.
+        val newFront = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val newBack = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        synchronized(lock) {
+            front = newFront
+            back = newBack
+            lastRect = null
+        }
+        _current.value = newFront
+        // Deliberately do NOT recycle the old bitmaps (see class doc) — let GC reclaim them.
+        return newFront
+    }
+
+    /**
+     * Publish the back buffer after the worker has written [x,y,w,h] (and re-synced [staleRect])
+     * into it. Swaps back→front so the UI picks up a complete frame on its next render tick.
+     */
+    fun commitFrame(x: Int, y: Int, w: Int, h: Int) {
+        synchronized(lock) {
+            val tmp = front
+            front = back
+            back = tmp
+            lastRect = Rect(x, y, x + w, y + h)
+        }
+        _dirty.tryEmit(Rect(x, y, x + w, y + h))
     }
 
     fun notifyDirty(x: Int, y: Int, w: Int, h: Int) {
@@ -47,7 +101,11 @@ class BitmapBuffer {
     }
 
     fun release() {
-        // Same reason as resize(): don't recycle, let GC reclaim.
+        synchronized(lock) {
+            front = null
+            back = null
+            lastRect = null
+        }
         _current.value = null
     }
 }

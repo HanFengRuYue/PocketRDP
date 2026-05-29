@@ -18,11 +18,20 @@ data class ConnectionEntity(
     @ColumnInfo(name = "use_h264") val useH264: Boolean = true,
     @ColumnInfo(name = "use_gfx") val useGfx: Boolean = true,
     @ColumnInfo(name = "dynamic_resolution") val dynamicResolution: Boolean = true,
+    @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = true,
     @ColumnInfo(name = "redirect_clipboard") val redirectClipboard: Boolean = true,
     @ColumnInfo(name = "redirect_files") val redirectFiles: Boolean = false,
     @ColumnInfo(name = "shared_folder_uri") val sharedFolderUri: String? = null,
     @ColumnInfo(name = "sound_mode") val soundMode: Int = 0,
     @ColumnInfo(name = "desktop_scale_factor") val desktopScaleFactor: Int = 200,
+    // Custom fixed remote resolution. 0/0 = "not set" → follow [dynamicResolution] / default size.
+    // When both > 0 the session connects at exactly this size and dynamic-resolution is forced off
+    // so the remote desktop stays pinned to it (issue: 自定义分辨率).
+    @ColumnInfo(name = "custom_width") val customWidth: Int = 0,
+    @ColumnInfo(name = "custom_height") val customHeight: Int = 0,
+    // Input mode the session opens in: 0 = 模拟鼠标 (TRACKPAD), 1 = 直接触屏 (TOUCH / native RDPEI).
+    // Default 0 keeps the historical behaviour; can still be toggled live in-session.
+    @ColumnInfo(name = "default_input_mode") val defaultInputMode: Int = 0,
     @ColumnInfo(name = "target_frame_rate") val targetFrameRate: Int = 0,
     @ColumnInfo(name = "performance_flags") val performanceFlags: Int = 0,
     @ColumnInfo(name = "last_used_at") val lastUsedAt: Long = 0L,
@@ -43,11 +52,15 @@ data class ConnectionEntity(
             useH264 == other.useH264 &&
             useGfx == other.useGfx &&
             dynamicResolution == other.dynamicResolution &&
+            useMultitransport == other.useMultitransport &&
             redirectClipboard == other.redirectClipboard &&
             redirectFiles == other.redirectFiles &&
             sharedFolderUri == other.sharedFolderUri &&
             soundMode == other.soundMode &&
             desktopScaleFactor == other.desktopScaleFactor &&
+            customWidth == other.customWidth &&
+            customHeight == other.customHeight &&
+            defaultInputMode == other.defaultInputMode &&
             targetFrameRate == other.targetFrameRate &&
             performanceFlags == other.performanceFlags &&
             lastUsedAt == other.lastUsedAt &&
@@ -67,11 +80,15 @@ data class ConnectionEntity(
         result = 31 * result + useH264.hashCode()
         result = 31 * result + useGfx.hashCode()
         result = 31 * result + dynamicResolution.hashCode()
+        result = 31 * result + useMultitransport.hashCode()
         result = 31 * result + redirectClipboard.hashCode()
         result = 31 * result + redirectFiles.hashCode()
         result = 31 * result + (sharedFolderUri?.hashCode() ?: 0)
         result = 31 * result + soundMode
         result = 31 * result + desktopScaleFactor
+        result = 31 * result + customWidth
+        result = 31 * result + customHeight
+        result = 31 * result + defaultInputMode
         result = 31 * result + targetFrameRate
         result = 31 * result + performanceFlags
         result = 31 * result + lastUsedAt.hashCode()

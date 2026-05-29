@@ -48,6 +48,8 @@ public class LibFreeRDP {
     private static boolean nativeReady = false;
 
     static {
+        // H.264 decode is provided by FFmpeg statically linked into libfreerdp3 (WITH_FFMPEG=ON,
+        // WITH_OPENH264=OFF), so there is no separate libopenh264.so to pre-load here.
         try {
             System.loadLibrary("freerdp-android");
             String version = freerdp_get_jni_version();
@@ -98,6 +100,12 @@ public class LibFreeRDP {
     private static native boolean freerdp_is_unicode_input_supported(long inst);
     private static native boolean freerdp_send_clipboard_data(long inst, String data);
     private static native boolean freerdp_send_monitor_layout(long inst, int width, int height);
+    // Native RDPEI multi-touch: forwards one touch contact (action 0=down/1=move/2=up). Requires
+    // the rdpei dynamic channel (negotiated via /multitouch) — returns false until it's up.
+    private static native boolean freerdp_send_touch(long inst, int contactId, int x, int y, int action);
+    // Negotiated transport bitfield (see RdpClient.transportInfo): bit0 = RDP-UDP multitransport
+    // active, bits 1+ = selected security protocol. -1 when no live/connected instance.
+    private static native int freerdp_get_transport_info(long inst);
     public static native String freerdp_get_last_error_string(long inst);
 
     public static void setEventListener(EventListener l) { listener = l; }
@@ -162,6 +170,12 @@ public class LibFreeRDP {
     }
     public static boolean sendMonitorLayout(long inst, int w, int h) {
         return freerdp_send_monitor_layout(inst, w, h);
+    }
+    public static boolean sendTouch(long inst, int contactId, int x, int y, int action) {
+        return freerdp_send_touch(inst, contactId, x, y, action);
+    }
+    public static int getTransportInfo(long inst) {
+        return freerdp_get_transport_info(inst);
     }
 
     // ============================================================

@@ -11,6 +11,7 @@ data class RdpConnectionParams(
     val useH264: Boolean,
     val useGfx: Boolean,
     val dynamicResolution: Boolean,
+    val useMultitransport: Boolean,
     val redirectClipboard: Boolean,
     val redirectFiles: Boolean,
     val sharedFolderUri: String?,

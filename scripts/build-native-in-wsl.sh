@@ -104,12 +104,27 @@ SEARCH_ROOTS=(
     "core-rdp/.cxx"
 )
 for lib in libfreerdp-android.so libfreerdp3.so libfreerdp-client3.so libwinpr3.so libssl.so libcrypto.so libcjson.so liburiparser.so; do
-    SRC=$(find "${SEARCH_ROOTS[@]}" -type f -name "$lib" -path "*arm64-v8a*" 2>/dev/null | head -1)
+    # Pick the NEWEST match, not `head -1`: stale libs from previous CMake config-hash dirs
+    # (e.g. after toggling WITH_OPENH264) linger under build/intermediates/cxx and .cxx, and an
+    # arbitrary `head -1` once staged a month-old libfreerdp-android.so missing the new JNI symbols.
+    # -L + cp -L dereference openh264's versioned-soname symlink to a real file.
+    SRC=$(find -L "${SEARCH_ROOTS[@]}" -type f -name "$lib" -path "*arm64-v8a*" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
     if [ -n "$SRC" ]; then
-        cp -v "$SRC" "$JNILIBS_DIR/"
+        cp -Lv "$SRC" "$JNILIBS_DIR/"
         FOUND_LIBS+=("$lib")
     fi
 done
+
+# Sanity-check 16 KB LOAD alignment — a 4 KB-aligned .so is rejected by dlopen on Android 15+.
+READELF=$(find "$SDK_DIR/ndk/$NDK_VERSION" -name 'llvm-readelf' 2>/dev/null | head -1)
+if [ -n "$READELF" ]; then
+    step "Verifying 16 KB page alignment"
+    for f in "$JNILIBS_DIR"/*.so; do
+        align=$("$READELF" -l "$f" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
+        [ "$align" = "0x4000" ] && status=OK || status="!! NOT 16KB ($align)"
+        printf '  %-26s %s\n' "$(basename "$f")" "$status"
+    done
+fi
 echo
 echo "Copied ${#FOUND_LIBS[@]} libraries to $JNILIBS_DIR:"
 ls -la "$JNILIBS_DIR"

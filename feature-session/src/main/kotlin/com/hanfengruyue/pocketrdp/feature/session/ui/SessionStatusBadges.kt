@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.gestures.detectTapGestures
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
 import com.hanfengruyue.pocketrdp.feature.session.SessionConnectionStatus
 
 /**
@@ -51,6 +52,8 @@ fun SessionStatusTitle(
     remoteHeight: Int,
     durationSec: Long,
     fps: Int,
+    latencyMs: Int,
+    transport: RdpTransport,
     mode: InputMode,
     host: String?,
     stickyModifierLabels: List<String>,
@@ -115,6 +118,19 @@ fun SessionStatusTitle(
                     text = { Text("帧率：${fps} fps", style = MaterialTheme.typography.bodySmall) },
                     onClick = { expanded = false },
                 )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "网络延迟：${if (latencyMs >= 0) "$latencyMs ms" else "测量中…"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    onClick = { expanded = false },
+                )
+                DropdownMenuItem(
+                    text = { Text("网络协议：${transportLabel(transport)}", style = MaterialTheme.typography.bodySmall) },
+                    onClick = { expanded = false },
+                )
             }
             DropdownMenuItem(
                 text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) },
@@ -160,6 +176,12 @@ private fun StatusDot(status: SessionConnectionStatus) {
             .clip(CircleShape)
             .background(color),
     )
+}
+
+private fun transportLabel(transport: RdpTransport): String = when (transport) {
+    RdpTransport.UDP -> "UDP（多路传输）"
+    RdpTransport.TCP -> "TCP"
+    RdpTransport.UNKNOWN -> "检测中…"
 }
 
 private fun statusFullLabel(status: SessionConnectionStatus): String = when (status) {
