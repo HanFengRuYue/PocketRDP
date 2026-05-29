@@ -1,35 +1,61 @@
 <?xml version="1.0" ?>
 <SmellBaseline>
-  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <ManuallySuppressedIssues/>
   <CurrentIssues>
+    <ID>ComplexCondition:RdpSurface.kt$RdpSurface$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
+    <ID>ComplexCondition:SessionGestures.kt$!consumed &amp;&amp; !doubleTapDragHeld &amp;&amp; !touchDragInFlight &amp;&amp; dur &lt; TAP_TIMEOUT_MS &amp;&amp; totalMove &lt; TAP_SLOP_PX</ID>
+    <ID>ComplexCondition:SessionScreen.kt$mode == InputMode.TRACKPAD &amp;&amp; current != null &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
+    <ID>ComplexCondition:SessionScreen.kt$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
+    <ID>ComplexCondition:SessionViewModel.kt$SessionViewModel$pw &gt; 0 &amp;&amp; ph &gt; 0 &amp;&amp; (event.width - pw).absoluteValue &lt;= 8 &amp;&amp; (event.height - ph).absoluteValue &lt;= 8</ID>
     <ID>CyclomaticComplexMethod:Connection.kt$ConnectionEntity$override fun equals(other: Any?): Boolean</ID>
+    <ID>CyclomaticComplexMethod:SessionGestures.kt$fun Modifier.sessionGestures( controller: RdpInputController, modeProvider: () -&gt; InputMode, onPinchReset: () -&gt; Unit = {}, ): Modifier</ID>
     <ID>LongMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
-    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, useGfx: Boolean, dynamicResolution: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, )</ID>
+    <ID>LongMethod:SessionGestures.kt$fun Modifier.sessionGestures( controller: RdpInputController, modeProvider: () -&gt; InputMode, onPinchReset: () -&gt; Unit = {}, ): Modifier</ID>
+    <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
+    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, useGfx: Boolean, dynamicResolution: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, targetFrameRate: Int, )</ID>
+    <ID>LongParameterList:SessionScreen.kt$( padding: PaddingValues, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, userZoom: Float, userPan: Offset, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFrameRendered: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$24</ID>
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$5</ID>
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$65535</ID>
     <ID>MagicNumber:CredentialCipher.kt$CredentialCipher$256</ID>
-    <ID>MagicNumber:RdpClient.kt$RdpClient$300</ID>
-    <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x38</ID>
-    <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x53</ID>
+    <ID>MagicNumber:LogScreen.kt$0xFFCC8800</ID>
+    <ID>MagicNumber:RdpClient.kt$RdpClient$120</ID>
+    <ID>MagicNumber:RdpClient.kt$RdpClient$140</ID>
+    <ID>MagicNumber:RdpClient.kt$RdpClient$160</ID>
+    <ID>MagicNumber:RdpClient.kt$RdpClient$180</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$0xFF</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$1.6f</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$127</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$25f</ID>
-    <ID>MagicNumber:SessionScreen.kt$0x5B</ID>
-    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$0x38</ID>
-    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$0x53</ID>
+    <ID>MagicNumber:SessionGestures.kt$0.5f</ID>
+    <ID>MagicNumber:SessionGestures.kt$1.01f</ID>
+    <ID>MagicNumber:SessionScreen.kt$12f</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0xFF43A047</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0xFF9E9E9E</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0xFFE53935</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0xFFFFB300</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$3600</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$60</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000L</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$2000</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$3000</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$500</ID>
+    <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$5000</ID>
     <ID>MatchingDeclarationName:Connection.kt$ConnectionEntity</ID>
     <ID>MatchingDeclarationName:ConnectionsNavigation.kt$ConnectionsRoutes</ID>
     <ID>MatchingDeclarationName:PocketRdpNavHost.kt$AppRoutes</ID>
-    <ID>MaxLineLength:RdpClient.kt$RdpClient$emit(RdpEvent.Failed("freerdp_connect returned false: ${LibFreeRDP.freerdp_get_last_error_string(inst)}"))</ID>
+    <ID>MatchingDeclarationName:SessionMetrics.kt$FpsCounter</ID>
+    <ID>MaxLineLength:RdpClient.kt$RdpClient$PocketLogger.i(TAG, "FreeRDP native ready ver=${LibFreeRDP.freerdp_get_version()} h264=${LibFreeRDP.hasH264Support()}")</ID>
+    <ID>MaxLineLength:RdpClient.kt$RdpClient$PocketLogger.i(TAG, "connect() host=${params.host}:${params.port} user=${params.username} h264=${params.useH264} gfx=${params.useGfx} dynRes=${params.dynamicResolution}")</ID>
     <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override</ID>
     <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean</ID>
     <ID>MaxLineLength:RdpInputController.kt$RdpInputController$sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON1)</ID>
+    <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard</ID>
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp</ID>
-    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.Disconnected -&gt; _state.update { it.copy(status = SessionConnectionStatus.Disconnected(event.reason)) }</ID>
-    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.Failed -&gt; _state.update { it.copy(status = SessionConnectionStatus.Failed(event.error)) }</ID>
-    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$is RdpEvent.GraphicsResized -&gt; _state.update { it.copy(remoteWidth = event.width, remoteHeight = event.height) }</ID>
+    <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) }</ID>
+    <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) }</ID>
     <ID>MaxLineLength:Type.kt$bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.5.sp)</ID>
     <ID>MaxLineLength:Type.kt$bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)</ID>
     <ID>MaxLineLength:Type.kt$displayLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 57.sp, lineHeight = 64.sp, letterSpacing = (-0.25).sp)</ID>
@@ -44,5 +70,7 @@
     <ID>TooManyFunctions:RdpClient.kt$RdpClient</ID>
     <ID>TooManyFunctions:RdpInputController.kt$RdpInputController</ID>
     <ID>TooManyFunctions:SessionViewModel.kt$SessionViewModel : ViewModel</ID>
+    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$viewH: Int</ID>
+    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$viewW: Int</ID>
   </CurrentIssues>
 </SmellBaseline>

@@ -33,6 +33,7 @@ class ConnectionRepository @Inject constructor(
         sharedFolderUri: String?,
         soundMode: Int,
         desktopScaleFactor: Int,
+        targetFrameRate: Int,
     ): Long {
         val sealed = if (plainPassword.isEmpty() && existing != null) {
             CredentialCipher.Sealed(existing.passwordCipher, existing.passwordIv)
@@ -56,6 +57,7 @@ class ConnectionRepository @Inject constructor(
             sharedFolderUri = sharedFolderUri,
             soundMode = soundMode,
             desktopScaleFactor = desktopScaleFactor,
+            targetFrameRate = targetFrameRate,
         )
         return dao.upsert(entity)
     }

@@ -33,6 +33,7 @@ include(":feature-connections")
 include(":core-rdp")
 include(":core-data")
 include(":core-ui")
+include(":core-logging")
 
 // FreeRDP's Android library lives at third_party/FreeRDP (git submodule). We do NOT include
 // it as a Gradle subproject because freeRDPCore pulls in androidx.appcompat / room 2.8.4 /

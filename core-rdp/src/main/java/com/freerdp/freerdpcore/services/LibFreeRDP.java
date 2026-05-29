@@ -149,6 +149,14 @@ public class LibFreeRDP {
     public static boolean sendUnicodeKeyEvent(long inst, int keycode, boolean down) {
         return freerdp_send_unicodekey_event(inst, keycode, down);
     }
+    /**
+     * Whether the server negotiated INPUT_FLAG_UNICODE (FreeRDP_UnicodeInput). Sending a unicode
+     * keyboard event to a server that didn't advertise it makes the native event loop tear down
+     * the whole session — callers must gate the unicode path on this.
+     */
+    public static boolean isUnicodeInputSupported(long inst) {
+        return freerdp_is_unicode_input_supported(inst);
+    }
     public static boolean sendClipboardData(long inst, String data) {
         return freerdp_send_clipboard_data(inst, data);
     }
@@ -199,6 +207,14 @@ public class LibFreeRDP {
         if (uiListener != null) uiListener.OnGraphicsUpdate(inst, x, y, w, h);
     }
     public static void OnGraphicsResize(long inst, int width, int height, int bpp) {
+        if (uiListener != null) uiListener.OnGraphicsResize(inst, width, height, bpp);
+    }
+    // android_post_connect() emits OnSettingsChanged right before OnConnectionSuccess.
+    // If this method is missing the native java_callback_void leaves a pending
+    // NoSuchMethodError on the JNI thread, and the very next freerdp_callback()
+    // (OnConnectionSuccess) is rejected by ART's strict JNI check → SIGABRT on connect.
+    // Route it through OnGraphicsResize so Kotlin allocates the framebuffer eagerly.
+    public static void OnSettingsChanged(long inst, int width, int height, int bpp) {
         if (uiListener != null) uiListener.OnGraphicsResize(inst, width, height, bpp);
     }
     public static void OnRemoteClipboardChanged(long inst, String data) {

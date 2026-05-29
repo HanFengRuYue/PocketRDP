@@ -1,12 +1,10 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.ksp)
-    alias(libs.plugins.hilt)
 }
 
 android {
-    namespace = "com.hanfengruyue.pocketrdp.core.data"
+    namespace = "com.hanfengruyue.pocketrdp.core.logging"
     compileSdk = 37
 
     defaultConfig {
@@ -26,17 +24,6 @@ kotlin {
 }
 
 dependencies {
-    api(project(":core-logging"))
-
-    api(libs.androidx.room.runtime)
-    api(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
-
-    api(libs.androidx.datastore.preferences)
-    api(libs.androidx.security.crypto)
-
-    api(libs.hilt.android)
-    ksp(libs.hilt.compiler)
-
+    api(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.android)
 }
