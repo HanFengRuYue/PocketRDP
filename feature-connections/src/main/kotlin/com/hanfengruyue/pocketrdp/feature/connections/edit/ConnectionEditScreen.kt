@@ -150,7 +150,7 @@ fun ConnectionEditScreen(
 
             Column {
                 Text(
-                    "桌面缩放：${state.desktopScaleFactor}%",
+                    "远程桌面缩放：${state.desktopScaleFactor}%",
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Slider(
@@ -158,6 +158,11 @@ fun ConnectionEditScreen(
                     onValueChange = { viewModel.updateScaleFactor(it.toInt()) },
                     valueRange = 100f..300f,
                     steps = 7,
+                )
+                Text(
+                    "远程 Windows 桌面字体/界面的显示倍率（非本地画面放大；本地放大用画面上的缩放按钮）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -205,14 +210,19 @@ fun ConnectionEditScreen(
 
             SwitchRow(
                 title = "启用 H.264 视频加速",
-                subtitle = "用 AVC420 硬件编码大幅降低视频/动画卡顿；关闭则用 RemoteFX。需主机支持，不支持时自动回退",
+                subtitle = "用 H.264（AVC444 全彩）压缩远端画面，大幅降低视频/动画卡顿，客户端 FFmpeg 软件解码；" +
+                    "关闭则用 RemoteFX。需主机支持，不支持时自动回退",
                 checked = state.useH264,
                 onChange = viewModel::toggleH264,
             )
             SwitchRow(
                 title = "启用 GFX 图形管道",
-                subtitle = "现代 RDP 编码路径，配合 H.264 更顺滑",
-                checked = state.useGfx,
+                subtitle = "RemoteFX 渐进编码路径。开启 H.264 时图形管道会被强制启用（AVC444 只能走 GFX 通道）",
+                // When H.264 is on, the H264 branch in buildCommandLine always emits /gfx:AVC444 and
+                // this toggle is bypassed — so lock it ON+disabled to reflect reality instead of
+                // showing a switch that silently does nothing (field bug: 关掉 GFX 却仍生效).
+                checked = state.useGfx || state.useH264,
+                enabled = !state.useH264,
                 onChange = viewModel::toggleGfx,
             )
             SwitchRow(
@@ -281,7 +291,7 @@ fun ConnectionEditScreen(
 
             SwitchRow(
                 title = "剪贴板双向同步",
-                subtitle = "复制粘贴跨端共享文字 / 图片",
+                subtitle = "复制粘贴跨端共享文字（图片暂不支持）",
                 checked = state.redirectClipboard,
                 onChange = viewModel::toggleClipboard,
             )

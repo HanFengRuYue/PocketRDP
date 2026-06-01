@@ -7,17 +7,16 @@
     <ID>ComplexCondition:SessionGestures.kt$!consumed &amp;&amp; !holdDragActive &amp;&amp; !longPressFired &amp;&amp; dur &lt; TAP_TIMEOUT_MS &amp;&amp; totalMove &lt; TAP_SLOP_PX</ID>
     <ID>ComplexCondition:SessionScreen.kt$mode == InputMode.TRACKPAD &amp;&amp; current != null &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
     <ID>ComplexCondition:SessionScreen.kt$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
-    <ID>ComplexCondition:SessionViewModel.kt$SessionViewModel$current.fps != 0 || current.durationSec != 0L || current.latencyMs != -1 || current.transport != RdpTransport.UNKNOWN</ID>
     <ID>ComplexCondition:SessionViewModel.kt$SessionViewModel$pw &gt; 0 &amp;&amp; ph &gt; 0 &amp;&amp; (event.width - pw).absoluteValue &lt;= 8 &amp;&amp; (event.height - ph).absoluteValue &lt;= 8</ID>
     <ID>CyclomaticComplexMethod:Connection.kt$ConnectionEntity$override fun equals(other: Any?): Boolean</ID>
-    <ID>CyclomaticComplexMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, onPinchReset: () -&gt; Unit, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
     <ID>LongMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
-    <ID>LongMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, onPinchReset: () -&gt; Unit, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
     <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
-    <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
     <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, useGfx: Boolean, dynamicResolution: Boolean, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, )</ID>
     <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFrameRendered: () -&gt; Unit, )</ID>
-    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:SessionGestures.kt$while</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1080</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1280</ID>
@@ -34,17 +33,11 @@
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$8192</ID>
     <ID>MagicNumber:CredentialCipher.kt$CredentialCipher$256</ID>
     <ID>MagicNumber:LogScreen.kt$0xFFCC8800</ID>
-    <ID>MagicNumber:RdpClient.kt$RdpClient$120</ID>
-    <ID>MagicNumber:RdpClient.kt$RdpClient$140</ID>
-    <ID>MagicNumber:RdpClient.kt$RdpClient$160</ID>
-    <ID>MagicNumber:RdpClient.kt$RdpClient$180</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x100</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$0xFF</ID>
-    <ID>MagicNumber:RdpInputController.kt$RdpInputController$1.01f</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$1.6f</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$25f</ID>
     <ID>MagicNumber:SessionGestures.kt$0.5f</ID>
-    <ID>MagicNumber:SessionScreen.kt$1.01f</ID>
     <ID>MagicNumber:SessionScreen.kt$12f</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFF43A047</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFF9E9E9E</ID>
@@ -74,8 +67,6 @@
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp</ID>
     <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) }</ID>
     <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) }</ID>
-    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$_state.update { it.copy(fps = 0, durationSec = 0L, latencyMs = -1, transport = RdpTransport.UNKNOWN) }</ID>
-    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$it.copy(fps = fpsCounter.snapshot(), durationSec = dur, latencyMs = lastLatencyMs, transport = transport)</ID>
     <ID>MaxLineLength:Type.kt$bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.5.sp)</ID>
     <ID>MaxLineLength:Type.kt$bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)</ID>
     <ID>MaxLineLength:Type.kt$displayLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 57.sp, lineHeight = 64.sp, letterSpacing = (-0.25).sp)</ID>
@@ -87,7 +78,7 @@
     <ID>MaxLineLength:Type.kt$titleLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 22.sp, lineHeight = 28.sp)</ID>
     <ID>MaxLineLength:Type.kt$titleMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.15.sp)</ID>
     <ID>NestedBlockDepth:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitNativeTouchGesture( controller: RdpInputController, )</ID>
-    <ID>NestedBlockDepth:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, onPinchReset: () -&gt; Unit, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
+    <ID>NestedBlockDepth:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
     <ID>TooManyFunctions:ConnectionEditViewModel.kt$ConnectionEditViewModel : ViewModel</ID>
     <ID>TooManyFunctions:RdpClient.kt$RdpClient</ID>
     <ID>TooManyFunctions:RdpInputController.kt$RdpInputController</ID>

@@ -31,3 +31,6 @@ Thumbs.db
 
 # Native build cache
 /third_party/FreeRDP-build/
+
+# Claude Code local runtime state (keep shared .claude/ config & skills tracked)
+.claude/scheduled_tasks.lock

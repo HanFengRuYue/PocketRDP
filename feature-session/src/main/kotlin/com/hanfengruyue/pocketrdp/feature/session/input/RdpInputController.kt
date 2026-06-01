@@ -113,13 +113,10 @@ class RdpInputController(
     fun userPanX(): Float = userPanX
     fun userPanY(): Float = userPanY
 
-    /** Zoom-button helpers (issue #3): step the local magnification, keeping the view centred. */
-    fun zoomIn() = setUserZoom(userZoom * ZOOM_STEP)
-    fun zoomOut() = setUserZoom(userZoom / ZOOM_STEP)
+    /** Reset local magnification to 100% (used by the zoom pill's double-tap). */
     fun resetZoom() = resetUserTransform()
-    fun isZoomed(): Boolean = userZoom > 1.01f
 
-    /** Record the view size so [clampPan] / [followRemotePoint] can keep content on-screen. */
+    /** Record the view size so [clampPan] can keep the scaled framebuffer on-screen. */
     fun setViewSize(width: Int, height: Int) {
         viewW = width.toFloat()
         viewH = height.toFloat()
@@ -132,32 +129,6 @@ class RdpInputController(
         userPanX = 0f
         userPanY = 0f
         publishTransform()
-    }
-
-    /**
-     * When locally zoomed, pan the view so the given REMOTE point stays inside a central comfort
-     * zone — this is the "画面与鼠标一起移动" behaviour (issue #3): as the cursor/finger nears an
-     * edge the framebuffer scrolls to keep it visible, instead of the cursor disappearing off the
-     * magnified viewport. No-op at 1× zoom.
-     */
-    fun followRemotePoint(rx: Float, ry: Float) {
-        if (userZoom <= 1.01f || viewW <= 0f || viewH <= 0f) return
-        val cx = viewW / 2f
-        val cy = viewH / 2f
-        // Base (pre-userZoom) screen position of the point, then apply the current layer transform.
-        val baseX = rx * viewportScale + viewportDx
-        val baseY = ry * viewportScale + viewportDy
-        val screenX = cx + userZoom * (baseX - cx) + userPanX
-        val screenY = cy + userZoom * (baseY - cy) + userPanY
-        val marginX = viewW * FOLLOW_MARGIN_FRAC
-        val marginY = viewH * FOLLOW_MARGIN_FRAC
-        var newPanX = userPanX
-        var newPanY = userPanY
-        if (screenX < marginX) newPanX += (marginX - screenX)
-        else if (screenX > viewW - marginX) newPanX -= (screenX - (viewW - marginX))
-        if (screenY < marginY) newPanY += (marginY - screenY)
-        else if (screenY > viewH - marginY) newPanY -= (screenY - (viewH - marginY))
-        if (newPanX != userPanX || newPanY != userPanY) setUserPan(newPanX, newPanY)
     }
 
     fun resetScrollAccum() { scrollAccumPx = 0f }
@@ -216,9 +187,12 @@ class RdpInputController(
 
     /**
      * Move the virtual cursor by a screen-space delta (trackpad). Divides by viewportScale*userZoom
-     * so sensitivity matches what the user sees. When zoomed, the view follows the cursor so it
-     * never slides off the magnified viewport (issue #3 — previously a zoomed single-finger drag
-     * was repurposed to PAN the image, so "放大了画面鼠标就不能动了").
+     * so sensitivity matches what the user sees. When the picture is zoomed (userZoom > 1) the view
+     * auto-pans to keep the cursor on-screen — see [followCursorWhenZoomed]. That is the restored
+     * "缩放后画面跟随光标" behaviour and is TRACKPAD-ONLY (drag is never called in native-touch mode).
+     * It is safe here precisely because the trackpad cursor is decoupled from the finger: panning the
+     * view does NOT move where the next click lands (clicks use virtualX/Y in remote space), unlike
+     * native touch where view-follow between a tap's down/up turned taps into drags.
      */
     fun drag(dx: Float, dy: Float, localX: Float, localY: Float, viewW: Int, viewH: Int) {
         val s = (viewportScale * userZoom).let { if (it > 0f) it else 1f }
@@ -226,13 +200,45 @@ class RdpInputController(
         virtualX = (virtualX + dx * accel / s).coerceIn(0f, remoteWidth - 1f)
         virtualY = (virtualY + dy * accel / s).coerceIn(0f, remoteHeight - 1f)
         publishVirtual()
-        followRemotePoint(virtualX, virtualY)
+        followCursorWhenZoomed()
         val flags = if (dragHeld) {
             RdpPointerFlags.MOVE or RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON1
         } else {
             RdpPointerFlags.MOVE
         }
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), flags)
+    }
+
+    /**
+     * Pan the magnified view so the virtual cursor stays visible ("缩放后画面跟随光标"). No-op at 1×
+     * (the whole framebuffer is already on-screen). Uses a centred dead-zone: the view only moves
+     * once the cursor pushes past a margin band near an edge, so small cursor moves don't jitter the
+     * picture. The cursor can still reach the framebuffer's own edges — [clampPan] caps the pan, after
+     * which the cursor travels the remaining gap to the true edge. TRACKPAD-only (see [drag]).
+     */
+    private fun followCursorWhenZoomed() {
+        if (userZoom <= 1f || viewW <= 0f || viewH <= 0f) return
+        val cx = viewW / 2f
+        val cy = viewH / 2f
+        // Where the cursor currently sits on screen under the viewport + user transform:
+        // screen = centre + zoom*(base - centre) + pan, base = letterboxed fit-to-view position.
+        val sx = cx + userZoom * ((viewportDx + virtualX * viewportScale) - cx) + userPanX
+        val sy = cy + userZoom * ((viewportDy + virtualY * viewportScale) - cy) + userPanY
+        val marginX = viewW * FOLLOW_MARGIN_FRAC
+        val marginY = viewH * FOLLOW_MARGIN_FRAC
+        var changed = false
+        when {
+            sx < marginX -> { userPanX += marginX - sx; changed = true }
+            sx > viewW - marginX -> { userPanX += (viewW - marginX) - sx; changed = true }
+        }
+        when {
+            sy < marginY -> { userPanY += marginY - sy; changed = true }
+            sy > viewH - marginY -> { userPanY += (viewH - marginY) - sy; changed = true }
+        }
+        if (changed) {
+            clampPan()
+            publishTransform()
+        }
     }
 
     /** Two-finger vertical pan → wheel scroll. deltaY in view pixels (positive = fingers move down). */
@@ -279,19 +285,21 @@ class RdpInputController(
     // TOUCH (native Windows multi-touch via RDPEI) gestures
     // ============================================================
 
-    /** Finger down → RDPEI TouchBegin at the mapped remote pixel. [fingerId] tracks it across moves. */
+    /**
+     * Finger down → RDPEI TouchBegin at the mapped remote pixel. [fingerId] tracks it across moves.
+     * No view auto-follow: the picture only moves via the on-screen move handle, so a finger's down
+     * and up map to the SAME remote pixel — that's what keeps a stationary tap registering as a
+     * click (the old auto-follow shifted the view between down and up, so Windows saw a tiny drag
+     * instead of a tap and the click did nothing).
+     */
     fun touchDown(fingerId: Int, localX: Float, localY: Float) {
         val (rx, ry) = toRemote(localX, localY)
-        // Only the primary finger drives the zoom-follow pan; otherwise a 2-finger Windows pinch
-        // would oscillate the local view between both contacts.
-        if (fingerId == 0) followRemotePoint(rx.toFloat(), ry.toFloat())
         sendTouch(fingerId, rx, ry, RdpTouchAction.DOWN)
     }
 
     /** Finger move → RDPEI TouchUpdate. */
     fun touchMove(fingerId: Int, localX: Float, localY: Float) {
         val (rx, ry) = toRemote(localX, localY)
-        if (fingerId == 0) followRemotePoint(rx.toFloat(), ry.toFloat())
         sendTouch(fingerId, rx, ry, RdpTouchAction.MOVE)
     }
 
@@ -362,8 +370,9 @@ class RdpInputController(
 
     companion object {
         private const val MAX_ZOOM = 4f
-        private const val ZOOM_STEP = 1.5f
-        // Keep the followed point inside the central (1 - 2*frac) of the viewport before scrolling.
+        // Dead-zone for cursor-follow when zoomed: the view pans only once the cursor is within this
+        // fraction of a view edge (0.25 → central 50% is a no-move zone). Keeps the cursor visible
+        // without the picture jittering on every small move.
         private const val FOLLOW_MARGIN_FRAC = 0.25f
         // View pixels of two-finger drag per wheel notch.
         private const val SCROLL_NOTCH_PX = 28f
