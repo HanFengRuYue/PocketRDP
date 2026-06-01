@@ -56,11 +56,20 @@ class RdpClient @Inject constructor(
     // includes encode/decode. CURSOR MOVES are deliberately excluded: RDP acks them via a pointer PDU
     // (hardware cursor), NOT a framebuffer update, so timing move→frame paired a move with a much-
     // later unrelated frame and read hundreds of ms on a 0ms-RTT local host. Presses that get no
-    // timely frame are discarded (CONTROL_LATENCY_RESPONSE_WINDOW_MS); the rest feed an EMA. Monotonic
-    // clock so a wall-clock change can't corrupt a sample.
+    // timely frame are discarded (CONTROL_LATENCY_RESPONSE_WINDOW_MS); the rest feed a recent-sample
+    // low-percentile estimator (robust to periodic-frame mispairs). Monotonic clock so a wall-clock
+    // change can't corrupt a sample.
     @Volatile private var pendingInputAtMs = 0L
     @Volatile private var lastServerFrameAtMs = 0L
-    @Volatile private var controlLatencyEmaMs = -1f
+    // Recent accepted input→frame samples (ms). We report a LOW PERCENTILE (P25) of these — NOT an
+    // EMA-of-all (which a terminal's periodic blink frames inflated to 330ms against a 40ms RTT) and
+    // NOT a hard minimum (a blink frame landing right after a press would lock in a bogus ~0ms floor).
+    // The low end of recent samples is the fastest a frame can follow an input = the trustworthy
+    // estimate; periodic mispairs are always slower and fall in the tail, so P25 rejects both artifacts.
+    private val latencyLock = Any()
+    private val latencySamples = IntArray(CONTROL_LATENCY_SAMPLE_WINDOW)
+    private var latencySampleCount = 0
+    private var latencySampleHead = 0
 
     // Diagnostic: throttled "frames are still arriving" heartbeat. OnGraphicsUpdate is too frequent
     // to log per-call, but if the remote picture FREEZES (no graphics after the initial resize) the
@@ -105,7 +114,7 @@ class RdpClient @Inject constructor(
         unicodeEventLogCount = 0
         pendingInputAtMs = 0L
         lastServerFrameAtMs = 0L
-        controlLatencyEmaMs = -1f
+        synchronized(latencyLock) { latencySampleCount = 0; latencySampleHead = 0 }
         gfxUpdateCount = 0
         lastGfxLogMs = 0L
         PocketLogger.d(TAG, "freerdp instance allocated: $inst")
@@ -250,8 +259,15 @@ class RdpClient @Inject constructor(
      */
     fun controlLatencyMs(): Int {
         if (nativeInstance == 0L) return -1
-        val v = controlLatencyEmaMs
-        return if (v < 0f) -1 else v.roundToInt()
+        synchronized(latencyLock) {
+            val n = latencySampleCount
+            if (n == 0) return -1
+            val sorted = latencySamples.copyOf(n).also { it.sort() }
+            // Low percentile (P25): rejects both the slow periodic-frame mispairs (tail) and a stray
+            // near-zero from a blink landing right after a press (min). Index clamped into range.
+            val idx = ((n - 1) * CONTROL_LATENCY_PERCENTILE).roundToInt().coerceIn(0, n - 1)
+            return sorted[idx]
+        }
     }
 
     /** Called when a decoded server frame lands (OnGraphicsUpdate). Closes a pending latency sample. */
@@ -263,12 +279,14 @@ class RdpClient @Inject constructor(
         pendingInputAtMs = 0L
         val sample = now - sent
         // Only accept a TIMELY response. A larger gap means the press caused no visible change and we
-        // caught a later unrelated frame — discard rather than report a bogus high latency.
+        // caught a later unrelated frame — discard rather than feed a bogus high sample. (The window is
+        // deliberately not tighter than this: real felt latency can be a couple hundred ms, and a too-
+        // tight window would starve the estimator of genuine samples.)
         if (sample < 0L || sample > CONTROL_LATENCY_RESPONSE_WINDOW_MS) return
-        controlLatencyEmaMs = if (controlLatencyEmaMs < 0f) {
-            sample.toFloat()
-        } else {
-            CONTROL_LATENCY_EMA_ALPHA * sample + (1f - CONTROL_LATENCY_EMA_ALPHA) * controlLatencyEmaMs
+        synchronized(latencyLock) {
+            latencySamples[latencySampleHead] = sample.toInt()
+            latencySampleHead = (latencySampleHead + 1) % latencySamples.size
+            if (latencySampleCount < latencySamples.size) latencySampleCount++
         }
     }
 
@@ -453,8 +471,14 @@ class RdpClient @Inject constructor(
         // If the decoder ever reverts to OpenH264, drop this back to /gfx:AVC420 (single YUV420 stream,
         // no auxiliary-chroma combine, the only H.264 mode that's clean on OpenH264). When H.264 isn't
         // available at all we use GFX RemoteFX progressive (/gfx:RFX) — mutually exclusive with AVC.
+        // 画质优先 → AVC444 (full 4:4:4, crisp text). 流畅优先 → AVC420 (single YUV420 stream: ~half
+        // the FFmpeg software-decode cost + no prim_YUV444 recombine → lower control latency, at the
+        // cost of 4:2:0 chroma). AVC420 is also clean with the FFmpeg backend (the magenta/green grid
+        // was an OpenH264-only recombine-stride bug, and AVC420 has no recombine at all). Mutually
+        // exclusive with RFX — never both.
         when {
-            p.useH264 && LibFreeRDP.hasH264Support() -> args += "/gfx:AVC444"
+            p.useH264 && LibFreeRDP.hasH264Support() ->
+                args += if (p.preferAvc420) "/gfx:AVC420" else "/gfx:AVC444"
             p.useGfx -> args += "/gfx:RFX"
         }
         // Enable the rdpei dynamic channel so InputMode.TOUCH can forward native Windows multi-touch
@@ -489,6 +513,17 @@ class RdpClient @Inject constructor(
         val clipDir = if (p.redirectClipboard) "all" else "off"
         args += "/clipboard:use-selection:primary,direction-to:$clipDir"
 
+        // File redirection (rdpdr DRIVE device). Export an app-owned POSIX folder so the remote sees a
+        // "PocketRDP" drive in Explorer. Only emit when enabled AND a real path is supplied (the caller
+        // mkdirs() it before connect — FreeRDP's freerdp_path_valid silently SKIPS a non-existent drive
+        // path, non-fatally). The drive NAME must contain no space/colon. Disabling is just omission:
+        // FreeRDP_DeviceRedirection defaults FALSE, so there's no BOOL-disable trap here (unlike
+        // /multitransport). A SAF content:// URI can NOT be used — WinPR opens the path with native
+        // open()/stat(), so the path must be a true filesystem path.
+        if (p.redirectFiles && !p.drivePath.isNullOrBlank()) {
+            args += "/drive:PocketRDP,${p.drivePath}"
+        }
+
         // Sound redirection: 0=off 1=local-play 2=remote
         when (p.soundMode) {
             1 -> args += "/sound"
@@ -519,11 +554,13 @@ class RdpClient @Inject constructor(
         private const val CONTROL_LATENCY_IDLE_GAP_MS = 80L
         // A press→frame gap beyond this is treated as "no genuine response" and discarded: the press
         // caused no visible change and we caught a later unrelated frame. Also bounds how stale a
-        // pending arm may get. Generous enough for slow remotes, tight enough to reject the static-
-        // desktop artifacts that made a 0ms-RTT local host read hundreds of ms.
-        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 600L
-        // EMA weight for a new sample — responsive enough to track changes, smooth enough to not jump.
-        private const val CONTROL_LATENCY_EMA_ALPHA = 0.35f
+        // pending arm may get. Tightened from 600ms so most periodic-frame (cursor-blink) mispairs are
+        // rejected, but kept >= a few hundred ms so genuinely slow real responses still count.
+        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 420L
+        // Recent-sample ring + low percentile replace the old EMA-of-all (the terminal-blink inflation
+        // fix). 20 samples ≈ tens of seconds of interaction; P25 = trustworthy low end without min-lock.
+        private const val CONTROL_LATENCY_SAMPLE_WINDOW = 20
+        private const val CONTROL_LATENCY_PERCENTILE = 0.25f
         // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
         private const val GFX_LOG_INTERVAL_MS = 2000L
     }

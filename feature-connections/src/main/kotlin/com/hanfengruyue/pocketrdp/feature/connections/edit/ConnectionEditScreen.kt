@@ -210,11 +210,33 @@ fun ConnectionEditScreen(
 
             SwitchRow(
                 title = "启用 H.264 视频加速",
-                subtitle = "用 H.264（AVC444 全彩）压缩远端画面，大幅降低视频/动画卡顿，客户端 FFmpeg 软件解码；" +
+                subtitle = "用 H.264 压缩远端画面，大幅降低视频/动画卡顿，客户端 FFmpeg 软件解码；" +
                     "关闭则用 RemoteFX。需主机支持，不支持时自动回退",
                 checked = state.useH264,
                 onChange = viewModel::toggleH264,
             )
+            if (state.useH264) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("H.264 画质档", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    codecTierOptions.forEach { (avc420, label) ->
+                        AssistChip(
+                            onClick = { viewModel.updatePreferAvc420(avc420) },
+                            label = { Text(label) },
+                            enabled = state.preferAvc420 != avc420,
+                        )
+                    }
+                }
+                Text(
+                    "画质优先：AVC444 全彩 4:4:4，文字最清晰。流畅优先：AVC420（4:2:0 单流），软解开销约减半、" +
+                        "操控延迟更低，仅色度/文字边缘略软。弱网或追求跟手时选流畅优先。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             SwitchRow(
                 title = "启用 GFX 图形管道",
                 subtitle = "RemoteFX 渐进编码路径。开启 H.264 时图形管道会被强制启用（AVC444 只能走 GFX 通道）",
@@ -291,15 +313,15 @@ fun ConnectionEditScreen(
 
             SwitchRow(
                 title = "剪贴板双向同步",
-                subtitle = "复制粘贴跨端共享文字（图片暂不支持）",
+                subtitle = "复制的文字在手机与被控电脑之间双向共享（图片暂不支持）",
                 checked = state.redirectClipboard,
                 onChange = viewModel::toggleClipboard,
             )
             SwitchRow(
                 title = "文件夹重定向",
-                subtitle = "开发中，暂未生效（M5：在 Windows 资源管理器看到一个 PocketRDP 盘符）",
+                subtitle = "把 App 专属文件夹挂载到被控电脑（资源管理器出现「PocketRDP」盘）；" +
+                    "放进该文件夹的文件即可在被控端访问",
                 checked = state.redirectFiles,
-                enabled = false,
                 onChange = viewModel::toggleFiles,
             )
 
@@ -373,3 +395,6 @@ private val frameRateOptions = listOf(0, 30, 60, 120)
 
 /** Default input-mode chips: value (entity.defaultInputMode) → label. 0 = TRACKPAD, 1 = TOUCH. */
 private val inputModeOptions = listOf(0 to "模拟鼠标", 1 to "直接触屏")
+
+/** H.264 codec-tier chips: preferAvc420 flag → label. false = 画质优先 (AVC444), true = 流畅优先 (AVC420). */
+private val codecTierOptions = listOf(false to "画质优先", true to "流畅优先")

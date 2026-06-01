@@ -10,7 +10,7 @@ import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 
 @Database(
     entities = [ConnectionEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class PocketRdpDatabase : RoomDatabase() {
@@ -67,9 +67,20 @@ abstract class PocketRdpDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 → v6: adds prefer_avc420 (0 = 画质优先 / AVC444, 1 = 流畅优先 / AVC420). Default 0 keeps the
+         * existing full-chroma AVC444 behaviour for all current connections; opting into AVC420 lowers
+         * H.264 software-decode cost / control latency at the cost of 4:2:0 chroma.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE connections ADD COLUMN prefer_avc420 INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun create(context: Context): PocketRdpDatabase =
             Room.databaseBuilder(context, PocketRdpDatabase::class.java, DB_NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
     }
 }

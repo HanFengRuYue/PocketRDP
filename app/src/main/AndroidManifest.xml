@@ -6,8 +6,21 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+      specialUse (NOT dataSync): a remote-desktop session is open-ended. Android 15 (API 35) caps
+      dataSync/mediaProcessing foreground services at a cumulative 6h/24h via Service.onTimeout(),
+      which would forcibly tear down a long RDP session (and crash if onTimeout doesn't stopSelf in
+      time). specialUse is exempt from that timeout and is the documented catch-all for uses no named
+      type covers. See RdpSessionService + the keep-alive research memory.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- WifiLock (WIFI_MODE_FULL_*): stop the Wi-Fi radio dropping into power-save while a session
+         is held in the background / screen-off, which otherwise spikes interactive latency. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- One-tap battery-optimization exemption (Doze): lets the held session keep network + wake
+         locks during deep Doze. Prompted only while a session is actually connecting. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".PocketRdpApplication"
@@ -34,6 +47,23 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Keep-alive foreground service that owns the session lifetime (M7). It does NOT hold the
+          FreeRDP connection object itself (that stays in the @Singleton RdpClient at process scope)
+          — its job is to pin the process to the foreground-service importance bucket so the OS /
+          OEM low-memory killer stops reclaiming it when the user switches apps, plus hold the
+          wake/Wi-Fi locks for screen-off. foregroundServiceType MUST be present (required on API
+          34+) and MUST match the FOREGROUND_SERVICE_SPECIAL_USE permission above.
+        -->
+        <service
+            android:name="com.hanfengruyue.pocketrdp.feature.session.service.RdpSessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps an active Remote Desktop (RDP) session and its network connection alive, and continues receiving the remote display, while the app is in the background. No standard foreground-service type covers an interactive remote-desktop control session." />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

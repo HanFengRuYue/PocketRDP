@@ -7,14 +7,17 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
+import com.hanfengruyue.pocketrdp.core.data.thumbnail.ConnectionThumbnailStore
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
 import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
+import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
+import com.hanfengruyue.pocketrdp.feature.session.service.RdpSessionService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -25,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
 
@@ -74,6 +78,7 @@ data class SessionUiState(
 class SessionViewModel @Inject constructor(
     val rdpClient: RdpClient,
     private val repository: ConnectionRepository,
+    private val thumbnailStore: ConnectionThumbnailStore,
     @ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -95,16 +100,14 @@ class SessionViewModel @Inject constructor(
     // Gated on the connection's redirectClipboard, loaded in launchConnect. Text only (the JNI /
     // cliprdr path is plain-string; images would need a native rebuild).
     private var clipboardSyncEnabled: Boolean = false
-    // Local→remote clipboard push (phone copy → PC) is DISABLED: the prebuilt libfreerdp-android.so
-    // was reverted to the committed (known-good) binary after an INCREMENTAL WSL rebuild broke GFX
-    // (black screen — only the android client lib was rebuilt, leaving an ABI mismatch with the
-    // un-rebuilt libfreerdp3.so). That committed .so lacks the EVENT_TYPE_CLIPBOARD non-fatal patch,
-    // so a clipboard send before the cliprdr channel is ready would break the main loop → disconnect
-    // (field bug: 手机端复制后连接几秒内断开). Keep clipboard ONE-WAY (remote→local, which only calls
-    // setPrimaryClip and never sends). To restore bidirectional safely, do a CLEAN FULL native
-    // rebuild (all libs together, no ABI mismatch) so the clipboard patch ships intact, then flip to
-    // true. The android_event.c patch is still in the source for that rebuild.
-    private val localToRemoteClipboardEnabled = false
+    // Local→remote clipboard push (phone copy → PC) is now ENABLED. The libfreerdp-android.so was
+    // cleanly rebuilt in WSL with the EVENT_TYPE_CLIPBOARD non-fatal patch (android_event.c null-checks
+    // afc->cliprdr and forces rc=TRUE, like the TOUCH/KEY cases), so a clipboard send before the cliprdr
+    // channel is up — or when the server declined clipboard redirection — is logged and dropped instead
+    // of breaking the main loop → disconnect (the old 手机端复制后连接几秒内断开 bug). The rebuild changed
+    // ONLY libfreerdp-android.so (the deps stayed byte-identical to the field-tested binaries), so there
+    // is no ABI mismatch with libfreerdp3.so (the earlier incremental-rebuild black-screen cause).
+    private val localToRemoteClipboardEnabled = true
     // De-dupe token shared by BOTH directions to break the echo loop: remote→local sets it before
     // setPrimaryClip (so our own OnPrimaryClipChanged sees an unchanged value and skips), and
     // local→remote sets it before sendClipboard (so the server echoing the same text back as
@@ -146,12 +149,29 @@ class SessionViewModel @Inject constructor(
     // collapses a burst into a single PDU at the *final* stable size.
     private var monitorLayoutDebounceJob: Job? = null
 
+    // --- Background keep-alive + auto-reconnect (M7) ---
+    // The keep-alive RdpSessionService keeps the PROCESS alive while backgrounded (the connection
+    // itself lives in the @Singleton RdpClient). We start it when a connection begins and stop it
+    // when the user tears the session down or we exhaust reconnect attempts.
+    //
+    // Reconnect distinguishes intent via the Disconnected event's reason: RdpClient.disconnect()
+    // emits reason="user" (deliberate — don't reconnect), while a native/network drop emits
+    // reason=null (unexpected — reconnect with backoff). A failed connect attempt (RdpEvent.Failed)
+    // is also retried unless the teardown was user-initiated.
+    private var lastParams: RdpConnectionParams? = null
+    private var lastConnName: String = ""
+    private var lastHostLabel: String = ""
+    private var userInitiatedDisconnect: Boolean = false
+    private var reconnectAttempt: Int = 0
+    private var reconnectJob: Job? = null
+
     init {
         val id = savedStateHandle.get<Long>("id") ?: 0L
         _state.update { it.copy(connectionId = id) }
         observeEvents()
         startMetricsTicker()
         startLatencyProbe()
+        startThumbnailCapture()
         if (id > 0L) launchConnect(id)
     }
 
@@ -161,6 +181,17 @@ class SessionViewModel @Inject constructor(
                 when (event) {
                     is RdpEvent.Connecting -> _state.update { it.copy(status = SessionConnectionStatus.Connecting) }
                     is RdpEvent.Connected -> {
+                        // A live connection: clear reconnect bookkeeping so a later drop starts its
+                        // backoff from zero. On the INITIAL connect (not a reconnect) the app is in
+                        // the foreground, so it's safe to refresh the FGS notification to "已连接"
+                        // here — this also covers the race where a very fast Connected fired before
+                        // the service subscribed to events. On a *reconnect* we skip it (the app may
+                        // be backgrounded → API 31+ FGS background-start restriction; the already-
+                        // subscribed service updates its own notification from this event instead).
+                        val wasReconnect = reconnectAttempt > 0
+                        reconnectAttempt = 0
+                        reconnectJob?.cancel()
+                        if (!wasReconnect) startKeepAlive("已连接")
                         _state.update {
                             it.copy(
                                 status = SessionConnectionStatus.Connected,
@@ -202,6 +233,14 @@ class SessionViewModel @Inject constructor(
                                 fps = 0,
                             )
                         }
+                        // reason=="user" → deliberate teardown (disconnect button / left screen):
+                        // the service self-stops, just cancel any pending reconnect. reason==null →
+                        // an unexpected native/network drop: auto-reconnect with backoff.
+                        if (event.reason == "user") {
+                            reconnectJob?.cancel()
+                        } else {
+                            scheduleReconnect()
+                        }
                     }
                     is RdpEvent.Failed -> {
                         monitorLayoutRetryJob?.cancel()
@@ -217,6 +256,9 @@ class SessionViewModel @Inject constructor(
                                 lastError = event.error,
                             )
                         }
+                        // A failed attempt (incl. mid-session reconnect) is retried with backoff
+                        // unless the user tore the session down.
+                        scheduleReconnect()
                     }
                     is RdpEvent.GraphicsResized -> {
                         _state.update { it.copy(remoteWidth = event.width, remoteHeight = event.height) }
@@ -261,7 +303,11 @@ class SessionViewModel @Inject constructor(
                             fps = fpsCounter.snapshot(),
                             durationSec = dur,
                             latencyMs = lastLatencyMs,
-                            controlLatencyMs = rdpClient.controlLatencyMs(),
+                            // Felt control latency can never be below the raw network RTT — clamp up so
+                            // the low-percentile estimate can't read under that physical floor.
+                            controlLatencyMs = rdpClient.controlLatencyMs().let { cl ->
+                                if (cl >= 0 && lastLatencyMs >= 0) maxOf(cl, lastLatencyMs) else cl
+                            },
                             transport = transport,
                         )
                     }
@@ -318,6 +364,35 @@ class SessionViewModel @Inject constructor(
      */
     fun onFrameRendered() = fpsCounter.tick()
 
+    /**
+     * Periodically snapshot the live remote framebuffer into this connection's desktop thumbnail
+     * (issue: 读取被控电脑桌面图片放到选项中). The connection list card shows the latest snapshot, so
+     * a returning user sees what the desktop actually looked like rather than a generic icon. Cheap:
+     * [com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer.snapshot] makes a small downscaled copy and the
+     * store JPEG-encodes/writes on its own IO scope. No-op until connected with a published frame.
+     */
+    private fun startThumbnailCapture() {
+        viewModelScope.launch {
+            while (isActive) {
+                delay(THUMB_CAPTURE_INTERVAL_MS)
+                captureThumbnail()
+            }
+        }
+    }
+
+    /**
+     * Capture a downscaled snapshot of the current remote frame and persist it as this connection's
+     * thumbnail. No-op until connected with a real id and at least one published frame. Safe to call
+     * from [disconnect]/[onCleared] because the snapshot is an independent copy and the store encodes
+     * it on a scope that outlives this ViewModel.
+     */
+    private fun captureThumbnail() {
+        val st = _state.value
+        if (st.connectionId <= 0L || st.status !is SessionConnectionStatus.Connected) return
+        val snap = rdpClient.buffer.snapshot(THUMB_MAX_DIM) ?: return
+        thumbnailStore.save(st.connectionId, snap)
+    }
+
     /** Decode the native [RdpClient.transportInfo] bitfield: -1 → UNKNOWN, bit0 set → UDP, else TCP. */
     private fun decodeTransport(raw: Int): RdpTransport = when {
         raw < 0 -> RdpTransport.UNKNOWN
@@ -361,6 +436,18 @@ class SessionViewModel @Inject constructor(
                 )
             }
             val plain = runCatching { repository.decryptPassword(entity) }.getOrDefault("")
+            // File redirection: export an app-private POSIX folder (a real filesystem path — NOT the
+            // SAF content:// URI, which WinPR can't open()) as a "PocketRDP" drive. mkdirs() up front
+            // because FreeRDP silently skips a non-existent drive path at parse time.
+            val driveDir = if (entity.redirectFiles) {
+                runCatching {
+                    appContext.getExternalFilesDir(null)?.let { base ->
+                        File(base, "PocketRDP").apply { mkdirs() }.absolutePath
+                    }
+                }.getOrNull()
+            } else {
+                null
+            }
             val params = RdpConnectionParams(
                 connectionId = entity.id,
                 host = entity.host,
@@ -370,20 +457,76 @@ class SessionViewModel @Inject constructor(
                 password = plain,
                 colorDepth = entity.colorDepth,
                 useH264 = entity.useH264,
+                preferAvc420 = entity.preferAvc420,
                 useGfx = entity.useGfx,
                 dynamicResolution = effectiveDynamic,
                 useMultitransport = entity.useMultitransport,
                 redirectClipboard = entity.redirectClipboard,
                 redirectFiles = entity.redirectFiles,
                 sharedFolderUri = entity.sharedFolderUri,
+                drivePath = driveDir,
                 soundMode = entity.soundMode,
                 desktopScaleFactor = entity.desktopScaleFactor,
                 initialWidth = initialW,
                 initialHeight = initialH,
                 acceptedCertThumbprint = entity.certThumbSha256,
             )
+            // Remember everything an auto-reconnect needs, and reset reconnect bookkeeping for this
+            // fresh user-initiated connect.
+            lastParams = params
+            lastConnName = entity.name
+            lastHostLabel = "${entity.host}:${entity.port}"
+            userInitiatedDisconnect = false
+            reconnectAttempt = 0
+            reconnectJob?.cancel()
+            // Promote the process to a foreground service NOW, while we're still visible (Android
+            // 31+ forbids starting an FGS from the background). This is what keeps the connection
+            // alive when the user switches to another app — see RdpSessionService.
+            startKeepAlive("正在连接…")
             rdpClient.connect(params)
             repository.touchLastUsed(entity.id)
+        }
+    }
+
+    /** Start (or refresh) the keep-alive foreground service for the current connection. */
+    private fun startKeepAlive(status: String) {
+        // Mark "a session is meant to be alive" so a background process-kill is detectable next launch.
+        SessionKeepAliveFlag.setActive(appContext, true)
+        runCatching { RdpSessionService.start(appContext, lastConnName, lastHostLabel, status) }
+            .onFailure { PocketLogger.w(TAG, "startForegroundService failed: ${it.message}") }
+    }
+
+    /** Stop the keep-alive service (idempotent). Called on user teardown / give-up. */
+    private fun stopKeepAlive() {
+        // Clean teardown — clear the flag so we DON'T later mistake this for a background kill.
+        SessionKeepAliveFlag.setActive(appContext, false)
+        reconnectJob?.cancel()
+        RdpSessionService.stop(appContext)
+    }
+
+    /**
+     * Schedule an auto-reconnect after an UNEXPECTED drop / failed attempt, with exponential
+     * backoff. Gives up (and stops the keep-alive service) after [RECONNECT_BACKOFF_MS].size tries.
+     * No-op if the teardown was user-initiated or we never had a successful set of params.
+     */
+    private fun scheduleReconnect() {
+        val params = lastParams ?: return
+        if (userInitiatedDisconnect) return
+        reconnectJob?.cancel()
+        if (reconnectAttempt >= RECONNECT_BACKOFF_MS.size) {
+            PocketLogger.w(TAG, "auto-reconnect exhausted after $reconnectAttempt tries — giving up")
+            stopKeepAlive()
+            return
+        }
+        val delayMs = RECONNECT_BACKOFF_MS[reconnectAttempt.coerceAtMost(RECONNECT_BACKOFF_MS.lastIndex)]
+        reconnectAttempt++
+        PocketLogger.i(TAG, "auto-reconnect attempt #$reconnectAttempt in ${delayMs}ms")
+        reconnectJob = viewModelScope.launch {
+            delay(delayMs)
+            if (!isActive || userInitiatedDisconnect) return@launch
+            // The keep-alive service stays running across the drop (we only stopSelf on a user
+            // disconnect), so just re-issue the connect — the service updates its own notification.
+            rdpClient.connect(params)
         }
     }
 
@@ -538,12 +681,27 @@ class SessionViewModel @Inject constructor(
     }
 
     fun disconnect() {
+        // Explicit user teardown (disconnect button): stop reconnecting + stop the keep-alive
+        // service. rdpClient.disconnect() emits Disconnected(reason="user").
+        userInitiatedDisconnect = true
+        stopKeepAlive()
+        // Grab a final desktop thumbnail BEFORE rdpClient.disconnect() releases the buffer — the
+        // snapshot is an independent copy, so the subsequent release is harmless to it.
+        captureThumbnail()
         rdpClient.disconnect()
     }
 
     override fun onCleared() {
-        // M7: keep connection alive via Foreground Service. For now (M2), disconnect on dispose.
-        PocketLogger.i(TAG, "SessionViewModel.onCleared — disconnecting")
+        // M7 keep-alive: a *backgrounded* session does NOT reach here — single-Activity Compose nav
+        // keeps the ViewModel across onStop, and the RdpSessionService keeps the process alive. This
+        // fires only when the user actually LEAVES the session screen (pops the back stack), which
+        // IS a deliberate teardown — so disconnect and stop the keep-alive service.
+        PocketLogger.i(TAG, "SessionViewModel.onCleared — disconnecting + stopping keep-alive")
+        userInitiatedDisconnect = true
+        stopKeepAlive()
+        // Last chance to refresh the list thumbnail (still Connected here); the store encodes on its
+        // own scope, so it survives this ViewModel's scope being cancelled right after onCleared.
+        captureThumbnail()
         unregisterClipboardListener()
         rdpClient.disconnect()
         super.onCleared()
@@ -559,5 +717,16 @@ class SessionViewModel @Inject constructor(
         // How often the background coroutine probes network latency. 4 s balances freshness
         // against the cost of opening a throwaway TCP connection to the host.
         private const val LATENCY_PROBE_INTERVAL_MS = 4000L
+        // Desktop-thumbnail capture: snapshot the framebuffer this often so the connection card
+        // shows a recent picture even if the session ends abruptly (a crash/kill skips the
+        // disconnect-time capture). 12 s is frequent enough to stay current without churning the disk.
+        private const val THUMB_CAPTURE_INTERVAL_MS = 12_000L
+        // Longest edge (px) of the stored thumbnail. ~640 keeps a 16:9 card crisp on hi-dpi phones
+        // while the JPEG stays a few tens of KB.
+        private const val THUMB_MAX_DIM = 640
+        // Auto-reconnect backoff after an unexpected drop / failed attempt (ms). The array length
+        // also caps the number of tries — after the last one we give up and stop the keep-alive
+        // service. Resets to attempt 0 on every successful Connected.
+        private val RECONNECT_BACKOFF_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000)
     }
 }
