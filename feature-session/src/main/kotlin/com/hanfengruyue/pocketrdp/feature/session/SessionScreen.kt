@@ -1,8 +1,17 @@
 package com.hanfengruyue.pocketrdp.feature.session
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -27,8 +36,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -43,6 +50,7 @@ import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,6 +65,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -78,10 +87,12 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -170,6 +181,56 @@ fun SessionScreen(
         }
     }
 
+    // --- Background keep-alive permissions (M7) ---
+    // The keep-alive foreground service needs (1) POST_NOTIFICATIONS (API 33+) for its ongoing
+    // notification to be visible, and (2) — to survive Doze with the screen off — a battery-
+    // optimization exemption. Both are requested here, the moment a real session is up, so the
+    // ask is contextual ("keep THIS session from dropping") rather than a cold-start permission wall.
+    val context = LocalContext.current
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* result ignored — the FGS runs regardless; this only governs notification visibility */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    var batteryPromptShown by remember { mutableStateOf(false) }
+    var showBatteryDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(state.status) {
+        if (state.status is SessionConnectionStatus.Connected && !batteryPromptShown) {
+            batteryPromptShown = true
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                showBatteryDialog = true
+            }
+        }
+    }
+    if (showBatteryDialog) {
+        BatteryOptimizationDialog(
+            onConfirm = {
+                showBatteryDialog = false
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                }.onFailure {
+                    // Some ROMs hide the direct dialog — fall back to the generic list.
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                }
+            },
+            onDismiss = { showBatteryDialog = false },
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
@@ -243,14 +304,16 @@ fun SessionScreen(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
                     ),
-                    // With the status bar hidden its inset collapses to 0, so the bar sits flush at
-                    // the very top (reclaiming the space — issue #1). union(displayCutout) still keeps
-                    // the title/icons clear of the camera notch: top inset in portrait, side inset in
-                    // landscape (shortEdges). statusBars stays in the union so a transient swipe-reveal
-                    // doesn't briefly overlap the bar.
-                    windowInsets = WindowInsets.statusBars
-                        .union(WindowInsets.displayCutout)
-                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
+                    // Deliberately DROP the top inset so the bar draws right up into the camera /
+                    // notch row at the very top of the screen, reclaiming that strip for the toolbar
+                    // and pushing the remote picture (which sits below the bar) higher — bigger
+                    // picture (用户需求: 工具栏显示在全面屏顶部摄像头位置，加大画面空间). The bar is 64dp
+                    // tall and its title/icons are start-/end-aligned, so a top-centre hole-punch
+                    // sits in the bar's empty middle and never covers them. We KEEP the horizontal
+                    // displayCutout inset so a landscape (shortEdges) side-notch still can't clip the
+                    // title or action icons.
+                    windowInsets = WindowInsets.displayCutout
+                        .only(WindowInsetsSides.Horizontal),
                 )
             }
         },
@@ -265,31 +328,37 @@ fun SessionScreen(
                 .padding(padding)
                 .consumeWindowInsets(padding),
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                SessionCanvas(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    controller = controller,
-                    buffer = rdpClient.buffer,
-                    remoteWidth = state.remoteWidth,
-                    remoteHeight = state.remoteHeight,
-                    mode = state.mode,
-                    onViewSizeChanged = viewModel::onSurfaceResized,
-                    targetFrameRate = state.targetFrameRate,
-                    onFrameRendered = viewModel::onFrameRendered,
-                )
-
-                // Function-key toolbar (issues 1 + 8): shown only while the soft keyboard is up,
-                // sitting BELOW the framebuffer so the canvas's weight(1f) shrinks above it, and
-                // ABOVE the keyboard via SessionToolbar's imePadding(). Because it's a sibling row
-                // in the Column (not an overlay), it never leaks taps into the gesture surface.
-                AnimatedVisibility(
-                    visible = state.imeVisible && state.chromeVisible,
-                    enter = slideInVertically { it } + fadeIn(),
-                    exit = slideOutVertically { it } + fadeOut(),
-                ) {
-                    SessionToolbar(viewModel = viewModel, state = state)
-                }
-            }
+            // The framebuffer fills the ENTIRE content area at all times and is NEVER shrunk by the
+            // soft keyboard. Previously the canvas lived in a Column with weight(1f) above the
+            // function-key toolbar, whose imePadding() grew with the keyboard and squeezed the canvas
+            // — that shrink re-ran SessionCanvas's fit-to-view scale + RdpInputController.clampPan and
+            // visually wiped the user's zoom/pan, so after zooming in to read a field you couldn't
+            // see what you typed (用户需求: 调出键盘不要重置画面缩放和位置). Keeping the canvas a fixed
+            // size means showing the IME never fires onSizeChanged, so zoom/pan are fully preserved;
+            // the keyboard (and the toolbar below) simply overlay the lower part of the picture.
+            //
+            // WHY the IME does NOT resize this canvas (do NOT "fix" this with adjustPan/adjustNothing):
+            // MainActivity calls enableEdgeToEdge() → setDecorFitsSystemWindows(false), so the window
+            // is drawn edge-to-edge and the keyboard arrives ONLY as WindowInsets.ime — it does not
+            // resize the window content (that auto-resize is the LEGACY decorFitsSystemWindows=true
+            // behaviour). The Scaffold's contentWindowInsets is systemBars-only (excludes ime), so the
+            // content Box is not padded down by the keyboard either. (This is the same reason the old
+            // design needed a manual Column+weight to lift content — see CLAUDE.md soft-keyboard
+            // section: Scaffold.bottomBar+imePadding would leave the keyboard overlapping.) Net: the
+            // window keeps `adjustResize` purely so WindowInsets.ime REPORTS (the toolbar's imePadding
+            // below needs it), while the content stays full-size. RdpSurface.onDraw fits to its own
+            // (unchanged) measured size, so the picture neither re-fits nor reflows when typing.
+            SessionCanvas(
+                modifier = Modifier.fillMaxSize(),
+                controller = controller,
+                buffer = rdpClient.buffer,
+                remoteWidth = state.remoteWidth,
+                remoteHeight = state.remoteHeight,
+                mode = state.mode,
+                onViewSizeChanged = viewModel::onSurfaceResized,
+                targetFrameRate = state.targetFrameRate,
+                onFrameRendered = viewModel::onFrameRendered,
+            )
 
             // Immersive exit affordance: a translucent FAB sitting above the framebuffer in
             // the top-right corner. Only visible when system bars are hidden — otherwise
@@ -338,6 +407,21 @@ fun SessionScreen(
                 }
             }
 
+            // Function-key toolbar (Esc / Ctrl / Alt / Win / Tab / CAD): shown only while the soft
+            // keyboard is up. It now FLOATS as a BOTTOM OVERLAY (imePadding lifts it just above the
+            // keyboard) instead of being a Column sibling — being a sibling is exactly what shrank the
+            // canvas and reset the zoom/pan (see the SessionCanvas comment above). As an overlay it
+            // sits on top of the full-screen gesture surface, so SessionToolbar consumes its own
+            // touches to stop taps (and the gaps between chips) leaking through to the canvas beneath.
+            AnimatedVisibility(
+                visible = state.imeVisible && state.chromeVisible,
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                SessionToolbar(viewModel = viewModel, state = state)
+            }
+
             // Hidden IME bridge — Compose tree always contains it, but it only requests
             // focus when state.imeVisible is true.
             SessionImeBridge(
@@ -347,6 +431,22 @@ fun SessionScreen(
             )
         }
     }
+}
+
+@Composable
+private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("允许后台保活？") },
+        text = {
+            Text(
+                "为了在你切到其他应用或锁屏时保持这个远程桌面连接不断开，建议把 PocketRDP 加入电池优化白名单。" +
+                    "否则系统在省电时可能会切断后台连接。",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("去允许") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("暂不") } },
+    )
 }
 
 private fun Context.findActivity(): Activity? {
@@ -380,6 +480,24 @@ private fun Modifier.userTransformLayer(transform: State<UserTransform>): Modifi
         translationY = t.panY
         transformOrigin = TransformOrigin.Center
     }
+
+/**
+ * Swallow every pointer event within the node's bounds (down → moves → up) so a floating overlay
+ * placed ABOVE the full-screen gesture surface never leaks touches through to it. A bare
+ * `pointerInput {}` does NOT do this — it has to explicitly consume() each change.
+ * Used by the function-key toolbar overlay (see [SessionToolbar]).
+ */
+private fun Modifier.consumeAllPointerInput(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false).consume()
+        var tracking = true
+        while (tracking) {
+            val event = awaitPointerEvent()
+            for (change in event.changes) change.consume()
+            if (event.changes.none { it.pressed }) tracking = false
+        }
+    }
+}
 
 @Composable
 private fun SessionCanvas(
@@ -498,9 +616,12 @@ private fun SessionCanvas(
 @Composable
 private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
     BottomAppBar(
-        // imePadding lifts the toolbar to sit directly above the soft keyboard instead of being
-        // covered by it — the Scaffold's content padding then also shifts the framebuffer up.
-        modifier = Modifier.fillMaxWidth().imePadding(),
+        // imePadding lifts the toolbar to sit directly above the soft keyboard. consumeAllPointerInput
+        // makes the bar swallow every touch within its bounds (including the gaps between chips) so
+        // that — now that the toolbar is a free-floating overlay on top of the full-screen gesture
+        // surface rather than a Column sibling beside it — a tap on the bar never leaks through to the
+        // canvas and moves the remote cursor / drops a touch contact behind the keyboard.
+        modifier = Modifier.fillMaxWidth().imePadding().consumeAllPointerInput(),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),

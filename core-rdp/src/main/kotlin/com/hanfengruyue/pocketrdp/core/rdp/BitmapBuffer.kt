@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.core.rdp
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -61,6 +62,28 @@ class BitmapBuffer {
     /** Front buffer the UI draws — a complete, stable frame. Drawn outside the lock; safe because
      *  the worker only ever writes the back buffer (see class doc). */
     fun peekFront(): Bitmap? = synchronized(lock) { front }
+
+    /**
+     * Thread-safe, downscaled COPY of the current front frame — used for the per-connection desktop
+     * thumbnail shown on the connection list (issue: 读取被控电脑桌面图片). Returns a brand-new,
+     * independent bitmap (so the caller can encode it off-thread without touching our buffers) or
+     * null when no frame has been published yet.
+     *
+     * The whole copy runs inside [lock] so it can never race the worker's [commitFrame] swap: while
+     * we hold the lock the front buffer is stable. [Bitmap.createScaledBitmap] reads the source and
+     * allocates a fresh result, so once it returns the lock can drop and the worker resumes. The
+     * longest dimension is clamped to [maxDimension]; aspect ratio is preserved and we never upscale.
+     */
+    fun snapshot(maxDimension: Int): Bitmap? = synchronized(lock) {
+        val src = front ?: return null
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0 || maxDimension <= 0) return null
+        val scale = (maxDimension.toFloat() / maxOf(w, h)).coerceAtMost(1f)
+        val tw = (w * scale).roundToInt().coerceAtLeast(1)
+        val th = (h * scale).roundToInt().coerceAtLeast(1)
+        runCatching { Bitmap.createScaledBitmap(src, tw, th, true) }.getOrNull()
+    }
 
     fun resize(width: Int, height: Int): Bitmap {
         synchronized(lock) {

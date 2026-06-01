@@ -25,6 +25,8 @@ data class ConnectionEditUiState(
     val hasExistingPassword: Boolean = false,
     val colorDepth: Int = 32,
     val useH264: Boolean = true,
+    // false = 画质优先 (AVC444), true = 流畅优先 (AVC420). Only meaningful while useH264.
+    val preferAvc420: Boolean = false,
     val useGfx: Boolean = true,
     val dynamicResolution: Boolean = true,
     val useMultitransport: Boolean = true,
@@ -79,6 +81,7 @@ class ConnectionEditViewModel @Inject constructor(
                             hasExistingPassword = entity.passwordCipher.isNotEmpty(),
                             colorDepth = entity.colorDepth,
                             useH264 = entity.useH264,
+                            preferAvc420 = entity.preferAvc420,
                             useGfx = entity.useGfx,
                             dynamicResolution = entity.dynamicResolution,
                             useMultitransport = entity.useMultitransport,
@@ -114,6 +117,8 @@ class ConnectionEditViewModel @Inject constructor(
     fun toggleH264(value: Boolean) = _state.update {
         it.copy(useH264 = value, useGfx = if (value) true else it.useGfx)
     }
+    /** Codec tier: false = 画质优先 (AVC444), true = 流畅优先 (AVC420). */
+    fun updatePreferAvc420(value: Boolean) = _state.update { it.copy(preferAvc420 = value) }
     fun toggleGfx(value: Boolean) = _state.update { it.copy(useGfx = value) }
     fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
     fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }
@@ -164,6 +169,7 @@ class ConnectionEditViewModel @Inject constructor(
                 plainPassword = s.password,
                 colorDepth = s.colorDepth,
                 useH264 = s.useH264,
+                preferAvc420 = s.preferAvc420,
                 useGfx = s.useGfx,
                 dynamicResolution = s.dynamicResolution,
                 useMultitransport = s.useMultitransport,

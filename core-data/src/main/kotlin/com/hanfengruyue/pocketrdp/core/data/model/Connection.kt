@@ -16,6 +16,10 @@ data class ConnectionEntity(
     @ColumnInfo(name = "password_iv") val passwordIv: ByteArray = ByteArray(0),
     @ColumnInfo(name = "color_depth") val colorDepth: Int = 32,
     @ColumnInfo(name = "use_h264") val useH264: Boolean = true,
+    // false = 画质优先 (/gfx:AVC444, full 4:4:4); true = 流畅优先 (/gfx:AVC420, single YUV420 stream —
+    // lower software-decode cost & control latency). Only meaningful while useH264. Default false keeps
+    // the historical AVC444 behaviour for existing connections.
+    @ColumnInfo(name = "prefer_avc420") val preferAvc420: Boolean = false,
     @ColumnInfo(name = "use_gfx") val useGfx: Boolean = true,
     @ColumnInfo(name = "dynamic_resolution") val dynamicResolution: Boolean = true,
     @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = true,
@@ -50,6 +54,7 @@ data class ConnectionEntity(
             passwordIv.contentEquals(other.passwordIv) &&
             colorDepth == other.colorDepth &&
             useH264 == other.useH264 &&
+            preferAvc420 == other.preferAvc420 &&
             useGfx == other.useGfx &&
             dynamicResolution == other.dynamicResolution &&
             useMultitransport == other.useMultitransport &&
@@ -78,6 +83,7 @@ data class ConnectionEntity(
         result = 31 * result + passwordIv.contentHashCode()
         result = 31 * result + colorDepth
         result = 31 * result + useH264.hashCode()
+        result = 31 * result + preferAvc420.hashCode()
         result = 31 * result + useGfx.hashCode()
         result = 31 * result + dynamicResolution.hashCode()
         result = 31 * result + useMultitransport.hashCode()

@@ -14,7 +14,7 @@
     <ID>LongMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
     <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
     <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
-    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, useGfx: Boolean, dynamicResolution: Boolean, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, )</ID>
+    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, preferAvc420: Boolean, useGfx: Boolean, dynamicResolution: Boolean, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, )</ID>
     <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFrameRendered: () -&gt; Unit, )</ID>
     <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:SessionGestures.kt$while</ID>
@@ -82,6 +82,7 @@
     <ID>TooManyFunctions:ConnectionEditViewModel.kt$ConnectionEditViewModel : ViewModel</ID>
     <ID>TooManyFunctions:RdpClient.kt$RdpClient</ID>
     <ID>TooManyFunctions:RdpInputController.kt$RdpInputController</ID>
+    <ID>TooManyFunctions:SessionScreen.kt$com.hanfengruyue.pocketrdp.feature.session.SessionScreen.kt</ID>
     <ID>TooManyFunctions:SessionViewModel.kt$SessionViewModel : ViewModel</ID>
     <ID>UnusedParameter:RdpInputController.kt$RdpInputController$localX: Float</ID>
     <ID>UnusedParameter:RdpInputController.kt$RdpInputController$localY: Float</ID>
