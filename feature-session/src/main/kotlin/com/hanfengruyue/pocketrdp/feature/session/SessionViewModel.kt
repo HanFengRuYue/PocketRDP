@@ -1,5 +1,8 @@
 package com.hanfengruyue.pocketrdp.feature.session
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +16,7 @@ import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,14 +44,26 @@ data class SessionUiState(
     val remoteWidth: Int = 0,
     val remoteHeight: Int = 0,
     val mode: InputMode = InputMode.TRACKPAD,
-    val systemBarsVisible: Boolean = true,
+    /**
+     * Whether the app's own top bar (chrome) is shown. This NO LONGER controls the Android system
+     * status/navigation bars — those are kept hidden for the whole session (see SessionScreen) so
+     * the remote picture reclaims the space the system status bar used to occupy. Toggled by the
+     * full-screen button: false = pure picture (only a small exit FAB).
+     */
+    val chromeVisible: Boolean = true,
     val imeVisible: Boolean = false,
     val stickyModifiers: Int = 0,
     val connectedAtMs: Long = 0L,
     val durationSec: Long = 0L,
     val fps: Int = 0,
-    /** Approximate network round-trip latency in ms; -1 = unknown / not yet measured. */
+    /** Approximate network round-trip latency in ms (TCP handshake); -1 = unknown / not yet measured. */
     val latencyMs: Int = -1,
+    /**
+     * End-to-end control latency in ms (input → on-screen change), empirically including server
+     * processing + encode + network + client decode — the lag the user actually feels. -1 until the
+     * first sample. See [RdpClient.controlLatencyMs].
+     */
+    val controlLatencyMs: Int = -1,
     /** Negotiated network transport (TCP / RDP-UDP multitransport) for the status badge (issue #2). */
     val transport: RdpTransport = RdpTransport.UNKNOWN,
     val targetFrameRate: Int = 0,
@@ -58,6 +74,7 @@ data class SessionUiState(
 class SessionViewModel @Inject constructor(
     val rdpClient: RdpClient,
     private val repository: ConnectionRepository,
+    @ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -71,6 +88,45 @@ class SessionViewModel @Inject constructor(
     // remote desktop even though the user disabled auto-resolution (issue: "关闭自动分辨率仍被修改").
     // Defaults true so behaviour is unchanged until the entity is loaded.
     private var dynamicResolutionEnabled: Boolean = true
+
+    // Clipboard text bridge. The cliprdr channel is enabled at the protocol layer via
+    // /clipboard:...direction-to:all in buildCommandLine, but the actual sync to/from the Android
+    // system clipboard lives here — the channel alone does nothing (field bug: 剪贴板双向同步开关无效).
+    // Gated on the connection's redirectClipboard, loaded in launchConnect. Text only (the JNI /
+    // cliprdr path is plain-string; images would need a native rebuild).
+    private var clipboardSyncEnabled: Boolean = false
+    // Local→remote clipboard push (phone copy → PC) is DISABLED: the prebuilt libfreerdp-android.so
+    // was reverted to the committed (known-good) binary after an INCREMENTAL WSL rebuild broke GFX
+    // (black screen — only the android client lib was rebuilt, leaving an ABI mismatch with the
+    // un-rebuilt libfreerdp3.so). That committed .so lacks the EVENT_TYPE_CLIPBOARD non-fatal patch,
+    // so a clipboard send before the cliprdr channel is ready would break the main loop → disconnect
+    // (field bug: 手机端复制后连接几秒内断开). Keep clipboard ONE-WAY (remote→local, which only calls
+    // setPrimaryClip and never sends). To restore bidirectional safely, do a CLEAN FULL native
+    // rebuild (all libs together, no ABI mismatch) so the clipboard patch ships intact, then flip to
+    // true. The android_event.c patch is still in the source for that rebuild.
+    private val localToRemoteClipboardEnabled = false
+    // De-dupe token shared by BOTH directions to break the echo loop: remote→local sets it before
+    // setPrimaryClip (so our own OnPrimaryClipChanged sees an unchanged value and skips), and
+    // local→remote sets it before sendClipboard (so the server echoing the same text back as
+    // ClipboardReceived is ignored). Without it the two directions ping-pong the same text forever.
+    @Volatile private var lastSyncedClipboard: String = ""
+    private val clipboardManager: ClipboardManager by lazy {
+        appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
+    private var clipListenerRegistered = false
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        if (!clipboardSyncEnabled) return@OnPrimaryClipChangedListener
+        val txt = clipboardManager.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(appContext)
+            ?.toString()
+            .orEmpty()
+        // Skip empties and anything we just received from the remote (loop guard).
+        if (txt.isEmpty() || txt == lastSyncedClipboard) return@OnPrimaryClipChangedListener
+        lastSyncedClipboard = txt
+        rdpClient.sendClipboard(txt)
+    }
 
     // Latest latency probe result (ms, -1 = unknown), sampled by a background coroutine and folded
     // into UI state by the 1 Hz metrics ticker (the sole writer of metrics — see CLAUDE.md).
@@ -121,10 +177,22 @@ class SessionViewModel @Inject constructor(
                         // ONLY when auto-resolution is enabled — otherwise sending a monitor
                         // layout would resize the remote desktop against the user's setting.
                         if (dynamicResolutionEnabled) scheduleMonitorLayoutRetry()
+                        // Start watching the local clipboard so copies on the phone reach the remote.
+                        registerClipboardListener()
+                    }
+                    is RdpEvent.ClipboardReceived -> {
+                        // Remote → local. Mirror the de-dupe token first so our own
+                        // OnPrimaryClipChanged (fired by setPrimaryClip) recognises this as an
+                        // echo and doesn't bounce it back to the server.
+                        if (clipboardSyncEnabled && event.text.isNotEmpty() && event.text != lastSyncedClipboard) {
+                            lastSyncedClipboard = event.text
+                            clipboardManager.setPrimaryClip(ClipData.newPlainText("PocketRDP", event.text))
+                        }
                     }
                     is RdpEvent.Disconnected -> {
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
+                        unregisterClipboardListener()
                         fpsCounter.reset()
                         _state.update {
                             it.copy(
@@ -138,6 +206,7 @@ class SessionViewModel @Inject constructor(
                     is RdpEvent.Failed -> {
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
+                        unregisterClipboardListener()
                         fpsCounter.reset()
                         _state.update {
                             it.copy(
@@ -188,11 +257,31 @@ class SessionViewModel @Inject constructor(
                     // the badge flips TCP→UDP once it comes up.
                     val transport = decodeTransport(rdpClient.transportInfo())
                     _state.update {
-                        it.copy(fps = fpsCounter.snapshot(), durationSec = dur, latencyMs = lastLatencyMs, transport = transport)
+                        it.copy(
+                            fps = fpsCounter.snapshot(),
+                            durationSec = dur,
+                            latencyMs = lastLatencyMs,
+                            controlLatencyMs = rdpClient.controlLatencyMs(),
+                            transport = transport,
+                        )
                     }
-                } else if (current.fps != 0 || current.durationSec != 0L || current.latencyMs != -1 ||
-                    current.transport != RdpTransport.UNKNOWN) {
-                    _state.update { it.copy(fps = 0, durationSec = 0L, latencyMs = -1, transport = RdpTransport.UNKNOWN) }
+                } else {
+                    // Not connected: clear any lingering metrics once (extracted to a val so the
+                    // multi-term check isn't flagged as a complex `if` condition).
+                    val hasStaleMetrics = current.fps != 0 || current.durationSec != 0L ||
+                        current.latencyMs != -1 || current.controlLatencyMs != -1 ||
+                        current.transport != RdpTransport.UNKNOWN
+                    if (hasStaleMetrics) {
+                        _state.update {
+                            it.copy(
+                                fps = 0,
+                                durationSec = 0L,
+                                latencyMs = -1,
+                                controlLatencyMs = -1,
+                                transport = RdpTransport.UNKNOWN,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -202,6 +291,11 @@ class SessionViewModel @Inject constructor(
      * Background latency probe: every few seconds, measure an approximate RTT to the RDP host and
      * cache it in [lastLatencyMs]. The 1 Hz [startMetricsTicker] is the sole writer of the value
      * into UI state, so this never recomposes the TopAppBar at probe frequency.
+     *
+     * Caveat (not the cause of any field bug, but worth knowing): this opens a fresh TCP connection
+     * to host:port each tick. On a connection-limited tunnel that's a little wasteful — the primary
+     * "操控延迟" (input→frame) metric needs no extra connection, so if a tunnel ever proves sensitive,
+     * drop this probe rather than the control-latency one.
      */
     private fun startLatencyProbe() {
         viewModelScope.launch {
@@ -254,6 +348,9 @@ class SessionViewModel @Inject constructor(
             // Cache the auto-resolution setting for the session lifetime so the monitor-layout
             // sends below are correctly gated even if the entity changes later.
             dynamicResolutionEnabled = effectiveDynamic
+            // Same for clipboard: gates both directions of the text bridge (see clipListener /
+            // the ClipboardReceived branch). Off → channel is /clipboard:...direction-to:off too.
+            clipboardSyncEnabled = entity.redirectClipboard
             _state.update {
                 it.copy(
                     connectionName = entity.name,
@@ -296,12 +393,16 @@ class SessionViewModel @Inject constructor(
         }
     }
 
-    /** Enter / exit immersive full-screen: hide system bars AND the app's top/bottom bars. */
+    /**
+     * Enter / exit full-screen. This toggles ONLY the app's own top bar (chrome); the Android
+     * system bars stay hidden for the whole session (driven in SessionScreen), so this no longer
+     * touches them. false = pure picture with just a small exit FAB.
+     */
     fun toggleImmersive() {
         _state.update {
-            val newVisible = !it.systemBarsVisible
-            // Leaving immersive shouldn't pop the keyboard/toolbar back; entering hides them.
-            it.copy(systemBarsVisible = newVisible, imeVisible = if (newVisible) it.imeVisible else false)
+            val newVisible = !it.chromeVisible
+            // Hiding chrome also dismisses the keyboard/toolbar; restoring chrome leaves IME as-is.
+            it.copy(chromeVisible = newVisible, imeVisible = if (newVisible) it.imeVisible else false)
         }
     }
 
@@ -418,6 +519,24 @@ class SessionViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Start mirroring local clipboard changes to the remote (idempotent; no-op when sync is off).
+     * Gated on [localToRemoteClipboardEnabled] — disabled on the current prebuilt .so because a
+     * clipboard send before the cliprdr channel is ready tears the session down (see the field).
+     */
+    private fun registerClipboardListener() {
+        if (!localToRemoteClipboardEnabled || !clipboardSyncEnabled || clipListenerRegistered) return
+        runCatching { clipboardManager.addPrimaryClipChangedListener(clipListener) }
+            .onSuccess { clipListenerRegistered = true }
+    }
+
+    /** Stop mirroring local clipboard changes (idempotent). Always called on session teardown. */
+    private fun unregisterClipboardListener() {
+        if (!clipListenerRegistered) return
+        runCatching { clipboardManager.removePrimaryClipChangedListener(clipListener) }
+        clipListenerRegistered = false
+    }
+
     fun disconnect() {
         rdpClient.disconnect()
     }
@@ -425,6 +544,7 @@ class SessionViewModel @Inject constructor(
     override fun onCleared() {
         // M7: keep connection alive via Foreground Service. For now (M2), disconnect on dispose.
         PocketLogger.i(TAG, "SessionViewModel.onCleared — disconnecting")
+        unregisterClipboardListener()
         rdpClient.disconnect()
         super.onCleared()
     }

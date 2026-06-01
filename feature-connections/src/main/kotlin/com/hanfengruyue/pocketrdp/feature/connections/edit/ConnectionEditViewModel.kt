@@ -108,7 +108,12 @@ class ConnectionEditViewModel @Inject constructor(
     fun updateDomain(value: String) = _state.update { it.copy(domain = value) }
     fun updatePassword(value: String) = _state.update { it.copy(password = value) }
     fun updateColorDepth(value: Int) = _state.update { it.copy(colorDepth = value) }
-    fun toggleH264(value: Boolean) = _state.update { it.copy(useH264 = value) }
+    // H.264 (AVC444) can only run on the GFX/rdpgfx channel, so enabling it implicitly forces the
+    // GFX pipeline on. Keep the persisted entity honest (no use_h264=true/use_gfx=false records) —
+    // the edit screen also locks the GFX switch ON+disabled while H.264 is enabled.
+    fun toggleH264(value: Boolean) = _state.update {
+        it.copy(useH264 = value, useGfx = if (value) true else it.useGfx)
+    }
     fun toggleGfx(value: Boolean) = _state.update { it.copy(useGfx = value) }
     fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
     fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }

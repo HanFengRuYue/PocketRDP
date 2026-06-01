@@ -1,6 +1,7 @@
 package com.hanfengruyue.pocketrdp.core.rdp
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.freerdp.freerdpcore.services.LibFreeRDP
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
@@ -14,6 +15,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToInt
 
 /**
  * Kotlin facade over the FreeRDP JNI bridge (com.freerdp.freerdpcore.services.LibFreeRDP).
@@ -43,6 +45,31 @@ class RdpClient @Inject constructor(
     // Host/port of the active session — used by [measureLatencyMs] for the latency probe.
     @Volatile private var lastHost: String? = null
     @Volatile private var lastPort: Int = DEFAULT_RDP_PORT
+
+    // --- End-to-end "control latency" (input → on-screen change) ---
+    // measureLatencyMs() below only times a TCP handshake = the raw network path. The latency the
+    // user actually FEELS is much higher: input upload + server input-processing + server-side
+    // encode + downstream network + client H.264 decode (the gdi buffer is already decoded by the
+    // time OnGraphicsUpdate fires). We measure that round-trip empirically: a DISCRETE press (click /
+    // key / touch — see markDiscreteInput) made while the screen was idle is reliably answered by a
+    // framebuffer update, so (frameArrival − inputSent) is a real end-to-end RTT that inherently
+    // includes encode/decode. CURSOR MOVES are deliberately excluded: RDP acks them via a pointer PDU
+    // (hardware cursor), NOT a framebuffer update, so timing move→frame paired a move with a much-
+    // later unrelated frame and read hundreds of ms on a 0ms-RTT local host. Presses that get no
+    // timely frame are discarded (CONTROL_LATENCY_RESPONSE_WINDOW_MS); the rest feed an EMA. Monotonic
+    // clock so a wall-clock change can't corrupt a sample.
+    @Volatile private var pendingInputAtMs = 0L
+    @Volatile private var lastServerFrameAtMs = 0L
+    @Volatile private var controlLatencyEmaMs = -1f
+
+    // Diagnostic: throttled "frames are still arriving" heartbeat. OnGraphicsUpdate is too frequent
+    // to log per-call, but if the remote picture FREEZES (no graphics after the initial resize) the
+    // TCP connection goes idle and a mobile NAT / port-forward drops it after ~18 s — which reads as
+    // "连上几秒就断开". Logging a count every GFX_LOG_INTERVAL_MS lets a bug report distinguish
+    // "frozen picture → idle drop" from "live picture → network drop": if these lines stop well
+    // before OnDisconnecting, the picture froze; if they continue right up to it, the link dropped.
+    @Volatile private var gfxUpdateCount: Int = 0
+    @Volatile private var lastGfxLogMs: Long = 0L
 
     // Throttled keyboard-input debug counters. Logging every keystroke would drown the log
     // viewer when the user holds a key or pastes long text; logging nothing makes it
@@ -76,6 +103,11 @@ class RdpClient @Inject constructor(
         nativeInstance = inst
         keyEventLogCount = 0
         unicodeEventLogCount = 0
+        pendingInputAtMs = 0L
+        lastServerFrameAtMs = 0L
+        controlLatencyEmaMs = -1f
+        gfxUpdateCount = 0
+        lastGfxLogMs = 0L
         PocketLogger.d(TAG, "freerdp instance allocated: $inst")
 
         val args = buildCommandLine(params)
@@ -126,6 +158,7 @@ class RdpClient @Inject constructor(
             keyEventLogCount++
             PocketLogger.d(TAG, "sendKeyEvent vk=0x${scanCode.toString(16)} down=$down (#$keyEventLogCount)")
         }
+        if (down) markDiscreteInput()
         LibFreeRDP.sendKeyEvent(inst, scanCode, down)
     }
 
@@ -139,6 +172,7 @@ class RdpClient @Inject constructor(
             unicodeEventLogCount++
             PocketLogger.d(TAG, "sendUnicodeKey cp=$codePoint down=$down (#$unicodeEventLogCount)")
         }
+        if (down) markDiscreteInput()
         LibFreeRDP.sendUnicodeKeyEvent(inst, codePoint, down)
     }
 
@@ -161,7 +195,17 @@ class RdpClient @Inject constructor(
 
     fun sendCursorEvent(x: Int, y: Int, flags: Int) {
         val inst = nativeInstance
-        if (inst != 0L) LibFreeRDP.sendCursorEvent(inst, x, y, flags)
+        if (inst != 0L) {
+            // Latency timing: arm ONLY on a button PRESS (click / drag-start). A plain cursor MOVE is
+            // acked by the server via a pointer PDU (hardware cursor), NOT a framebuffer update — so
+            // timing move→OnGraphicsUpdate paired the move with a much-later unrelated frame (clock
+            // tick, popup) and grossly inflated the reading (field bug: 操控延迟 484ms on a 0ms-RTT
+            // local host). A press reliably triggers a visible response we can actually time.
+            val isButtonPress = flags and RdpPointerFlags.DOWN != 0 &&
+                flags and (RdpPointerFlags.BUTTON1 or RdpPointerFlags.BUTTON2 or RdpPointerFlags.BUTTON3) != 0
+            if (isButtonPress) markDiscreteInput()
+            LibFreeRDP.sendCursorEvent(inst, x, y, flags)
+        }
     }
 
     /**
@@ -172,7 +216,60 @@ class RdpClient @Inject constructor(
      */
     fun sendTouch(contactId: Int, x: Int, y: Int, action: Int) {
         val inst = nativeInstance
-        if (inst != 0L) LibFreeRDP.sendTouch(inst, contactId, x, y, action)
+        if (inst != 0L) {
+            // Same as cursor: arm latency only on a touch DOWN (the press), not MOVE/UP.
+            if (action == RdpTouchAction.DOWN) markDiscreteInput()
+            LibFreeRDP.sendTouch(inst, contactId, x, y, action)
+        }
+    }
+
+    /**
+     * Arm an end-to-end latency sample for a DISCRETE input (click / key / touch press — NOT a cursor
+     * move; see [sendCursorEvent]). If the screen has been quiet for [CONTROL_LATENCY_IDLE_GAP_MS],
+     * the next server frame is a genuine response to this input, so we remember when it was sent.
+     * Expires a stale pending arm first: a press that produced no timely frame (e.g. a click on inert
+     * desktop) must NOT linger and later pair with an unrelated frame — that's what inflated the
+     * reading. Only one input is pending at a time (paired with the next frame).
+     */
+    private fun markDiscreteInput() {
+        val now = SystemClock.uptimeMillis()
+        // Drop a pending arm that never got a timely response so it can't pair with a late frame.
+        if (pendingInputAtMs != 0L && now - pendingInputAtMs > CONTROL_LATENCY_RESPONSE_WINDOW_MS) {
+            pendingInputAtMs = 0L
+        }
+        if (pendingInputAtMs == 0L && now - lastServerFrameAtMs > CONTROL_LATENCY_IDLE_GAP_MS) {
+            pendingInputAtMs = now
+        }
+    }
+
+    /**
+     * Smoothed end-to-end control latency (ms): input → on-screen frame, empirically including
+     * server processing, encode, network and client decode. -1 until the first sample (or no live
+     * session). This is the latency the user actually feels — far higher than [measureLatencyMs]'s
+     * raw network RTT.
+     */
+    fun controlLatencyMs(): Int {
+        if (nativeInstance == 0L) return -1
+        val v = controlLatencyEmaMs
+        return if (v < 0f) -1 else v.roundToInt()
+    }
+
+    /** Called when a decoded server frame lands (OnGraphicsUpdate). Closes a pending latency sample. */
+    private fun recordServerFrameForLatency() {
+        val now = SystemClock.uptimeMillis()
+        lastServerFrameAtMs = now
+        val sent = pendingInputAtMs
+        if (sent == 0L) return
+        pendingInputAtMs = 0L
+        val sample = now - sent
+        // Only accept a TIMELY response. A larger gap means the press caused no visible change and we
+        // caught a later unrelated frame — discard rather than report a bogus high latency.
+        if (sample < 0L || sample > CONTROL_LATENCY_RESPONSE_WINDOW_MS) return
+        controlLatencyEmaMs = if (controlLatencyEmaMs < 0f) {
+            sample.toFloat()
+        } else {
+            CONTROL_LATENCY_EMA_ALPHA * sample + (1f - CONTROL_LATENCY_EMA_ALPHA) * controlLatencyEmaMs
+        }
     }
 
     /**
@@ -271,6 +368,18 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnGraphicsUpdate(inst: Long, x: Int, y: Int, w: Int, h: Int) {
+            // End-to-end control-latency sampling: this frame is fully decoded (the gdi buffer is
+            // ready before this callback). If an input is pending from an idle→action edge, the gap
+            // to now is a genuine press→screen round-trip — feed it to the EMA. (See markDiscreteInput.)
+            recordServerFrameForLatency()
+            // Diagnostic heartbeat (throttled) — see gfxUpdateCount/lastGfxLogMs. Lets a bug report
+            // tell a frozen picture (lines stop) from a live one (lines continue to disconnect).
+            gfxUpdateCount++
+            val gfxNow = SystemClock.uptimeMillis()
+            if (gfxNow - lastGfxLogMs >= GFX_LOG_INTERVAL_MS) {
+                lastGfxLogMs = gfxNow
+                PocketLogger.d(TAG, "gfx alive: $gfxUpdateCount frames received (latest ${w}x$h at $x,$y)")
+            }
             // Write this frame's dirty region into the BACK buffer (never the one the UI is drawing).
             val target = buffer.nativeBuffer() ?: return
             LibFreeRDP.updateGraphics(inst, target, x, y, w, h)
@@ -354,22 +463,28 @@ class RdpClient @Inject constructor(
         args += "/multitouch"
         if (p.dynamicResolution) args += "/dynamic-resolution"
         // RDP-UDP multitransport (UDP-R + UDP-L/FEC). Core RDP protocol, present in the prebuilt
-        // .so (not a codec), and auto-falls-back to TCP if the server doesn't negotiate it — so it
-        // is safe to request. Improves responsiveness on lossy/high-latency links.
-        if (p.useMultitransport) args += "/multitransport"
-        // FreeRDP 3.x parse_scale_options() hard-rejects anything outside {100, 140, 180}.
-        // Snap the stored DPI to the nearest legal bucket so a saved value like 200 (the
-        // ConnectionEntity default) doesn't cause freerdp_parse_arguments to fail with
-        // COMMAND_LINE_ERROR_UNEXPECTED_VALUE — which Kotlin surfaces as the unhelpful
-        // "freerdp_parse_arguments failed: Success" snackbar (last_error_code is unset
-        // during arg parsing).
-        val quantizedScale = when {
-            p.desktopScaleFactor < 100 -> null
-            p.desktopScaleFactor < 120 -> 100
-            p.desktopScaleFactor < 160 -> 140
-            else -> 180
-        }
-        if (quantizedScale != null) args += "/scale:$quantizedScale"
+        // .so (not a codec), and auto-falls-back to TCP if the server doesn't negotiate it.
+        // CRITICAL — emit the explicit DISABLE form when the user turns it off: FreeRDP defaults
+        // SupportMultitransport=TRUE (+ non-zero MultitransportFlags) in settings.c, so simply
+        // NOT adding "/multitransport" is a no-op — UDP would still be negotiated (field bug:
+        // 关闭 UDP 仍走 UDP). The disable form MUST be "-multitransport" (the '-' sigil sets
+        // SupportMultitransport=FALSE and zeroes MultitransportFlags). "/multitransport:off" would
+        // FAIL freerdp_parse_arguments with COMMAND_LINE_ERROR_UNEXPECTED_VALUE — a BOOL option in
+        // the slash/colon syntax rejects a trailing value (same class as the /scale trap above).
+        args += if (p.useMultitransport) "/multitransport" else "-multitransport"
+        // Auto-reconnect on an UNEXPECTED drop (not a user disconnect): FreeRDP transparently
+        // re-establishes the session using the server's auto-reconnect cookie. Mitigates flaky links
+        // — e.g. a mobile NAT / public-IP port-forward (host:port) silently dropping an idle TCP
+        // connection after ~18 s, observed as "连上几秒就断开". Harmless when the link is stable.
+        args += "/auto-reconnect"
+        // Remote desktop DPI scaling. Use /scale-desktop (FreeRDP_DesktopScaleFactor, accepts any
+        // 100..500) — NOT /scale, which parse_scale_options() hard-limits to {100,140,180}: every
+        // value >180 silently collapsed to 180, so the 100–300 % slider's 200/250/300 were
+        // indistinguishable (field bug: 缩放滑块只有三档真正生效). /scale-desktop honours the exact
+        // value, giving the slider real continuous effect. Clamp to the accepted range so an
+        // out-of-range value can never fail freerdp_parse_arguments.
+        val scale = p.desktopScaleFactor.coerceIn(MIN_DESKTOP_SCALE, MAX_DESKTOP_SCALE)
+        args += "/scale-desktop:$scale"
 
         val clipDir = if (p.redirectClipboard) "all" else "off"
         args += "/clipboard:use-selection:primary,direction-to:$clipDir"
@@ -392,8 +507,24 @@ class RdpClient @Inject constructor(
         // flooding logs when the user holds a key or pastes long text.
         private const val KEY_LOG_LIMIT = 50
         private const val DEFAULT_RDP_PORT = 3389
+        // Remote desktop DPI scale (/scale-desktop) bounds. FreeRDP accepts 100..500; we cap at the
+        // edit screen's slider range so the UI value maps 1:1 to what the remote receives.
+        private const val MIN_DESKTOP_SCALE = 100
+        private const val MAX_DESKTOP_SCALE = 300
         private const val LATENCY_PROBE_TIMEOUT_MS = 2000
         private const val NANOS_PER_MILLI = 1_000_000L
         private const val MAX_LATENCY_MS = 9999
+        // End-to-end control-latency sampling tunables. Only arm a sample when the screen has been
+        // idle this long (so the next frame is a genuine response, not one already streaming).
+        private const val CONTROL_LATENCY_IDLE_GAP_MS = 80L
+        // A press→frame gap beyond this is treated as "no genuine response" and discarded: the press
+        // caused no visible change and we caught a later unrelated frame. Also bounds how stale a
+        // pending arm may get. Generous enough for slow remotes, tight enough to reject the static-
+        // desktop artifacts that made a 0ms-RTT local host read hundreds of ms.
+        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 600L
+        // EMA weight for a new sample — responsive enough to track changes, smooth enough to not jump.
+        private const val CONTROL_LATENCY_EMA_ALPHA = 0.35f
+        // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
+        private const val GFX_LOG_INTERVAL_MS = 2000L
     }
 }

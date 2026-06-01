@@ -10,27 +10,39 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
 import androidx.compose.material.icons.filled.Mouse
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +55,7 @@ import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -62,8 +75,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -79,7 +95,11 @@ import com.hanfengruyue.pocketrdp.feature.session.input.UserTransform
 import com.hanfengruyue.pocketrdp.feature.session.input.sessionGestures
 import com.hanfengruyue.pocketrdp.feature.session.render.RdpSurface
 import com.hanfengruyue.pocketrdp.feature.session.ui.SessionStatusTitle
+import kotlin.math.abs
+import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,11 +152,15 @@ fun SessionScreen(
     val insetsController = remember(view, window) {
         window?.let { WindowCompat.getInsetsController(it, view) }
     }
-    LaunchedEffect(state.systemBarsVisible, insetsController) {
+    // The Android system bars (status + navigation) stay HIDDEN for the entire session so the
+    // remote picture reclaims the space the status bar used to eat — most painful in landscape
+    // (issue #1). They remain swipe-revealable transiently via BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE.
+    // This is now INDEPENDENT of the app's own top bar (state.chromeVisible): the full-screen button
+    // toggles only the TopAppBar, never the Android system bars.
+    LaunchedEffect(insetsController) {
         val ic = insetsController ?: return@LaunchedEffect
         ic.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (state.systemBarsVisible) ic.show(WindowInsetsCompat.Type.systemBars())
-        else ic.hide(WindowInsetsCompat.Type.systemBars())
+        ic.hide(WindowInsetsCompat.Type.systemBars())
     }
     // Restore system bars when SessionScreen leaves composition (back to connection list).
     DisposableEffect(insetsController) {
@@ -150,7 +174,7 @@ fun SessionScreen(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             AnimatedVisibility(
-                visible = state.systemBarsVisible,
+                visible = state.chromeVisible,
                 enter = slideInVertically { -it } + fadeIn(),
                 exit = slideOutVertically { -it } + fadeOut(),
             ) {
@@ -170,6 +194,7 @@ fun SessionScreen(
                             durationSec = state.durationSec,
                             fps = state.fps,
                             latencyMs = state.latencyMs,
+                            controlLatencyMs = state.controlLatencyMs,
                             transport = state.transport,
                             mode = state.mode,
                             host = state.connectionHost,
@@ -218,6 +243,14 @@ fun SessionScreen(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
                     ),
+                    // With the status bar hidden its inset collapses to 0, so the bar sits flush at
+                    // the very top (reclaiming the space — issue #1). union(displayCutout) still keeps
+                    // the title/icons clear of the camera notch: top inset in portrait, side inset in
+                    // landscape (shortEdges). statusBars stays in the union so a transient swipe-reveal
+                    // doesn't briefly overlap the bar.
+                    windowInsets = WindowInsets.statusBars
+                        .union(WindowInsets.displayCutout)
+                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
                 )
             }
         },
@@ -250,7 +283,7 @@ fun SessionScreen(
                 // ABOVE the keyboard via SessionToolbar's imePadding(). Because it's a sibling row
                 // in the Column (not an overlay), it never leaks taps into the gesture surface.
                 AnimatedVisibility(
-                    visible = state.imeVisible && state.systemBarsVisible,
+                    visible = state.imeVisible && state.chromeVisible,
                     enter = slideInVertically { it } + fadeIn(),
                     exit = slideOutVertically { it } + fadeOut(),
                 ) {
@@ -262,11 +295,13 @@ fun SessionScreen(
             // the top-right corner. Only visible when system bars are hidden — otherwise
             // the TopAppBar already has the full-screen toggle.
             AnimatedVisibility(
-                visible = !state.systemBarsVisible,
+                visible = !state.chromeVisible,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
+                    // Keep the FAB clear of the camera notch now that the status bar is hidden.
+                    .windowInsetsPadding(WindowInsets.displayCutout)
                     .padding(12.dp),
             ) {
                 SmallFloatingActionButton(
@@ -285,8 +320,22 @@ fun SessionScreen(
                     controller = controller,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
+                        .windowInsetsPadding(WindowInsets.displayCutout)
                         .padding(12.dp),
                 )
+
+                // Move handle (only while zoomed in): drag it to pan the magnified picture; long-press
+                // it then drag to relocate the handle itself (so it doesn't cover what you want to tap).
+                // Shown ONLY in native-touch mode. In TRACKPAD mode the view auto-follows the virtual
+                // cursor when zoomed (RdpInputController.followCursorWhenZoomed), so dragging the cursor
+                // already pans the picture and the handle is redundant — per user request 模拟鼠标模式
+                // 隐藏控制杆、用手势拖动画面. Native touch has no follow, so it keeps the handle.
+                if (state.mode == InputMode.TOUCH) {
+                    PanHandle(
+                        controller = controller,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
             }
 
             // Hidden IME bridge — Compose tree always contains it, but it only requests
@@ -379,11 +428,10 @@ private fun SessionCanvas(
             }
             // sessionGestures sits ABOVE the graphicsLayer so pointer events arrive in
             // un-transformed view coordinates — that lets the controller's toRemote math
-            // stay simple (only undo fit-to-view, not the user's pinch).
+            // undo the fit-to-view + the user zoom/pan and land on the right remote pixel.
             .sessionGestures(
                 controller = controller,
                 modeProvider = { mode },
-                onPinchReset = { /* no-op: resetUserTransform() already publishes to userTransform */ },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -485,36 +533,197 @@ private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
     }
 }
 
+// Zoom-handle drag tuning (issue #2).
+private const val ZOOM_DRAG_SLOP_PX = 8f      // px of finger travel before a press becomes a drag
+private const val ZOOM_DRAG_BASE = 2f         // zoom multiplies by this over one TRAVEL_PX of drag
+private const val ZOOM_DRAG_TRAVEL_PX = 180f  // finger px that doubles / halves the zoom
+private const val ZOOM_DOUBLE_TAP_MS = 280L   // double-tap window for reset-to-100%
+
 /**
- * Floating zoom controls (＋ / －, and a reset that appears only while zoomed). Collects
- * userTransform internally so a zoom change recomposes ONLY this small overlay — the framebuffer
- * AndroidView reads the transform deferred inside its graphicsLayer and never recomposes.
+ * Floating zoom control — a SINGLE compact pill (issue #2): drag it UP to zoom in, DOWN to zoom
+ * out (continuous), double-tap to reset to 100%. Replaces the old ＋ / － / reset button stack that
+ * ran a tall strip down the right edge: being a large touch dead-zone it kept swallowing the
+ * two-finger scroll/pinch gestures (worst in TOUCH mode, where every gesture is multi-finger and
+ * one finger often landed on a button). The pill is a much smaller target, so the canvas gets the
+ * whole right edge back.
+ *
+ * Collects userTransform internally so a zoom change recomposes ONLY this small overlay — the
+ * framebuffer AndroidView reads the transform deferred inside its graphicsLayer and never
+ * recomposes. The pointerInput consumes its own pointer, so dragging the pill never leaks into the
+ * canvas gesture surface behind it.
  */
 @Composable
 private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Modifier) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
-    val zoomed = transform.zoom > 1.01f
-    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        SmallFloatingActionButton(onClick = controller::zoomIn, containerColor = containerColor) {
-            Icon(Icons.Default.Add, contentDescription = "放大")
-        }
-        Text(
-            text = "${(transform.zoom * 100).toInt()}%",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        SmallFloatingActionButton(onClick = controller::zoomOut, containerColor = containerColor) {
-            Icon(Icons.Default.Remove, contentDescription = "缩小")
-        }
-        if (zoomed) {
-            SmallFloatingActionButton(onClick = controller::resetZoom, containerColor = containerColor) {
-                Icon(Icons.Default.Refresh, contentDescription = "复位缩放")
+    val pct = (transform.zoom * 100).roundToInt()
+    val zoomed = pct > 100
+    var dragging by remember { mutableStateOf(false) }
+    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+
+    Surface(
+        modifier = modifier.pointerInput(controller) {
+            var lastTapMs = 0L
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                down.consume()
+                val startZoom = controller.userZoom()
+                var totalDy = 0f
+                var isDrag = false
+                var tracking = true
+                while (tracking) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id }
+                    if (change == null || !change.pressed) {
+                        // Our pointer lifted (or vanished) → end this gesture.
+                        change?.consume()
+                        tracking = false
+                    } else {
+                        totalDy += change.positionChange().y
+                        if (!isDrag && abs(totalDy) > ZOOM_DRAG_SLOP_PX) {
+                            isDrag = true
+                            dragging = true
+                        }
+                        if (isDrag) {
+                            // Drag UP (negative dy) magnifies. Multiplicative mapping → a fixed
+                            // finger travel changes the zoom by a constant ratio at any level.
+                            val factor = ZOOM_DRAG_BASE.pow(-totalDy / ZOOM_DRAG_TRAVEL_PX)
+                            controller.setUserZoom(startZoom * factor)
+                        }
+                        change.consume()
+                    }
+                }
+                dragging = false
+                if (isDrag) {
+                    // A drag breaks the double-tap chain so a stray tap right after a quick
+                    // drag-to-zoom can't be read as a double-tap and wipe the zoom just set.
+                    lastTapMs = 0L
+                } else {
+                    // It was a tap; a second tap inside the window resets the zoom to 100%.
+                    val now = System.currentTimeMillis()
+                    if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
+                        controller.resetZoom()
+                        lastTapMs = 0L
+                    } else {
+                        lastTapMs = now
+                    }
+                }
             }
+        },
+        shape = CircleShape,
+        color = containerColor,
+        tonalElevation = 3.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.ZoomIn,
+                contentDescription = "缩放：上滑放大、下滑缩小，双击复位",
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+            // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
+            if (dragging || zoomed) {
+                Text(
+                    text = "$pct%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+// Move-handle tuning (issue: a dedicated button to pan the magnified picture, plus long-press to
+// relocate the button so it can't sit over what you want to tap).
+private const val PAN_HANDLE_SIZE_DP = 60
+private const val PAN_HANDLE_SLOP_PX = 6f          // travel before a press counts as a drag
+private const val PAN_HANDLE_LONG_PRESS_MS = 350L  // hold this long → drag the handle itself
+
+/**
+ * Floating MOVE handle, shown ONLY while the picture is zoomed in (issue: pan the magnified picture
+ * without any gesture, so it can't fight the touch-control gestures). Drag it to pan the framebuffer
+ * the same direction (gain = current zoom, so a small handle drag still reaches the edges at 4×).
+ * Long-press it, then drag, to relocate the handle out of the way of whatever you need to tap.
+ *
+ * Collects userTransform internally so only this small overlay recomposes; its pointerInput consumes
+ * its own pointer, so neither panning nor relocating leaks into the canvas gesture surface behind it.
+ */
+@Composable
+private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modifier) {
+    val transform by controller.userTransform.collectAsStateWithLifecycle()
+    // remember is called unconditionally (before the early return) so the slot table stays stable;
+    // the handle keeps its dragged-to position across hide/show.
+    var handleOffset by remember { mutableStateOf(Offset.Zero) }
+    var movingSelf by remember { mutableStateOf(false) }
+    val zoomed = (transform.zoom * 100).roundToInt() > 100
+    if (!zoomed) return
+
+    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+    Surface(
+        modifier = modifier
+            .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
+            .size(PAN_HANDLE_SIZE_DP.dp)
+            .pointerInput(controller) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val startPanX = controller.userPanX()
+                    val startPanY = controller.userPanY()
+                    val gain = controller.userZoom()
+                    val startOffset = handleOffset
+                    val startMs = System.currentTimeMillis()
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var moveSelf = false
+                    var tracking = true
+                    while (tracking) {
+                        // While still stationary, arm a long-press that switches to "move the handle".
+                        val armLong = !moveSelf && abs(totalDx) + abs(totalDy) <= PAN_HANDLE_SLOP_PX
+                        val event = if (armLong) {
+                            val remaining = (PAN_HANDLE_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                                .coerceAtLeast(1L)
+                            withTimeoutOrNull(remaining) { awaitPointerEvent() }
+                        } else {
+                            awaitPointerEvent()
+                        }
+                        if (event == null) {
+                            moveSelf = true
+                            movingSelf = true
+                            continue
+                        }
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null || !change.pressed) {
+                            change?.consume()
+                            tracking = false
+                        } else {
+                            val d = change.positionChange()
+                            totalDx += d.x
+                            totalDy += d.y
+                            if (moveSelf) {
+                                // Relocate the handle itself (follows the finger 1:1).
+                                handleOffset = Offset(startOffset.x + totalDx, startOffset.y + totalDy)
+                            } else {
+                                // Pan the picture the same direction the handle is dragged.
+                                controller.setUserPan(startPanX + totalDx * gain, startPanY + totalDy * gain)
+                            }
+                            change.consume()
+                        }
+                    }
+                    movingSelf = false
+                }
+            },
+        shape = CircleShape,
+        color = containerColor,
+        tonalElevation = 3.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
+                contentDescription = "拖动以移动放大后的画面；长按后拖动可移动此按钮",
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }

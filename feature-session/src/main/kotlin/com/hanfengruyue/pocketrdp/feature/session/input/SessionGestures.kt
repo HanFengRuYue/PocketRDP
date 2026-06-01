@@ -11,7 +11,6 @@ import androidx.compose.ui.input.pointer.positionChanged
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
-import kotlin.math.hypot
 
 /**
  * Multi-touch gesture recognizer for the RDP session canvas. Lives in [Modifier.sessionGestures].
@@ -23,15 +22,22 @@ import kotlin.math.hypot
  * decides what a tap / two-finger scroll / pinch means, exactly like a physical touchscreen.
  *
  * **TRACKPAD (mouse emulation):**
- *   1-finger tap            → left click
- *   1-finger drag           → move virtual cursor (view follows when zoomed)
+ *   1-finger tap            → left click (two in a row = remote double-click)
+ *   1-finger drag           → move virtual cursor
  *   long-press then drag    → hold-left-button drag (issue #4)
  *   double-tap then drag    → hold-left-button drag
- *   double-tap (zoomed in)  → reset local zoom/pan
  *   2-finger tap            → right click
  *   2-finger vertical pan   → wheel scroll (issue #7)
- *   2-finger pinch          → local pinch-zoom (graphicsLayer)
  *   3-finger tap            → middle click
+ *
+ * NOTE: there are NO picture-changing *gestures* (no pinch-zoom, no double-tap-to-reset). Per user
+ * request the picture is zoomed ONLY via the zoom pill and panned ONLY via the move handle (both in
+ * SessionScreen) — so every touch gesture is unambiguously a *control* gesture and can't fight the
+ * view transform. This is also why a double-tap is now a clean remote double-click instead of being
+ * eaten to reset the local zoom. The ONE exception is TRACKPAD cursor-follow: while zoomed, moving
+ * the virtual cursor auto-pans the view to keep it visible (RdpInputController.followCursorWhenZoomed).
+ * That is safe because the trackpad cursor is decoupled from the finger — it doesn't move where a tap
+ * lands. NATIVE-TOUCH deliberately has NO view-follow (it broke taps; see RdpInputController.touchDown).
  *
  * Implementation notes:
  *  - `awaitEachGesture` + try/finally guarantees held buttons / touch contacts are released even
@@ -43,15 +49,11 @@ private const val TAP_SLOP_PX = 16f
 private const val TAP_TIMEOUT_MS = 250L
 private const val DOUBLE_TAP_WINDOW_MS = 280L
 private const val LONG_PRESS_MS = 400L
-private const val PINCH_THRESHOLD = 0.05f
-private const val SCROLL_DOMINANCE = 1.4f
-private const val SCROLL_MIN_DELTA_PX = 4f
 private const val MAX_TOUCH_CONTACTS = 10
 
 fun Modifier.sessionGestures(
     controller: RdpInputController,
     modeProvider: () -> InputMode,
-    onPinchReset: () -> Unit = {},
 ): Modifier = pointerInput(controller) {
     // Persisted across gestures (for double-tap detection).
     var lastSingleTapEndMs = 0L
@@ -64,7 +66,6 @@ fun Modifier.sessionGestures(
         } else {
             awaitTrackpadGesture(
                 controller = controller,
-                onPinchReset = onPinchReset,
                 lastSingleTapEndMs = lastSingleTapEndMs,
                 lastSingleTapX = lastSingleTapX,
                 lastSingleTapY = lastSingleTapY,
@@ -153,7 +154,6 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
  *  caller's persistent double-tap bookkeeping. */
 private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture(
     controller: RdpInputController,
-    onPinchReset: () -> Unit,
     lastSingleTapEndMs: Long,
     lastSingleTapX: Float,
     lastSingleTapY: Float,
@@ -166,13 +166,16 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
 
     var pointerCountPeak = 1
     var totalMove = 0f
-    var consumed = false            // scroll or pinch consumed this gesture
+    var consumed = false            // scroll consumed this gesture (→ no tap/click on release)
     var holdDragActive = false      // we entered a held-button drag (double-tap OR long-press)
     var longPressFired = false
 
-    // Two-finger tracking (initialised when 2nd finger arrives).
-    var twoStartDist = 0f
-    var twoStartZoom = controller.userZoom()
+    // Two-finger phase tracking. Two fingers = wheel scroll ONLY (picture zoom/move live on the
+    // on-screen buttons now), so we only reset the scroll accumulator when the phase starts and gate
+    // scrolling on a small travel threshold so a 2-finger TAP still falls through to right-click.
+    var twoActive = false
+    var twoMove = 0f
+    var twoPendingDy = 0f
 
     val sinceLastTap = gestureStartMs - lastSingleTapEndMs
     val nearLast = abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
@@ -203,11 +206,9 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
             if (currentCount == 0) break
             pointerCountPeak = maxOf(pointerCountPeak, currentCount)
 
-            // Re-arm the pinch baseline whenever not in a 2-finger phase, so a 2→1→2 transition
-            // within one gesture re-captures a fresh distance/zoom instead of computing ratio
-            // against a stale baseline (which snapped the zoom). Safe: twoStartDist is read only
-            // in the 2-finger branch.
-            if (currentCount != 2) twoStartDist = 0f
+            // Reset the 2-finger phase whenever we're not in it, so a 2→1→2 transition re-arms the
+            // scroll accumulator cleanly.
+            if (currentCount != 2) twoActive = false
 
             when (currentCount) {
                 1 -> {
@@ -228,47 +229,30 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
                     }
                 }
                 2 -> {
-                    if (twoStartDist == 0f) {
-                        val a = pressed[0].position
-                        val b = pressed[1].position
-                        twoStartDist = hypot((a.x - b.x), (a.y - b.y))
-                        twoStartZoom = controller.userZoom()
+                    // Two fingers = wheel scroll, and nothing else. There is no pinch-zoom gesture
+                    // any more (picture zoom is the zoom pill), so scroll never has to fight it.
+                    if (!twoActive) {
+                        twoActive = true
+                        twoMove = 0f
                         controller.resetScrollAccum()
                         if (holdDragActive) {
                             controller.endDragHold()
                             holdDragActive = false
                         }
-                    } else {
-                        val a = pressed[0].position
-                        val b = pressed[1].position
-                        val dist = hypot((a.x - b.x), (a.y - b.y))
-                        val ratio = if (twoStartDist > 0f) dist / twoStartDist else 1f
-
-                        val avgDx = (pressed[0].positionChange().x + pressed[1].positionChange().x) * 0.5f
-                        val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
-
-                        val pinchActive = abs(ratio - 1f) > PINCH_THRESHOLD
-                        val scrollActive = abs(avgDy) > abs(avgDx) * SCROLL_DOMINANCE &&
-                            abs(avgDy) > SCROLL_MIN_DELTA_PX
-
-                        when {
-                            pinchActive -> {
-                                val newZoom = (twoStartZoom * ratio).coerceIn(1f, 4f)
-                                controller.setUserZoom(newZoom)
-                                controller.setUserPan(
-                                    controller.userPanX() + avgDx,
-                                    controller.userPanY() + avgDy,
-                                )
-                                consumed = true
-                                pressed.forEach { it.consume() }
-                            }
-                            scrollActive -> {
-                                controller.scroll(avgDy)
-                                consumed = true
-                                pressed.forEach { it.consume() }
-                            }
-                        }
                     }
+                    val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
+                    twoMove += abs(avgDy)
+                    twoPendingDy += avgDy
+                    // Gate on a small travel so a still 2-finger TAP keeps `consumed` false and falls
+                    // through to the right-click path in the finally block. Once the gate is crossed,
+                    // flush the ACCUMULATED travel (incl. the pre-gate frames) so the first ~16 px of
+                    // a real scroll isn't dropped, then each later frame feeds its own delta.
+                    if (twoMove > TAP_SLOP_PX) {
+                        controller.scroll(twoPendingDy)
+                        twoPendingDy = 0f
+                        consumed = true
+                    }
+                    pressed.forEach { it.consume() }
                 }
                 3 -> {
                     if (holdDragActive) {
@@ -288,17 +272,11 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
             dur < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
             when (pointerCountPeak) {
                 1 -> {
-                    val sinceLast = now - lastSingleTapEndMs
-                    val isDoubleTap = sinceLast in 1..DOUBLE_TAP_WINDOW_MS &&
-                        abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
-                    if (isDoubleTap && controller.isZoomed()) {
-                        controller.resetUserTransform()
-                        onPinchReset()
-                        commitTap(0L, startX, startY)
-                    } else {
-                        controller.tap(startX, startY, size.width, size.height)
-                        commitTap(now, startX, startY)
-                    }
+                    // Always a left click. Two taps in a row therefore land as a normal remote
+                    // double-click — the old "double-tap to reset local zoom" was removed because it
+                    // ate the remote double-click; zoom reset now lives only on the zoom pill.
+                    controller.tap(startX, startY, size.width, size.height)
+                    commitTap(now, startX, startY)
                 }
                 2 -> {
                     controller.rightClick(startX, startY)

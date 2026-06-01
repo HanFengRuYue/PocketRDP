@@ -53,6 +53,7 @@ fun SessionStatusTitle(
     durationSec: Long,
     fps: Int,
     latencyMs: Int,
+    controlLatencyMs: Int,
     transport: RdpTransport,
     mode: InputMode,
     host: String?,
@@ -121,8 +122,18 @@ fun SessionStatusTitle(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "网络延迟：${if (latencyMs >= 0) "$latencyMs ms" else "测量中…"}",
+                            "操控延迟：${if (controlLatencyMs >= 0) "$controlLatencyMs ms" else "测量中…"}",
                             style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    onClick = { expanded = false },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "网络往返：${if (latencyMs >= 0) "$latencyMs ms" else "测量中…"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
                     onClick = { expanded = false },
