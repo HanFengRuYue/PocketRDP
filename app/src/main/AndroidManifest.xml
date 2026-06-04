@@ -21,6 +21,14 @@
     <!-- One-tap battery-optimization exemption (Doze): lets the held session keep network + wake
          locks during deep Doze. Prompted only while a session is actually connecting. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- All Files Access (folder redirection 整盘共享): the "文件夹重定向" feature mounts the whole
+         internal storage (/storage/emulated/0) as a "PocketRDP" drive on the remote PC. WinPR opens
+         the path with native open()/stat(), so it needs a real filesystem path AND broad read access —
+         on API 30+ scoped storage that requires the MANAGE_EXTERNAL_STORAGE special permission, granted
+         by the user in system settings (prompted contextually in-session). Without it the drive shows
+         empty. tools:ignore=ScopedStorage: this is a deliberate, user-consented all-files share. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:name=".PocketRdpApplication"

@@ -83,6 +83,10 @@ class ConnectionThumbnailStore @Inject constructor(
     companion object {
         private const val TAG = "ThumbStore"
         private const val THUMB_DIR = "thumbnails"
-        private const val JPEG_QUALITY = 80
+        // Bumped 80 → 92 together with the capture resolution (SessionViewModel.THUMB_MAX_DIM 640 →
+        // 1280) to kill the connection-card blur (用户反馈: 主页图片非常模糊). The card spans nearly the
+        // full screen width, so the old 640px/q80 JPEG was upscaled ~2× and looked soft; 1280px/q92
+        // displays ~1:1 on phones. ~100–200 KB per thumbnail — still trivially small.
+        private const val JPEG_QUALITY = 92
     }
 }

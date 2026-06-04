@@ -29,11 +29,17 @@ data class ConnectionEditUiState(
     val preferAvc420: Boolean = false,
     val useGfx: Boolean = true,
     val dynamicResolution: Boolean = true,
+    // Max remote-resolution cap while dynamic-resolution is on. 0 = 跟随设备 (no cap); 720/1080/1440 =
+    // short-edge px cap (long edge bounded to 16:9). See ConnectionEntity.dynamicResMax.
+    val dynamicResMax: Int = 0,
     val useMultitransport: Boolean = true,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,
     val sharedFolderUri: String? = null,
-    val soundMode: Int = 0,
+    // 远程音频路由：0 = 停用 (/audio-mode:none), 1 = 控制端播放 (/audio-mode:redirect),
+    // 2 = 被控端播放 (/audio-mode:server)。新建连接默认 2（被控端播放）；编辑已有连接时由 init
+    // 用 entity.soundMode 覆盖（存量行的列值都是 0 = 停用，不受此默认影响）。
+    val soundMode: Int = 2,
     val desktopScaleFactor: Int = 200,
     // Custom fixed remote resolution (issue 自定义分辨率). When [useCustomResolution] is on, the
     // session connects at customWidth×customHeight and dynamic-resolution is forced off.
@@ -84,6 +90,7 @@ class ConnectionEditViewModel @Inject constructor(
                             preferAvc420 = entity.preferAvc420,
                             useGfx = entity.useGfx,
                             dynamicResolution = entity.dynamicResolution,
+                            dynamicResMax = entity.dynamicResMax,
                             useMultitransport = entity.useMultitransport,
                             redirectClipboard = entity.redirectClipboard,
                             redirectFiles = entity.redirectFiles,
@@ -121,6 +128,7 @@ class ConnectionEditViewModel @Inject constructor(
     fun updatePreferAvc420(value: Boolean) = _state.update { it.copy(preferAvc420 = value) }
     fun toggleGfx(value: Boolean) = _state.update { it.copy(useGfx = value) }
     fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
+    fun updateDynamicResMax(value: Int) = _state.update { it.copy(dynamicResMax = value) }
     fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }
     fun toggleClipboard(value: Boolean) = _state.update { it.copy(redirectClipboard = value) }
     fun toggleFiles(value: Boolean) = _state.update { it.copy(redirectFiles = value) }
@@ -172,6 +180,9 @@ class ConnectionEditViewModel @Inject constructor(
                 preferAvc420 = s.preferAvc420,
                 useGfx = s.useGfx,
                 dynamicResolution = s.dynamicResolution,
+                // Persisted as-is; a stale cap (e.g. set, then custom-res enabled) is harmless because
+                // SessionViewModel only applies it when dynamic resolution is actually in effect.
+                dynamicResMax = s.dynamicResMax,
                 useMultitransport = s.useMultitransport,
                 redirectClipboard = s.redirectClipboard,
                 redirectFiles = s.redirectFiles,

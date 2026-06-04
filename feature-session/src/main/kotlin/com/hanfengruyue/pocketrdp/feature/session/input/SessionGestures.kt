@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
@@ -53,7 +54,6 @@ private const val MAX_TOUCH_CONTACTS = 10
 
 fun Modifier.sessionGestures(
     controller: RdpInputController,
-    modeProvider: () -> InputMode,
 ): Modifier = pointerInput(controller) {
     // Persisted across gestures (for double-tap detection).
     var lastSingleTapEndMs = 0L
@@ -61,11 +61,22 @@ fun Modifier.sessionGestures(
     var lastSingleTapY = 0f
 
     awaitEachGesture {
-        if (modeProvider() == InputMode.TOUCH) {
-            awaitNativeTouchGesture(controller)
+        // Wait for the finger to LAND first, THEN read the live mode. Reading mode after awaitFirstDown
+        // is what makes a top-bar 输入模式 toggle take effect on the very NEXT touch instead of one
+        // gesture late: pointerInput(controller) never restarts its coroutine (controller is stable), so
+        // if we branched into awaitTrackpadGesture / awaitNativeTouchGesture BEFORE awaitFirstDown, the
+        // coroutine would sit idle suspended INSIDE the handler chosen by the PREVIOUS mode reading.
+        // Toggling mode then touching would still run the old handler for that whole gesture, and only
+        // the gesture AFTER it picked up the change (field bug: 切换输入模式后第一下不生效/有延迟). Reading
+        // controller.mode.value the instant the finger lands always dispatches to the current handler.
+        // controller.mode is kept in sync with state.mode by LaunchedEffect(state.mode) → setMode.
+        val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
+        if (controller.mode.value == InputMode.TOUCH) {
+            awaitNativeTouchGesture(controller, first)
         } else {
             awaitTrackpadGesture(
                 controller = controller,
+                first = first,
                 lastSingleTapEndMs = lastSingleTapEndMs,
                 lastSingleTapX = lastSingleTapX,
                 lastSingleTapY = lastSingleTapY,
@@ -85,8 +96,8 @@ fun Modifier.sessionGestures(
  */
 private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitNativeTouchGesture(
     controller: RdpInputController,
+    first: PointerInputChange,
 ) {
-    val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
     val fingerOf = HashMap<Long, Int>()           // PointerId.value → finger slot
     val slotUsed = BooleanArray(MAX_TOUCH_CONTACTS)
     val lastPos = HashMap<Int, Offset>()           // finger slot → last position
@@ -154,12 +165,12 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
  *  caller's persistent double-tap bookkeeping. */
 private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture(
     controller: RdpInputController,
+    first: PointerInputChange,
     lastSingleTapEndMs: Long,
     lastSingleTapX: Float,
     lastSingleTapY: Float,
     commitTap: (endMs: Long, x: Float, y: Float) -> Unit,
 ) {
-    val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
     val gestureStartMs = System.currentTimeMillis()
     val startX = first.position.x
     val startY = first.position.y

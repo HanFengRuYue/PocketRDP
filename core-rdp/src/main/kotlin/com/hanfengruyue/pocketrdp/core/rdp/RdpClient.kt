@@ -186,14 +186,20 @@ class RdpClient @Inject constructor(
     }
 
     /**
-     * Whether the connected server negotiated unicode keyboard input (FreeRDP_UnicodeInput).
+     * Whether unicode keyboard input is enabled for this session (FreeRDP_UnicodeInput).
      *
-     * Critical for input routing: feeding a unicode keyboard event to a server that did NOT
-     * advertise unicode support makes FreeRDP's Android event loop (android_process_event) treat
-     * the rejected input PDU as a fatal error and break out of the connection loop — observed in
-     * the field as "type one character → instant disconnect" (OnDisconnecting fires ~6 ms after
-     * the first sendUnicodeKey). Callers must fall back to the scancode path (or drop the char)
-     * for non-ASCII when this returns false.
+     * The native layer (android_post_connect) now FORCE-ENABLES UnicodeInput=TRUE after the
+     * capability exchange, overriding the server-capability downgrade that used to leave it FALSE
+     * whenever a host didn't advertise INPUT_FLAG_UNICODE in its Demand Active caps. That downgrade
+     * was why typing Chinese silently did nothing (every CJK code point was dropped here while ASCII
+     * went out via the scancode path). So for a live, connected session this is now effectively
+     * always true, and the Kotlin [TextInputEncoder] takes the unicode path for non-ASCII characters.
+     *
+     * It used to be fatal to send unicode to a non-advertising server — the rejected input PDU made
+     * android_process_event break out of the connection loop ("type one character → instant
+     * disconnect"). That path is now defused on both ends: the force-enable means the PDU is no
+     * longer rejected, and android_event.c additionally treats a failed unicode-key send as
+     * non-fatal (rc=TRUE), so even a server that genuinely can't decode it just drops the char.
      *
      * Returns false when there's no live instance, so input is naturally skipped after teardown.
      */
@@ -524,10 +530,15 @@ class RdpClient @Inject constructor(
             args += "/drive:PocketRDP,${p.drivePath}"
         }
 
-        // Sound redirection: 0=off 1=local-play 2=remote
+        // 远程音频路由（等价 mstsc 的「播放位置」三选项）。rdpsnd + OpenSL ES 播放后端已静态编译进
+        // libfreerdp-client3.so（DT_NEEDED libOpenSLES.so + CLIENT_RDPSND_SUBSYSTEM_TABLE，已二进制验证），
+        // AudioPlayback=TRUE 时 rdpsnd 作为静态通道由 freerdp_client_load_addins 自动加载（cmdline.c
+        // staticChannels 表），从 C 层 OpenSL ES 直接出声，无需 JNI 回调。/audio-mode 是枚举值选项
+        // （必须带值；非 BOOL，不踩 /opt:off 陷阱）；0 用显式 none 强制 AudioPlayback+RemoteConsoleAudio 皆 FALSE。
         when (p.soundMode) {
-            1 -> args += "/sound"
-            2 -> args += "/microphone"
+            1 -> args += "/audio-mode:redirect" // 控制端（手机）播放：重定向到客户端，opensles 出声
+            2 -> args += "/audio-mode:server"   // 被控端（远端机）播放：RemoteConsoleAudio，声音留在被控电脑
+            else -> args += "/audio-mode:none"  // 0 = 停用音频
         }
         return args.toTypedArray()
     }
@@ -554,9 +565,10 @@ class RdpClient @Inject constructor(
         private const val CONTROL_LATENCY_IDLE_GAP_MS = 80L
         // A press→frame gap beyond this is treated as "no genuine response" and discarded: the press
         // caused no visible change and we caught a later unrelated frame. Also bounds how stale a
-        // pending arm may get. Tightened from 600ms so most periodic-frame (cursor-blink) mispairs are
-        // rejected, but kept >= a few hundred ms so genuinely slow real responses still count.
-        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 420L
+        // pending arm may get. Tightened 600→420→300ms: with hardware (MediaCodec) decode the true felt
+        // latency is well under 300ms, so a narrower window rejects more periodic-frame (cursor-blink)
+        // mispairs for a truer reading, while still > a typical real response so genuine samples count.
+        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 300L
         // Recent-sample ring + low percentile replace the old EMA-of-all (the terminal-blink inflation
         // fix). 20 samples ≈ tens of seconds of interaction; P25 = trustworthy low end without min-lock.
         private const val CONTROL_LATENCY_SAMPLE_WINDOW = 20

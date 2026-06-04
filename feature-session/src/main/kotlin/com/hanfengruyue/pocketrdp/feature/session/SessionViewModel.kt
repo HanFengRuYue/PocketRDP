@@ -3,6 +3,7 @@ package com.hanfengruyue.pocketrdp.feature.session
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Environment
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,7 +21,9 @@ import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
 import com.hanfengruyue.pocketrdp.feature.session.service.RdpSessionService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,9 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
+import kotlin.math.roundToInt
 
 sealed interface SessionConnectionStatus {
     data object Idle : SessionConnectionStatus
@@ -71,6 +74,12 @@ data class SessionUiState(
     /** Negotiated network transport (TCP / RDP-UDP multitransport) for the status badge (issue #2). */
     val transport: RdpTransport = RdpTransport.UNKNOWN,
     val targetFrameRate: Int = 0,
+    /**
+     * Whether this connection has folder redirection on (整盘共享). When true, SessionScreen prompts
+     * for the MANAGE_EXTERNAL_STORAGE (所有文件访问) permission if it isn't granted yet — without it the
+     * remote "PocketRDP" drive shows empty. Loaded from entity.redirectFiles in launchConnect.
+     */
+    val filesRedirectEnabled: Boolean = false,
     val lastError: String? = null,
 )
 
@@ -93,6 +102,12 @@ class SessionViewModel @Inject constructor(
     // remote desktop even though the user disabled auto-resolution (issue: "关闭自动分辨率仍被修改").
     // Defaults true so behaviour is unchanged until the entity is loaded.
     private var dynamicResolutionEnabled: Boolean = true
+
+    // Max remote-resolution cap (SHORT-edge px) applied to every monitor-layout PDU while dynamic
+    // resolution is on, so we never ask the remote to render at the phone's full (often 1440p+) native
+    // resolution (issue: 直接套用手机分辨率导致性能压力过大). 0 = 跟随设备 / no cap. Loaded from
+    // entity.dynamicResMax in launchConnect; only meaningful while [dynamicResolutionEnabled].
+    private var dynamicResMaxShortEdge: Int = 0
 
     // Clipboard text bridge. The cliprdr channel is enabled at the protocol layer via
     // /clipboard:...direction-to:all in buildCommandLine, but the actual sync to/from the Android
@@ -117,19 +132,40 @@ class SessionViewModel @Inject constructor(
         appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
     private var clipListenerRegistered = false
+    private var clipDebounceJob: Job? = null
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!clipboardSyncEnabled) return@OnPrimaryClipChangedListener
-        val txt = clipboardManager.primaryClip
-            ?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)
-            ?.coerceToText(appContext)
-            ?.toString()
-            .orEmpty()
-        // Skip empties and anything we just received from the remote (loop guard).
-        if (txt.isEmpty() || txt == lastSyncedClipboard) return@OnPrimaryClipChangedListener
-        lastSyncedClipboard = txt
-        rdpClient.sendClipboard(txt)
+        // Debounce + off-main-thread + length cap (the 复制大量文本→断开/闪退 fix). The system can fire
+        // this several times in a burst AND on the main thread; reading the clip and JNI-sending a huge
+        // string synchronously on each callback blocked the UI and could overwhelm the cliprdr channel.
+        // Collapse a burst into ONE send of the final clip, on a background coroutine, capped length.
+        clipDebounceJob?.cancel()
+        clipDebounceJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(CLIPBOARD_DEBOUNCE_MS)
+            val raw = clipboardManager.primaryClip
+                ?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)
+                ?.coerceToText(appContext)
+                ?.toString()
+                .orEmpty()
+            // Skip empties and anything we just received from the remote (loop guard, compared on the
+            // RAW clip so an over-cap remote paste echoed back here still matches and isn't bounced).
+            if (raw.isEmpty() || raw == lastSyncedClipboard) return@launch
+            lastSyncedClipboard = raw
+            val txt = if (raw.length > CLIPBOARD_MAX_CHARS) {
+                PocketLogger.w(TAG, "clipboard ${raw.length} chars > cap $CLIPBOARD_MAX_CHARS, truncating")
+                raw.take(CLIPBOARD_MAX_CHARS)
+            } else {
+                raw
+            }
+            rdpClient.sendClipboard(txt)
+        }
     }
+
+    // Large-text input queue (the 粘贴大量文本→断开/闪退 fix). typeText offers each committed chunk here;
+    // a SINGLE background consumer coroutine (startTypeConsumer) types it via TextInputEncoder.typeThrottled
+    // so keystrokes are paced (no UI block, no input-channel flood) AND ordered across overlapping pastes.
+    private val typeChannel = Channel<String>(Channel.UNLIMITED)
 
     // Latest latency probe result (ms, -1 = unknown), sampled by a background coroutine and folded
     // into UI state by the 1 Hz metrics ticker (the sole writer of metrics — see CLAUDE.md).
@@ -172,7 +208,29 @@ class SessionViewModel @Inject constructor(
         startMetricsTicker()
         startLatencyProbe()
         startThumbnailCapture()
+        startTypeConsumer()
         if (id > 0L) launchConnect(id)
+    }
+
+    /**
+     * Single ordered consumer of [typeChannel]: types each committed text chunk on a background
+     * thread, paced by [TextInputEncoder.typeThrottled]. One consumer (not one coroutine per chunk)
+     * keeps keystroke order correct when pastes overlap. Re-reads unicode support per chunk (a cheap
+     * native getter) so it tracks the post-connect capability flip.
+     */
+    private fun startTypeConsumer() {
+        viewModelScope.launch(Dispatchers.Default) {
+            for (text in typeChannel) {
+                runCatching {
+                    TextInputEncoder.typeThrottled(
+                        text = text,
+                        unicodeSupported = rdpClient.isUnicodeInputSupported(),
+                        sendKey = rdpClient::sendKeyEvent,
+                        sendUnicode = rdpClient::sendUnicodeKey,
+                    )
+                }
+            }
+        }
     }
 
     private fun observeEvents() {
@@ -400,6 +458,25 @@ class SessionViewModel @Inject constructor(
         else -> RdpTransport.TCP
     }
 
+    /**
+     * Scale a requested dynamic-resolution size down so NEITHER edge exceeds the connection's cap
+     * (issue: 动态分辨率直接套用手机全分辨率导致被控端渲染压力过大). [dynamicResMaxShortEdge] is the SHORT-edge
+     * cap in px (720 / 1080 / 1440); the long edge is bounded to 16:9 of it. 0 = 跟随设备 (no cap) → the
+     * size is returned unchanged. Aspect ratio is preserved, the result is NEVER upscaled, and both
+     * edges are rounded DOWN to even numbers (RDP servers commonly clamp resolutions to multiples of 2).
+     */
+    private fun capToDynamicMax(width: Int, height: Int): Pair<Int, Int> {
+        val capShort = dynamicResMaxShortEdge
+        if (capShort <= 0 || width <= 0 || height <= 0) return width to height
+        val capLong = capShort * DYNAMIC_RES_ASPECT_LONG / DYNAMIC_RES_ASPECT_SHORT
+        val shortEdge = minOf(width, height)
+        val longEdge = maxOf(width, height)
+        val scale = minOf(1f, capShort.toFloat() / shortEdge, capLong.toFloat() / longEdge)
+        if (scale >= 1f) return width to height
+        fun toEven(v: Float): Int = v.roundToInt().let { it - (it and 1) }.coerceAtLeast(2)
+        return toEven(width * scale) to toEven(height * scale)
+    }
+
     private fun launchConnect(id: Long) {
         viewModelScope.launch {
             val entity = repository.findById(id) ?: run {
@@ -418,11 +495,16 @@ class SessionViewModel @Inject constructor(
             // would resize it). Otherwise fall back to the dynamic-res default of 1920×1080 initial.
             val useCustomRes = entity.customWidth > 0 && entity.customHeight > 0
             val effectiveDynamic = entity.dynamicResolution && !useCustomRes
-            val initialW = if (useCustomRes) entity.customWidth else 1920
-            val initialH = if (useCustomRes) entity.customHeight else 1080
-            // Cache the auto-resolution setting for the session lifetime so the monitor-layout
-            // sends below are correctly gated even if the entity changes later.
+            // Cache the auto-resolution setting + the max-edge cap for the session lifetime so the
+            // monitor-layout sends below are correctly gated/capped even if the entity changes later.
             dynamicResolutionEnabled = effectiveDynamic
+            dynamicResMaxShortEdge = if (effectiveDynamic) entity.dynamicResMax else 0
+            val baseW = if (useCustomRes) entity.customWidth else DEFAULT_DYNAMIC_WIDTH
+            val baseH = if (useCustomRes) entity.customHeight else DEFAULT_DYNAMIC_HEIGHT
+            // Cap the INITIAL size too (capToDynamicMax is a no-op for custom-res, where the cap is 0)
+            // so a 720p-capped connection doesn't briefly open at full size before the first
+            // monitor-layout PDU corrects it down.
+            val (initialW, initialH) = capToDynamicMax(baseW, baseH)
             // Same for clipboard: gates both directions of the text bridge (see clipListener /
             // the ClipboardReceived branch). Off → channel is /clipboard:...direction-to:off too.
             clipboardSyncEnabled = entity.redirectClipboard
@@ -433,18 +515,19 @@ class SessionViewModel @Inject constructor(
                     targetFrameRate = entity.targetFrameRate,
                     // Open in the connection's preferred input mode (1 = 直接触屏 / native touch).
                     mode = if (entity.defaultInputMode == 1) InputMode.TOUCH else InputMode.TRACKPAD,
+                    filesRedirectEnabled = entity.redirectFiles,
                 )
             }
             val plain = runCatching { repository.decryptPassword(entity) }.getOrDefault("")
-            // File redirection: export an app-private POSIX folder (a real filesystem path — NOT the
-            // SAF content:// URI, which WinPR can't open()) as a "PocketRDP" drive. mkdirs() up front
-            // because FreeRDP silently skips a non-existent drive path at parse time.
+            // File redirection: export the WHOLE internal storage (/storage/emulated/0) as a "PocketRDP"
+            // drive so the remote PC sees ALL phone files (用户需求: 默认共享整个安卓存储). This is a real
+            // POSIX path WinPR can open()/stat() (a SAF content:// URI can NOT be used). Reading the whole
+            // tree on API 30+ scoped storage needs the MANAGE_EXTERNAL_STORAGE (所有文件访问) permission —
+            // prompted contextually in SessionScreen. Until it's granted the path is unreadable and
+            // freerdp_path_valid silently SKIPS it (non-fatal, the drive just doesn't appear), so we still
+            // pass it and the drive lights up the moment the user grants access.
             val driveDir = if (entity.redirectFiles) {
-                runCatching {
-                    appContext.getExternalFilesDir(null)?.let { base ->
-                        File(base, "PocketRDP").apply { mkdirs() }.absolutePath
-                    }
-                }.getOrNull()
+                runCatching { Environment.getExternalStorageDirectory()?.absolutePath }.getOrNull()
             } else {
                 null
             }
@@ -594,27 +677,72 @@ class SessionViewModel @Inject constructor(
         rdpClient.sendKeyEvent(ctrl, false)
     }
 
-    fun typeText(text: String) {
-        // Route per-character: printable ASCII via the scancode path (works regardless of the
-        // server's unicode-input capability), other code points via unicode only when the server
-        // supports it. Sending unicode to a server that didn't negotiate it tears down the whole
-        // session — this is the "type a character → instant disconnect" fix.
-        TextInputEncoder.type(
-            text = text,
-            unicodeSupported = rdpClient.isUnicodeInputSupported(),
-            sendKey = rdpClient::sendKeyEvent,
-            sendUnicode = rdpClient::sendUnicodeKey,
-        )
+    fun typeText(rawText: String) {
+        if (rawText.isEmpty()) return
+        // Normalise line breaks to a single '\n' first so a CRLF never becomes a DOUBLE Enter in the
+        // fallback typing path; the clipboard path re-expands to CRLF for Windows.
+        val text = rawText.replace("\r\n", "\n").replace('\r', '\n')
+        // A chunk that is MULTI-LINE or LARGE is a PASTE, not live typing. Route it through the remote
+        // clipboard + Ctrl+V instead of typing it character-by-character. Char-by-char is wrong for a
+        // paste in two ways the user hit in the field:
+        //   • it floods the RDP input channel for large text → 断开/闪退 (even paced, tens of thousands
+        //     of key PDUs overwhelm the link/server), and
+        //   • it turns every newline into an Enter keystroke — '\n' isn't printable ASCII so it goes out
+        //     as a unicode key event that Windows treats as Enter (用户报告: 剪贴板里的换行输入进电脑变成回车).
+        // A clipboard paste inserts the whole block at ONCE: newlines stay as text and only 4 key events
+        // are sent. Needs clipboard redirection (the remote clipboard); when it's off we fall back to the
+        // throttled char-by-char typing (still bounded, just can't avoid the newline-as-Enter there).
+        val isPaste = text.length > PASTE_VIA_CLIPBOARD_THRESHOLD || text.contains('\n')
+        if (isPaste && clipboardSyncEnabled) {
+            pasteViaRemoteClipboard(text)
+        } else {
+            // Offer the chunk to the background type consumer (startTypeConsumer). trySend never blocks;
+            // the channel is UNLIMITED and drained by ONE ordered consumer that paces the keystrokes.
+            // Per-char routing (ASCII → scancode, else unicode) lives in TextInputEncoder.
+            typeChannel.trySend(text)
+        }
+    }
+
+    /**
+     * Paste a block of text into the remote by putting it on the remote clipboard and sending Ctrl+V,
+     * instead of typing it out. This is how a large / multi-line paste is delivered (see [typeText]):
+     * it preserves newlines as text and sends only 4 key events, so it neither floods the input channel
+     * (断开/闪退) nor turns newlines into Enter (换行变回车). The cliprdr push is async, so we wait briefly
+     * before the paste so the remote clipboard holds the new text first.
+     */
+    private fun pasteViaRemoteClipboard(text: String) {
+        viewModelScope.launch(Dispatchers.Default) {
+            // CRLF so Windows apps render the line breaks (a bare \n shows as no break in Notepad etc.),
+            // and cap the length the same way the clipboard listener does.
+            val crlf = text.replace("\n", "\r\n")
+            val payload = if (crlf.length > CLIPBOARD_MAX_CHARS) crlf.take(CLIPBOARD_MAX_CHARS) else crlf
+            // Echo guard: mark before sending so the server echoing this text back (ClipboardReceived)
+            // — and our own clipboard listener — recognise it and don't bounce it around.
+            lastSyncedClipboard = payload
+            rdpClient.sendClipboard(payload)
+            delay(CLIPBOARD_PASTE_DELAY_MS)
+            val ctrl = ScancodeMap.VK.LCONTROL
+            val vKey = ScancodeMap.asciiVkFor('v'.code)?.first ?: VK_V_FALLBACK
+            rdpClient.sendKeyEvent(ctrl, true)
+            rdpClient.sendKeyEvent(vKey, true)
+            rdpClient.sendKeyEvent(vKey, false)
+            rdpClient.sendKeyEvent(ctrl, false)
+        }
     }
 
     fun onSurfaceResized(width: Int, height: Int) {
         // Auto-resolution disabled → never push a monitor layout; the remote stays at its connect
         // resolution regardless of how the local view is sized (issue: "关闭自动分辨率仍被修改").
         if (!dynamicResolutionEnabled) return
+        // Cap the requested size to the connection's dynamic-resolution ceiling FIRST, so we never ask
+        // the remote to render at the phone's full (often 1440p+) native resolution (issue: 性能压力过大).
+        // Storing the CAPPED size as pending also makes the OnGraphicsResize ack-match (in observeEvents)
+        // compare against what we actually sent, so the retry loop still terminates correctly.
+        val (capW, capH) = capToDynamicMax(width, height)
         // Always update the pending size synchronously — scheduleMonitorLayoutRetry reads it
         // and we need the *latest* dimensions if a retry happens to fire before the debounce.
-        pendingMonitorWidth = width
-        pendingMonitorHeight = height
+        pendingMonitorWidth = capW
+        pendingMonitorHeight = capH
         // Collapse keyboard-animation resize bursts. We log only the post-debounce dispatch so
         // logs stay readable; the burst itself produces no spam.
         monitorLayoutDebounceJob?.cancel()
@@ -675,6 +803,7 @@ class SessionViewModel @Inject constructor(
 
     /** Stop mirroring local clipboard changes (idempotent). Always called on session teardown. */
     private fun unregisterClipboardListener() {
+        clipDebounceJob?.cancel()
         if (!clipListenerRegistered) return
         runCatching { clipboardManager.removePrimaryClipChangedListener(clipListener) }
         clipListenerRegistered = false
@@ -703,6 +832,7 @@ class SessionViewModel @Inject constructor(
         // own scope, so it survives this ViewModel's scope being cancelled right after onCleared.
         captureThumbnail()
         unregisterClipboardListener()
+        typeChannel.close()
         rdpClient.disconnect()
         super.onCleared()
     }
@@ -717,13 +847,37 @@ class SessionViewModel @Inject constructor(
         // How often the background coroutine probes network latency. 4 s balances freshness
         // against the cost of opening a throwaway TCP connection to the host.
         private const val LATENCY_PROBE_INTERVAL_MS = 4000L
+        // Clipboard local→remote sync: collapse a burst of OnPrimaryClipChanged callbacks into one send
+        // at the final stable clip, and cap how much text we push over cliprdr (the 大量文本→断开/闪退 fix).
+        private const val CLIPBOARD_DEBOUNCE_MS = 250L
+        private const val CLIPBOARD_MAX_CHARS = 256 * 1024
+        // typeText: a chunk longer than this (or containing any newline) is treated as a PASTE and is
+        // delivered via the remote clipboard + Ctrl+V instead of char-by-char typing — see typeText.
+        // High enough that normal typing / IME word commits never trip it; low enough to catch real
+        // pastes well before they could flood the input channel.
+        private const val PASTE_VIA_CLIPBOARD_THRESHOLD = 200
+        // Wait after pushing the clipboard before sending Ctrl+V, so the async cliprdr round-trip has
+        // updated the remote clipboard first. (The text was usually already synced when the user copied,
+        // so this is mostly insurance.)
+        private const val CLIPBOARD_PASTE_DELAY_MS = 400L
+        // VK_V (0x56) fallback if the ASCII map ever fails to resolve 'v'.
+        private const val VK_V_FALLBACK = 0x56
         // Desktop-thumbnail capture: snapshot the framebuffer this often so the connection card
         // shows a recent picture even if the session ends abruptly (a crash/kill skips the
         // disconnect-time capture). 12 s is frequent enough to stay current without churning the disk.
         private const val THUMB_CAPTURE_INTERVAL_MS = 12_000L
-        // Longest edge (px) of the stored thumbnail. ~640 keeps a 16:9 card crisp on hi-dpi phones
-        // while the JPEG stays a few tens of KB.
-        private const val THUMB_MAX_DIM = 640
+        // Longest edge (px) of the stored thumbnail. Bumped 640 → 1280 to kill the connection-card
+        // blur (用户反馈: 主页图片非常模糊): the card spans almost the full screen width, so a 640px source
+        // was upscaled ~2× and looked soft. 1280px (paired with JPEG quality 92, see ConnectionThumbnail
+        // Store) shows ~1:1 on phones and stays ~100–200 KB. snapshot() never upscales beyond the
+        // framebuffer, so a sub-1280 remote desktop just stores at its own size.
+        private const val THUMB_MAX_DIM = 1280
+        // Dynamic-resolution default initial size (issue: 1920×1080 fallback) and the 16:9 bounding box
+        // used by capToDynamicMax to derive the long-edge cap from the chosen short-edge cap.
+        private const val DEFAULT_DYNAMIC_WIDTH = 1920
+        private const val DEFAULT_DYNAMIC_HEIGHT = 1080
+        private const val DYNAMIC_RES_ASPECT_LONG = 16
+        private const val DYNAMIC_RES_ASPECT_SHORT = 9
         // Auto-reconnect backoff after an unexpected drop / failed attempt (ms). The array length
         // also caps the number of tries — after the last one we give up and stop the keep-alive
         // service. Resets to attempt 0 on every successful Connected.
