@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
@@ -71,6 +73,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,8 +91,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -228,6 +233,32 @@ fun SessionScreen(
                 }
             },
             onDismiss = { showBatteryDialog = false },
+        )
+    }
+
+    // --- All Files Access for folder redirection (整盘共享) ---
+    // When the connection has 文件夹重定向 on but the app lacks MANAGE_EXTERNAL_STORAGE, the remote
+    // "PocketRDP" drive (= the whole internal storage) shows empty. Prompt contextually once per
+    // session to grant it. The drive is mounted from the /drive flag at connect time, so granting
+    // mid-session needs a reconnect — the dialog says so.
+    var allFilesPromptShown by remember { mutableStateOf(false) }
+    var showAllFilesDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(state.status, state.filesRedirectEnabled) {
+        if (state.status is SessionConnectionStatus.Connected &&
+            state.filesRedirectEnabled && !allFilesPromptShown &&
+            !Environment.isExternalStorageManager()
+        ) {
+            allFilesPromptShown = true
+            showAllFilesDialog = true
+        }
+    }
+    if (showAllFilesDialog) {
+        AllFilesAccessDialog(
+            onConfirm = {
+                showAllFilesDialog = false
+                openAllFilesAccessSettings(context)
+            },
+            onDismiss = { showAllFilesDialog = false },
         )
     }
 
@@ -381,12 +412,25 @@ fun SessionScreen(
                 }
             }
 
-            // Local zoom controls (issue #3) — shown in BOTH input modes (per user choice). Their
-            // own composable collects userTransform so only this small overlay recomposes on zoom,
-            // never the framebuffer. Hidden while the soft keyboard is up to avoid clutter.
-            if (!state.imeVisible) {
+            // Local zoom + move controls. Shown in BOTH input modes. Wrapped in a fillMaxSize box
+            // with imePadding() so that when the soft keyboard is up they relocate into the still-
+            // visible strip ABOVE the keyboard (and the function-key toolbar) instead of being hidden
+            // — the user can now zoom AND pan the picture WHILE typing (用户需求: 呼出键盘时也能缩放和
+            // 移动画面). imePadding() collapses to 0 when no keyboard is shown, so the off-keyboard
+            // layout is unchanged; it is a layout-phase inset read (not a composable-body read) so the
+            // keyboard animation re-lays-out only this overlay box, never SessionCanvas. The box has no
+            // pointerInput, so its empty area doesn't intercept gestures — only the controls do (each
+            // consumes its own pointer). Each control collects userTransform itself, so a zoom/pan
+            // recomposes only the small overlay, never the framebuffer.
+            // Track the overlay box's (imePadding-shrunk) size so the relocatable zoom pill can be
+            // clamped to stay reachable inside it even after a keyboard/rotation reflow.
+            var overlaySize by remember { mutableStateOf(IntSize.Zero) }
+            Box(
+                modifier = Modifier.fillMaxSize().imePadding().onSizeChanged { overlaySize = it },
+            ) {
                 ZoomControls(
                     controller = controller,
+                    containerSize = overlaySize,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .windowInsetsPadding(WindowInsets.displayCutout)
@@ -395,11 +439,13 @@ fun SessionScreen(
 
                 // Move handle (only while zoomed in): drag it to pan the magnified picture; long-press
                 // it then drag to relocate the handle itself (so it doesn't cover what you want to tap).
-                // Shown ONLY in native-touch mode. In TRACKPAD mode the view auto-follows the virtual
-                // cursor when zoomed (RdpInputController.followCursorWhenZoomed), so dragging the cursor
-                // already pans the picture and the handle is redundant — per user request 模拟鼠标模式
-                // 隐藏控制杆、用手势拖动画面. Native touch has no follow, so it keeps the handle.
-                if (state.mode == InputMode.TOUCH) {
+                // Normally shown ONLY in native-touch mode — in TRACKPAD mode the view auto-follows the
+                // virtual cursor when zoomed (RdpInputController.followCursorWhenZoomed), so dragging the
+                // cursor already pans and the handle is redundant (用户需求 模拟鼠标模式隐藏控制杆、用手势
+                // 拖动画面). BUT while the keyboard is up the user is typing, not dragging the cursor, so
+                // cursor-follow can't pan — we show the handle in BOTH modes then so a zoomed picture
+                // stays movable from behind the keyboard.
+                if (state.mode == InputMode.TOUCH || state.imeVisible) {
                     PanHandle(
                         controller = controller,
                         modifier = Modifier.align(Alignment.Center),
@@ -421,6 +467,10 @@ fun SessionScreen(
             ) {
                 SessionToolbar(viewModel = viewModel, state = state)
             }
+
+            // Feeds the soft-keyboard (+ function-key toolbar) height into the controller so the
+            // framebuffer is lifted just clear of it while typing — see ImeLiftEffect.
+            ImeLiftEffect(controller = controller, chromeVisible = state.chromeVisible)
 
             // Hidden IME bridge — Compose tree always contains it, but it only requests
             // focus when state.imeVisible is true.
@@ -449,6 +499,39 @@ private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Un
     )
 }
 
+@Composable
+private fun AllFilesAccessDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("允许访问所有文件？") },
+        text = {
+            Text(
+                "「文件夹重定向」会把你手机的整个存储挂载到被控电脑（资源管理器里的「PocketRDP」盘）。" +
+                    "这需要授予 PocketRDP「所有文件访问」权限。授权后请重新连接以挂载磁盘。",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("去授权") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("暂不") } },
+    )
+}
+
+/** Open the system "All files access" settings page for this app (folder redirection 整盘共享). */
+private fun openAllFilesAccessSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:${context.packageName}"),
+            ),
+        )
+    }.onFailure {
+        // Some ROMs reject the per-app intent — fall back to the generic all-files-access list.
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+    }
+}
+
 private fun Context.findActivity(): Activity? {
     var ctx: Context? = this
     while (ctx is ContextWrapper) {
@@ -465,6 +548,34 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
     if (mask and ScancodeMap.Modifier.WIN != 0) add("Win")
 }
 
+// Height (dp) of the function-key toolbar (a Material3 BottomAppBar) that floats just above the
+// keyboard while typing — added to the keyboard height so the lift clears the toolbar too, not just
+// the keyboard.
+private const val FUNCTION_TOOLBAR_HEIGHT_DP = 80
+
+/**
+ * Drives the keyboard-lift (issue: 呼出键盘后画面被下方键盘挡住看不见). Reads the live soft-keyboard height
+ * from `WindowInsets.ime` and (when the function-key toolbar is showing above it) adds the toolbar's
+ * height, then feeds the total bottom occlusion to the controller, which translates the framebuffer up
+ * just enough to keep its lower part visible above the keyboard.
+ *
+ * Kept as its OWN tiny composable so the per-animation-frame recomposition from reading the (animating)
+ * ime inset is confined here and never re-runs SessionCanvas. The lift is a pure transform — it does
+ * NOT resize the canvas, so it never re-fits the picture or resets the user's zoom/pan (the reason the
+ * canvas itself is deliberately kept full-size; see the SessionCanvas comment).
+ */
+@Composable
+private fun ImeLiftEffect(controller: RdpInputController, chromeVisible: Boolean) {
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val toolbarPx = if (imeBottomPx > 0 && chromeVisible) {
+        with(density) { FUNCTION_TOOLBAR_HEIGHT_DP.dp.toPx() }
+    } else {
+        0f
+    }
+    SideEffect { controller.setBottomOcclusion(imeBottomPx + toolbarPx) }
+}
+
 /**
  * Applies the local pinch zoom/pan as a graphicsLayer transform. The [transform] State is read
  * INSIDE the layer block, so it runs in the layer-record (draw) phase — a transform change
@@ -477,7 +588,10 @@ private fun Modifier.userTransformLayer(transform: State<UserTransform>): Modifi
         scaleX = t.zoom
         scaleY = t.zoom
         translationX = t.panX
-        translationY = t.panY
+        // offsetY is the keyboard-lift: an extra upward translation so the picture's lower part stays
+        // visible above the soft keyboard. Layered on top of panY (both screen-space), so it shifts the
+        // already-zoomed/panned picture without re-fitting or resetting the user's zoom/pan.
+        translationY = t.panY + t.offsetY
         transformOrigin = TransformOrigin.Center
     }
 
@@ -547,10 +661,10 @@ private fun SessionCanvas(
             // sessionGestures sits ABOVE the graphicsLayer so pointer events arrive in
             // un-transformed view coordinates — that lets the controller's toRemote math
             // undo the fit-to-view + the user zoom/pan and land on the right remote pixel.
-            .sessionGestures(
-                controller = controller,
-                modeProvider = { mode },
-            ),
+            // It reads the input mode live from the controller (kept in sync with state.mode by
+            // the LaunchedEffect above), so it doesn't take a mode arg — see sessionGestures' doc
+            // for why a captured `{ mode }` lambda would go stale here.
+            .sessionGestures(controller = controller),
         contentAlignment = Alignment.Center,
     ) {
         if (current == null) {
@@ -659,6 +773,8 @@ private const val ZOOM_DRAG_SLOP_PX = 8f      // px of finger travel before a pr
 private const val ZOOM_DRAG_BASE = 2f         // zoom multiplies by this over one TRAVEL_PX of drag
 private const val ZOOM_DRAG_TRAVEL_PX = 180f  // finger px that doubles / halves the zoom
 private const val ZOOM_DOUBLE_TAP_MS = 280L   // double-tap window for reset-to-100%
+// Hold the pill still this long, then drag, to relocate it (matches PAN_HANDLE_LONG_PRESS_MS).
+private const val ZOOM_RELOCATE_LONG_PRESS_MS = 350L
 
 /**
  * Floating zoom control — a SINGLE compact pill (issue #2): drag it UP to zoom in, DOWN to zoom
@@ -668,68 +784,53 @@ private const val ZOOM_DOUBLE_TAP_MS = 280L   // double-tap window for reset-to-
  * one finger often landed on a button). The pill is a much smaller target, so the canvas gets the
  * whole right edge back.
  *
+ * Long-press the pill (hold it still [ZOOM_RELOCATE_LONG_PRESS_MS]), THEN drag, to relocate the pill
+ * itself out of the way of whatever it covers — the SAME vocab as the move handle (用户需求: 缩放按钮
+ * 也能像移动杆一样长按拖动改位置，防止正好遮挡画面内容). It remembers its dragged-to position, clamped via
+ * [clampPillOffset] to [containerSize] so it can never be dragged off-screen and lost (it is the ONLY
+ * zoom control — there is no pinch gesture); the clamp is also re-applied when the container reflows
+ * (soft keyboard / rotation). The gesture itself lives in [Modifier.zoomPillGestures]; relocate is
+ * armed ONLY while the finger stays within [ZOOM_DRAG_SLOP_PX] of the down point, so a vertical drag
+ * past that is a zoom instead and a quick tap still falls through to the double-tap reset.
+ *
  * Collects userTransform internally so a zoom change recomposes ONLY this small overlay — the
  * framebuffer AndroidView reads the transform deferred inside its graphicsLayer and never
- * recomposes. The pointerInput consumes its own pointer, so dragging the pill never leaks into the
+ * recomposes. The gesture consumes its own pointer, so dragging the pill never leaks into the
  * canvas gesture surface behind it.
  */
 @Composable
-private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Modifier) {
+private fun ZoomControls(
+    controller: RdpInputController,
+    containerSize: IntSize,
+    modifier: Modifier = Modifier,
+) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
     val pct = (transform.zoom * 100).roundToInt()
     val zoomed = pct > 100
     var dragging by remember { mutableStateOf(false) }
+    var movingSelf by remember { mutableStateOf(false) }
+    // The pill remembers where it was dragged (long-press-then-drag relocates it, like the move handle).
+    var handleOffset by remember { mutableStateOf(Offset.Zero) }
+    var pillSize by remember { mutableStateOf(IntSize.Zero) }
     val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+    // Re-clamp on container/pill reflow (soft keyboard, rotation) so the pill stays reachable.
+    LaunchedEffect(containerSize, pillSize) {
+        handleOffset = clampPillOffset(handleOffset, 0f, 0f, containerSize, pillSize)
+    }
 
     Surface(
-        modifier = modifier.pointerInput(controller) {
-            var lastTapMs = 0L
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-                down.consume()
-                val startZoom = controller.userZoom()
-                var totalDy = 0f
-                var isDrag = false
-                var tracking = true
-                while (tracking) {
-                    val event = awaitPointerEvent()
-                    val change = event.changes.firstOrNull { it.id == down.id }
-                    if (change == null || !change.pressed) {
-                        // Our pointer lifted (or vanished) → end this gesture.
-                        change?.consume()
-                        tracking = false
-                    } else {
-                        totalDy += change.positionChange().y
-                        if (!isDrag && abs(totalDy) > ZOOM_DRAG_SLOP_PX) {
-                            isDrag = true
-                            dragging = true
-                        }
-                        if (isDrag) {
-                            // Drag UP (negative dy) magnifies. Multiplicative mapping → a fixed
-                            // finger travel changes the zoom by a constant ratio at any level.
-                            val factor = ZOOM_DRAG_BASE.pow(-totalDy / ZOOM_DRAG_TRAVEL_PX)
-                            controller.setUserZoom(startZoom * factor)
-                        }
-                        change.consume()
-                    }
-                }
-                dragging = false
-                if (isDrag) {
-                    // A drag breaks the double-tap chain so a stray tap right after a quick
-                    // drag-to-zoom can't be read as a double-tap and wipe the zoom just set.
-                    lastTapMs = 0L
-                } else {
-                    // It was a tap; a second tap inside the window resets the zoom to 100%.
-                    val now = System.currentTimeMillis()
-                    if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
-                        controller.resetZoom()
-                        lastTapMs = 0L
-                    } else {
-                        lastTapMs = now
-                    }
-                }
-            }
-        },
+        modifier = modifier
+            .onSizeChanged { pillSize = it }
+            .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
+            .zoomPillGestures(
+                controller = controller,
+                containerSize = containerSize,
+                pillSize = { pillSize },
+                handleOffset = { handleOffset },
+                setHandleOffset = { handleOffset = it },
+                setDragging = { dragging = it },
+                setMovingSelf = { movingSelf = it },
+            ),
         shape = CircleShape,
         color = containerColor,
         tonalElevation = 3.dp,
@@ -740,8 +841,8 @@ private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Mo
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Icon(
-                imageVector = Icons.Default.ZoomIn,
-                contentDescription = "缩放：上滑放大、下滑缩小，双击复位",
+                imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.ZoomIn,
+                contentDescription = "缩放：上滑放大、下滑缩小，双击复位；长按后拖动可移动此按钮",
                 tint = MaterialTheme.colorScheme.onSurface,
             )
             // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
@@ -756,17 +857,128 @@ private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Mo
     }
 }
 
+/**
+ * The zoom pill's gesture vocab, factored out of [ZoomControls] so that composable stays small:
+ * drag up/down = continuous zoom, double-tap = reset to 100%, long-press-then-drag = relocate the
+ * pill (armed only while the finger holds still within the slop, exactly like PanHandle). Pill state
+ * lives in the composable and is read/written through getter/setter lambdas so a gesture recomposes
+ * ONLY the small overlay. The relocate offset runs through [clampPillOffset] so the pill can never be
+ * dragged off-screen and lost — it is the only zoom control (no pinch gesture). Consumes only its own
+ * tracked pointer, so it never leaks into the canvas gesture surface beneath.
+ */
+private fun Modifier.zoomPillGestures(
+    controller: RdpInputController,
+    containerSize: IntSize,
+    pillSize: () -> IntSize,
+    handleOffset: () -> Offset,
+    setHandleOffset: (Offset) -> Unit,
+    setDragging: (Boolean) -> Unit,
+    setMovingSelf: (Boolean) -> Unit,
+): Modifier = pointerInput(controller, containerSize) {
+    var lastTapMs = 0L
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        down.consume()
+        val startZoom = controller.userZoom()
+        val startOffset = handleOffset()
+        val startMs = System.currentTimeMillis()
+        var totalDx = 0f
+        var totalDy = 0f
+        var isDrag = false    // vertical travel past slop → zoom drag
+        var moveSelf = false  // long-press fired while still → relocate the pill itself
+        var tracking = true
+        while (tracking) {
+            // While still and not yet zoom-dragging, arm a long-press → relocate mode
+            // (same vocab as PanHandle); moving past the slop first makes it a zoom drag.
+            val armLong = !isDrag && !moveSelf &&
+                abs(totalDx) + abs(totalDy) <= ZOOM_DRAG_SLOP_PX
+            val event = if (armLong) {
+                val remaining = (ZOOM_RELOCATE_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                    .coerceAtLeast(1L)
+                withTimeoutOrNull(remaining) { awaitPointerEvent() }
+            } else {
+                awaitPointerEvent()
+            }
+            if (event == null) {
+                // Held still long enough → relocate the pill for the rest of the gesture.
+                moveSelf = true
+                setMovingSelf(true)
+                continue
+            }
+            val change = event.changes.firstOrNull { it.id == down.id }
+            if (change != null && change.pressed) {
+                val d = change.positionChange()
+                totalDx += d.x
+                totalDy += d.y
+                if (!moveSelf && !isDrag && abs(totalDy) > ZOOM_DRAG_SLOP_PX) {
+                    isDrag = true
+                    setDragging(true)
+                }
+                if (moveSelf) {
+                    // Relocate the pill itself (follows the finger 1:1), clamped on-screen.
+                    setHandleOffset(clampPillOffset(startOffset, totalDx, totalDy, containerSize, pillSize()))
+                } else if (isDrag) {
+                    // Drag UP (negative dy) magnifies; multiplicative so a fixed travel
+                    // is a constant zoom ratio at any level.
+                    val factor = ZOOM_DRAG_BASE.pow(-totalDy / ZOOM_DRAG_TRAVEL_PX)
+                    controller.setUserZoom(startZoom * factor)
+                }
+                change.consume()
+            } else {
+                // Our pointer lifted (or vanished) → end this gesture.
+                change?.consume()
+                tracking = false
+            }
+        }
+        setDragging(false)
+        setMovingSelf(false)
+        if (isDrag || moveSelf) {
+            // A zoom drag or relocate breaks the double-tap chain so a stray tap after it
+            // can't be read as a double-tap and wipe the zoom just set.
+            lastTapMs = 0L
+        } else {
+            // It was a tap; a second tap inside the window resets the zoom to 100%.
+            val now = System.currentTimeMillis()
+            if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
+                controller.resetZoom()
+                lastTapMs = 0L
+            } else {
+                lastTapMs = now
+            }
+        }
+    }
+}
+
+/**
+ * Clamp the zoom pill's relocate offset so the pill always stays reachable inside [container]. At
+ * offset 0 the pill sits at CenterEnd, so it may move LEFT by up to (container − pill), barely right
+ * (clamped to 0), and ± half the vertical slack. No-ops until both sizes are measured.
+ */
+private fun clampPillOffset(base: Offset, dx: Float, dy: Float, container: IntSize, pill: IntSize): Offset {
+    if (minOf(container.width, container.height, pill.width, pill.height) <= 0) {
+        return Offset(base.x + dx, base.y + dy)
+    }
+    val minX = -(container.width - pill.width).coerceAtLeast(0).toFloat()
+    val maxY = ((container.height - pill.height).coerceAtLeast(0) / 2).toFloat()
+    return Offset((base.x + dx).coerceIn(minX, 0f), (base.y + dy).coerceIn(-maxY, maxY))
+}
+
 // Move-handle tuning (issue: a dedicated button to pan the magnified picture, plus long-press to
 // relocate the button so it can't sit over what you want to tap).
 private const val PAN_HANDLE_SIZE_DP = 60
 private const val PAN_HANDLE_SLOP_PX = 6f          // travel before a press counts as a drag
 private const val PAN_HANDLE_LONG_PRESS_MS = 350L  // hold this long → drag the handle itself
+// Pan gain used when the handle is shown for the keyboard-lift case at 100% zoom (not magnified).
+// At zoom 1 the normal gain (= zoom = 1) would need a full-screen-height drag to reveal the lifted-off
+// top; a >1 gain lets a moderate drag pull the picture down to the top (clampPan still bounds it).
+private const val PAN_HANDLE_KEYBOARD_GAIN = 2.5f
 
 /**
- * Floating MOVE handle, shown ONLY while the picture is zoomed in (issue: pan the magnified picture
- * without any gesture, so it can't fight the touch-control gestures). Drag it to pan the framebuffer
- * the same direction (gain = current zoom, so a small handle drag still reaches the edges at 4×).
- * Long-press it, then drag, to relocate the handle out of the way of whatever you need to tap.
+ * Floating MOVE handle. Shown while the picture is zoomed in OR while it's auto-lifted above the soft
+ * keyboard (offsetY < 0) even at 100% — so the user can pull the lifted picture back down to see its
+ * top (用户需求: 呼出键盘后能移动画面看上方内容). Drag it to pan the framebuffer the same direction
+ * (gain = current zoom when magnified, else [PAN_HANDLE_KEYBOARD_GAIN] for the keyboard case). Long-
+ * press it, then drag, to relocate the handle out of the way of whatever you need to tap.
  *
  * Collects userTransform internally so only this small overlay recomposes; its pointerInput consumes
  * its own pointer, so neither panning nor relocating leaks into the canvas gesture surface behind it.
@@ -779,7 +991,10 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
     var movingSelf by remember { mutableStateOf(false) }
     val zoomed = (transform.zoom * 100).roundToInt() > 100
-    if (!zoomed) return
+    // offsetY < 0 means the keyboard auto-lift pushed the picture up — show the handle so the top
+    // (now off-screen) can be pulled back into view, even when not magnified.
+    val keyboardLifted = transform.offsetY < 0f
+    if (!zoomed && !keyboardLifted) return
 
     val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
     Surface(
@@ -792,7 +1007,7 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
                     down.consume()
                     val startPanX = controller.userPanX()
                     val startPanY = controller.userPanY()
-                    val gain = controller.userZoom()
+                    val gain = if (controller.userZoom() > 1f) controller.userZoom() else PAN_HANDLE_KEYBOARD_GAIN
                     val startOffset = handleOffset
                     val startMs = System.currentTimeMillis()
                     var totalDx = 0f

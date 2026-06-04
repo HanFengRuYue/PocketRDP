@@ -10,7 +10,7 @@ import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 
 @Database(
     entities = [ConnectionEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class PocketRdpDatabase : RoomDatabase() {
@@ -78,9 +78,22 @@ abstract class PocketRdpDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 → v7: adds dynamic_res_max — the max remote-resolution cap (short-edge px) applied while
+         * dynamic-resolution is on (0 = 跟随设备 / no cap; 720 / 1080 / 1440 otherwise). Default 0 keeps
+         * every existing connection's uncapped behaviour (it still follows the full local view size).
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE connections ADD COLUMN dynamic_res_max INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun create(context: Context): PocketRdpDatabase =
             Room.databaseBuilder(context, PocketRdpDatabase::class.java, DB_NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                )
                 .build()
     }
 }

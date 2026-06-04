@@ -1,6 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
+import kotlinx.coroutines.delay
 
 /**
  * Encodes committed IME text into RDP key events, choosing the safe wire path per character.
@@ -28,9 +29,18 @@ object TextInputEncoder {
 
     private const val TAG = "TextInput"
     private const val DROP_LOG_LIMIT = 10
+    // Async-typing pacing: after this many code points, pause briefly. A large paste otherwise fired
+    // thousands of key events back-to-back, blocking the UI thread (ANR/闪退) and flooding the RDP input
+    // channel in one burst (服务端/中间盒断连). ~16 chars / 8 ms ≈ 2000 chars/s — fast to type, gentle on
+    // the channel. Only [typeThrottled] paces; [type] stays synchronous for any caller that needs it.
+    private const val THROTTLE_BATCH = 16
+    private const val THROTTLE_DELAY_MS = 8L
     private var droppedNonAsciiLogCount = 0
 
     /**
+     * Synchronous variant: encode + send the whole string inline. Fine for short input; for large
+     * pastes prefer [typeThrottled] off the main thread (see SessionViewModel.typeText).
+     *
      * @param unicodeSupported snapshot of [RdpClient.isUnicodeInputSupported] taken once for the
      *   whole string — capability doesn't change mid-session, so we avoid a JNI hop per char.
      * @param sendKey scancode/VK path (Windows VK in, native re-translates to PS/2).
@@ -46,29 +56,60 @@ object TextInputEncoder {
         while (i < text.length) {
             val cp = text.codePointAt(i)
             i += Character.charCount(cp)
+            sendCodePoint(cp, unicodeSupported, sendKey, sendUnicode)
+        }
+    }
 
-            val ascii = ScancodeMap.asciiVkFor(cp)
-            when {
-                ascii != null -> {
-                    val (vk, shift) = ascii
-                    if (shift) sendKey(ScancodeMap.VK.LSHIFT, true)
-                    sendKey(vk, true)
-                    sendKey(vk, false)
-                    if (shift) sendKey(ScancodeMap.VK.LSHIFT, false)
-                }
-                unicodeSupported -> {
-                    sendUnicode(cp, true)
-                    sendUnicode(cp, false)
-                }
-                else -> {
-                    if (droppedNonAsciiLogCount < DROP_LOG_LIMIT) {
-                        droppedNonAsciiLogCount++
-                        PocketLogger.w(
-                            TAG,
-                            "dropping non-ASCII input U+${cp.toString(16).uppercase()} — " +
-                                "server did not negotiate unicode keyboard input",
-                        )
-                    }
+    /**
+     * Throttled, suspending variant for large input. Same per-character routing as [type] but pauses
+     * every [THROTTLE_BATCH] code points so a big paste neither blocks the caller's thread nor floods
+     * the RDP input channel. MUST be called from a coroutine (typically a single-consumer background
+     * one so keystroke order is preserved across overlapping pastes) — see SessionViewModel.typeText.
+     */
+    suspend fun typeThrottled(
+        text: String,
+        unicodeSupported: Boolean,
+        sendKey: (vk: Int, down: Boolean) -> Unit,
+        sendUnicode: (codePoint: Int, down: Boolean) -> Unit,
+    ) {
+        var i = 0
+        var sent = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            i += Character.charCount(cp)
+            sendCodePoint(cp, unicodeSupported, sendKey, sendUnicode)
+            if (++sent % THROTTLE_BATCH == 0) delay(THROTTLE_DELAY_MS)
+        }
+    }
+
+    /** Route one code point to the scancode (printable ASCII) or unicode path; drop+log otherwise. */
+    private fun sendCodePoint(
+        cp: Int,
+        unicodeSupported: Boolean,
+        sendKey: (vk: Int, down: Boolean) -> Unit,
+        sendUnicode: (codePoint: Int, down: Boolean) -> Unit,
+    ) {
+        val ascii = ScancodeMap.asciiVkFor(cp)
+        when {
+            ascii != null -> {
+                val (vk, shift) = ascii
+                if (shift) sendKey(ScancodeMap.VK.LSHIFT, true)
+                sendKey(vk, true)
+                sendKey(vk, false)
+                if (shift) sendKey(ScancodeMap.VK.LSHIFT, false)
+            }
+            unicodeSupported -> {
+                sendUnicode(cp, true)
+                sendUnicode(cp, false)
+            }
+            else -> {
+                if (droppedNonAsciiLogCount < DROP_LOG_LIMIT) {
+                    droppedNonAsciiLogCount++
+                    PocketLogger.w(
+                        TAG,
+                        "dropping non-ASCII input U+${cp.toString(16).uppercase()} — " +
+                            "server did not negotiate unicode keyboard input",
+                    )
                 }
             }
         }

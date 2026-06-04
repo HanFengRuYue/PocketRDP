@@ -11,6 +11,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -25,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -101,22 +113,26 @@ fun SessionStatusTitle(
             if (!host.isNullOrBlank()) {
                 DropdownMenuItem(
                     text = { Text("主机：$host", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Dns) },
                     onClick = { expanded = false },
                 )
             }
             if (remoteWidth > 0 && remoteHeight > 0) {
                 DropdownMenuItem(
                     text = { Text("远端分辨率：${remoteWidth}×${remoteHeight}", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.AspectRatio) },
                     onClick = { expanded = false },
                 )
             }
             if (status is SessionConnectionStatus.Connected) {
                 DropdownMenuItem(
                     text = { Text("已连接：${formatDuration(durationSec)}", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Timer) },
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
                     text = { Text("帧率：${fps} fps", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Speed) },
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
@@ -126,6 +142,7 @@ fun SessionStatusTitle(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Bolt) },
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
@@ -136,20 +153,26 @@ fun SessionStatusTitle(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Wifi) },
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
                     text = { Text("网络协议：${transportLabel(transport)}", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Lan) },
                     onClick = { expanded = false },
                 )
             }
             DropdownMenuItem(
                 text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) },
+                leadingIcon = {
+                    MenuRowIcon(if (mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp)
+                },
                 onClick = { expanded = false },
             )
             if (stickyModifierLabels.isNotEmpty()) {
                 DropdownMenuItem(
                     text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Keyboard) },
                     onClick = { expanded = false },
                 )
             }
@@ -162,6 +185,14 @@ fun SessionStatusTitle(
                             color = MaterialTheme.colorScheme.error,
                         )
                     },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    },
                     onClick = {
                         expanded = false
                         onErrorClick()
@@ -170,6 +201,17 @@ fun SessionStatusTitle(
             }
         }
     }
+}
+
+/** Small muted leading icon for a status dropdown row. */
+@Composable
+private fun MenuRowIcon(icon: ImageVector) {
+    Icon(
+        imageVector = icon,
+        contentDescription = null,
+        modifier = Modifier.size(18.dp),
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

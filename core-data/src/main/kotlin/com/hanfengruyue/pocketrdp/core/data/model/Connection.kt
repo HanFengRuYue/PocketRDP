@@ -16,16 +16,29 @@ data class ConnectionEntity(
     @ColumnInfo(name = "password_iv") val passwordIv: ByteArray = ByteArray(0),
     @ColumnInfo(name = "color_depth") val colorDepth: Int = 32,
     @ColumnInfo(name = "use_h264") val useH264: Boolean = true,
-    // false = 画质优先 (/gfx:AVC444, full 4:4:4); true = 流畅优先 (/gfx:AVC420, single YUV420 stream —
-    // lower software-decode cost & control latency). Only meaningful while useH264. Default false keeps
-    // the historical AVC444 behaviour for existing connections.
-    @ColumnInfo(name = "prefer_avc420") val preferAvc420: Boolean = false,
+    // false = 画质优先 (/gfx:AVC444, full 4:4:4); true = 流畅优先 (/gfx:AVC420, single YUV420 stream).
+    // Default TRUE (流畅优先) for the lowest control latency: AVC420 is a single H.264 stream with no
+    // prim_YUV444 recombine, so it's both cheaper to decode AND the clean path for the MediaCodec
+    // hardware decoder (a hardware codec's output strides feeding the AVC444 recombine is the historical
+    // chroma-artifact risk). Existing connections keep their stored value; users who want crisp 4:4:4
+    // text can still pick 画质优先. Only meaningful while useH264.
+    @ColumnInfo(name = "prefer_avc420") val preferAvc420: Boolean = true,
     @ColumnInfo(name = "use_gfx") val useGfx: Boolean = true,
     @ColumnInfo(name = "dynamic_resolution") val dynamicResolution: Boolean = true,
+    // Max remote resolution cap while dynamic-resolution is on (issue: 防止直接套用手机全分辨率导致被控端
+    // 渲染压力过大). 0 = 跟随设备 (no cap — send the full local view size). Otherwise the SHORT-edge cap in
+    // px (720 / 1080 / 1440); the long edge is bounded to 16:9 of it. Ignored when dynamicResolution is
+    // off or a custom fixed resolution is set. Default 1080 (1080p cap) for lower 操控延迟: a phone's full
+    // 1440p+ view is a 4 MP+ frame to encode AND decode every frame; capping to 1080p roughly halves that
+    // cost. Existing connections keep their stored value (0 = uncapped); users can pick 跟随设备 for full res.
+    @ColumnInfo(name = "dynamic_res_max") val dynamicResMax: Int = 1080,
     @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = true,
     @ColumnInfo(name = "redirect_clipboard") val redirectClipboard: Boolean = true,
     @ColumnInfo(name = "redirect_files") val redirectFiles: Boolean = false,
     @ColumnInfo(name = "shared_folder_uri") val sharedFolderUri: String? = null,
+    // 远程音频路由（v1 基线列）：0 = 停用 (/audio-mode:none)，1 = 控制端播放 (/audio-mode:redirect，
+    // 远端声音重定向到手机，rdpsnd→OpenSL ES 出声)，2 = 被控端播放 (/audio-mode:server，
+    // RemoteConsoleAudio，声音留在被控电脑扬声器)。存量行默认 0（停用）。见 RdpClient.buildCommandLine。
     @ColumnInfo(name = "sound_mode") val soundMode: Int = 0,
     @ColumnInfo(name = "desktop_scale_factor") val desktopScaleFactor: Int = 200,
     // Custom fixed remote resolution. 0/0 = "not set" → follow [dynamicResolution] / default size.
@@ -57,6 +70,7 @@ data class ConnectionEntity(
             preferAvc420 == other.preferAvc420 &&
             useGfx == other.useGfx &&
             dynamicResolution == other.dynamicResolution &&
+            dynamicResMax == other.dynamicResMax &&
             useMultitransport == other.useMultitransport &&
             redirectClipboard == other.redirectClipboard &&
             redirectFiles == other.redirectFiles &&
@@ -86,6 +100,7 @@ data class ConnectionEntity(
         result = 31 * result + preferAvc420.hashCode()
         result = 31 * result + useGfx.hashCode()
         result = 31 * result + dynamicResolution.hashCode()
+        result = 31 * result + dynamicResMax
         result = 31 * result + useMultitransport.hashCode()
         result = 31 * result + redirectClipboard.hashCode()
         result = 31 * result + redirectFiles.hashCode()

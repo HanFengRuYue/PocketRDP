@@ -68,6 +68,14 @@ class RdpInputController(
     private var userPanX: Float = 0f
     private var userPanY: Float = 0f
 
+    // Soft-keyboard (+ function-key toolbar) occlusion at the BOTTOM of the view, in screen px, and the
+    // resulting upward lift applied to the framebuffer so its lower part stays visible above the keyboard
+    // (用户需求: 呼出键盘后画面上移、不被键盘挡住). The lift is a pure screen-space translation layered on TOP
+    // of zoom/pan — it does NOT resize the canvas, so it never re-fits the picture or resets the user's
+    // zoom/pan (which is exactly why we DON'T shrink the canvas: that reset was the prior field bug).
+    private var bottomOcclusionPx: Float = 0f
+    private var imeOffsetY: Float = 0f
+
     // View size in px (set on layout). Lets clampPan() keep the scaled framebuffer covering the view.
     private var viewW: Float = 0f
     private var viewH: Float = 0f
@@ -93,6 +101,26 @@ class RdpInputController(
         viewportScale = if (scale > 0f) scale else 1f
         viewportDx = dx
         viewportDy = dy
+        // Re-clamp + republish so the keyboard lift (which depends on the picture's on-screen bottom)
+        // and the lift-pan room track a fit change too — e.g. an orientation/resolution switch while
+        // the keyboard is up.
+        clampPan()
+        publishTransform()
+    }
+
+    /**
+     * Set the total bottom occlusion (soft keyboard + the function-key toolbar that floats above it),
+     * in screen px, so the framebuffer is lifted just clear of it. 0 = nothing covering the bottom.
+     * Driven by SessionScreen from WindowInsets.ime. See [computeImeOffset].
+     */
+    fun setBottomOcclusion(px: Float) {
+        if (px == bottomOcclusionPx) return
+        bottomOcclusionPx = px
+        // Re-clamp: appearing keyboard opens extra downward pan room (clampPan reads autoLift); a
+        // disappearing keyboard (px→0) must re-dial any leftover downward panY back to 0 so the picture
+        // doesn't stay shifted down after the keyboard hides.
+        clampPan()
+        publishTransform()
     }
 
     /** Local pinch/zoom factor; clamped to [1, MAX_ZOOM]. Publishes so graphicsLayer tracks it live. */
@@ -142,11 +170,46 @@ class RdpInputController(
         val maxX = ((userZoom - 1f) * viewW / 2f).coerceAtLeast(0f)
         val maxY = ((userZoom - 1f) * viewH / 2f).coerceAtLeast(0f)
         userPanX = userPanX.coerceIn(-maxX, maxX)
-        userPanY = userPanY.coerceIn(-maxY, maxY)
+        // When the soft keyboard occludes the bottom, the framebuffer is auto-lifted UP (offsetY, see
+        // [autoLift]) which pushes its TOP off-screen. Allow extra DOWNWARD pan (positive panY) up to
+        // that lift amount so the user can pull the picture back down and see the top — at zoom 1 maxY
+        // is 0, so without this panY is locked and the top is unreachable behind the toolbar (用户需求:
+        // 呼出键盘后能把画面拖下来看到上方内容). liftRoom is panY-INDEPENDENT (autoLift ignores panY), so a
+        // downward drag actually moves the picture instead of being cancelled by a growing auto-lift.
+        // At panY == liftRoom: translationY = panY + offsetY = liftRoom + (-liftRoom) = 0 → fit origin.
+        val liftRoom = -autoLift()
+        userPanY = userPanY.coerceIn(-maxY, maxY + liftRoom)
     }
 
     private fun publishTransform() {
-        _userTransform.value = UserTransform(userZoom, userPanX, userPanY)
+        // Recompute the keyboard lift here so it tracks EVERY transform change (zoom/pan/viewport/view
+        // size) — all of them flow through publishTransform.
+        imeOffsetY = autoLift()
+        _userTransform.value = UserTransform(userZoom, userPanX, userPanY, imeOffsetY)
+    }
+
+    /**
+     * How far (screen px, ≤ 0 = up) to auto-translate the framebuffer so its bottom clears the keyboard.
+     * Lifts ONLY as much as needed to bring the picture's on-screen bottom edge up to the top of the
+     * occluded band, capped at the occlusion height — so a picture already clear of the keyboard (e.g.
+     * a small one with a large bottom letterbox) is not moved, and a zoomed one that runs off the bottom
+     * is lifted by the full occlusion. Returns 0 when nothing covers the bottom.
+     *
+     * Deliberately computed from fit + zoom ONLY — it does NOT add userPanY. That decoupling is what
+     * lets the keyboard-pan (the extra downward panY room granted by [clampPan]) actually move the
+     * picture: if the lift grew with panY, a downward drag would be exactly cancelled by a deepening
+     * auto-lift and the top would stay unreachable.
+     */
+    private fun autoLift(): Float {
+        val occl = bottomOcclusionPx
+        if (occl <= 0f || viewH <= 0f) return 0f
+        val cy = viewH / 2f
+        // Bottom edge of the framebuffer on screen under the current fit + user zoom (pan & ime lift
+        // excluded): screen = centre + zoom*(base - centre).
+        val pictureBottomBase = viewportDy + remoteHeight * viewportScale
+        val pictureBottomScreen = cy + userZoom * (pictureBottomBase - cy)
+        val needed = (pictureBottomScreen - (viewH - occl)).coerceIn(0f, occl)
+        return -needed
     }
 
     fun toggleMode() {
@@ -355,7 +418,9 @@ class RdpInputController(
             val cx = viewW / 2f
             val cy = viewH / 2f
             bx = cx + (localX - cx - userPanX) / userZoom
-            by = cy + (localY - cy - userPanY) / userZoom
+            // Undo the keyboard lift too (it's an extra screen-space Y translation layered with panY),
+            // so a touch still lands on the correct remote pixel while the picture is lifted.
+            by = cy + (localY - cy - userPanY - imeOffsetY) / userZoom
         }
         // Step 2: undo the fit-to-view letterbox + scale (base view pixels → remote pixels).
         val s = if (viewportScale > 0f) viewportScale else 1f
@@ -381,9 +446,11 @@ class RdpInputController(
     }
 }
 
-/** Local view transform applied by SessionScreen's graphicsLayer (pinch zoom + pan, in view px). */
+/** Local view transform applied by SessionScreen's graphicsLayer (pinch zoom + pan, in view px).
+ *  [offsetY] is the extra upward keyboard-lift translation (≤ 0), layered on top of [panY]. */
 data class UserTransform(
     val zoom: Float = 1f,
     val panX: Float = 0f,
     val panY: Float = 0f,
+    val offsetY: Float = 0f,
 )
