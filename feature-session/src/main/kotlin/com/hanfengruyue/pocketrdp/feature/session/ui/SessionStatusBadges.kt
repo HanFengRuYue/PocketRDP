@@ -13,15 +13,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lan
-import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -41,19 +40,24 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.gestures.detectTapGestures
-import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportStats
 import com.hanfengruyue.pocketrdp.feature.session.SessionConnectionStatus
+import java.util.Locale
 
 /**
  * Compact session-status indicator for the TopAppBar title slot.
  *
  * Renders as a single row:  [●] 8.163.3.48:41120 ⏷
- * Tapping anywhere on the row opens a dropdown with the full set of session metrics
- * (resolution, duration, FPS, mode, sticky modifiers, last error).
+ * Tapping anywhere on the row opens a dropdown with the session metrics
+ * (resolution, frame rate, control latency, transport, sticky modifiers, last error).
  *
- * This replaces the older "stuff every chip into TopAppBar.actions" layout, which on a
- * 360-400dp portrait screen pushed the title off-screen and overlapped the status bar.
+ * Latency breakdown (2026 操控延迟 audit): instead of one merged scalar, the dropdown now shows the
+ * pipeline split so "is it network / server / decode / display?" is answerable in the field —
+ * **操控延迟**（输入→解码), **显示延迟**（解码→上屏, the part the felt-latency metric structurally can't
+ * measure), **网络往返** (raw RTT, no longer folded into the control number — the clamp was dropped),
+ * and a **采样** row (accepted vs discarded discrete-input samples: a high discard ratio means presses
+ * aren't producing frames, i.e. the cost is server-side/inert-screen, not the client).
  */
 @Composable
 fun SessionStatusTitle(
@@ -62,12 +66,14 @@ fun SessionStatusTitle(
     connectionId: Long,
     remoteWidth: Int,
     remoteHeight: Int,
-    durationSec: Long,
     fps: Int,
-    latencyMs: Int,
     controlLatencyMs: Int,
+    presentLagMs: Int,
+    networkRttMs: Int,
+    latencyAccepted: Int,
+    latencyDiscarded: Int,
     transport: RdpTransport,
-    mode: InputMode,
+    transportStats: RdpTransportStats,
     host: String?,
     stickyModifierLabels: List<String>,
     lastError: String?,
@@ -126,11 +132,6 @@ fun SessionStatusTitle(
             }
             if (status is SessionConnectionStatus.Connected) {
                 DropdownMenuItem(
-                    text = { Text("已连接：${formatDuration(durationSec)}", style = MaterialTheme.typography.bodySmall) },
-                    leadingIcon = { MenuRowIcon(Icons.Default.Timer) },
-                    onClick = { expanded = false },
-                )
-                DropdownMenuItem(
                     text = { Text("帧率：${fps} fps", style = MaterialTheme.typography.bodySmall) },
                     leadingIcon = { MenuRowIcon(Icons.Default.Speed) },
                     onClick = { expanded = false },
@@ -138,7 +139,7 @@ fun SessionStatusTitle(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "操控延迟：${if (controlLatencyMs >= 0) "$controlLatencyMs ms" else "测量中…"}",
+                            "操控延迟（输入→解码）：${if (controlLatencyMs >= 0) "$controlLatencyMs ms" else "测量中…"}",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     },
@@ -148,12 +149,31 @@ fun SessionStatusTitle(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "网络往返：${if (latencyMs >= 0) "$latencyMs ms" else "测量中…"}",
+                            "显示延迟（解码→上屏）：${if (presentLagMs >= 0) "$presentLagMs ms" else "测量中…"}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
-                    leadingIcon = { MenuRowIcon(Icons.Default.Wifi) },
+                    leadingIcon = { MenuRowIcon(Icons.Default.Schedule) },
+                    onClick = { expanded = false },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "网络往返：${if (networkRttMs >= 0) "$networkRttMs ms" else "测量中…"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    leadingIcon = { MenuRowIcon(Icons.Default.NetworkCheck) },
+                    onClick = { expanded = false },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "采样：接受 $latencyAccepted / 丢弃 $latencyDiscarded",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    leadingIcon = { MenuRowIcon(Icons.Default.DataUsage) },
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
@@ -161,14 +181,30 @@ fun SessionStatusTitle(
                     leadingIcon = { MenuRowIcon(Icons.Default.Lan) },
                     onClick = { expanded = false },
                 )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "UDP 流量：↓ ${formatBytes(transportStats.inBytes)} / ↑ ${formatBytes(transportStats.outBytes)}，" +
+                                "包 ↓ ${transportStats.inPackets} / ↑ ${transportStats.outPackets}，重传 ${transportStats.retransmits}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    leadingIcon = { MenuRowIcon(Icons.Default.DataUsage) },
+                    onClick = { expanded = false },
+                )
+                if (transport == RdpTransport.TCP_FALLBACK) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "UDP 回退原因：${udpFallbackReason(transportStats)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        },
+                        leadingIcon = { MenuRowIcon(Icons.Default.ErrorOutline) },
+                        onClick = { expanded = false },
+                    )
+                }
             }
-            DropdownMenuItem(
-                text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) },
-                leadingIcon = {
-                    MenuRowIcon(if (mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp)
-                },
-                onClick = { expanded = false },
-            )
             if (stickyModifierLabels.isNotEmpty()) {
                 DropdownMenuItem(
                     text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) },
@@ -232,10 +268,38 @@ private fun StatusDot(status: SessionConnectionStatus) {
 }
 
 private fun transportLabel(transport: RdpTransport): String = when (transport) {
-    RdpTransport.UDP -> "UDP（多路传输）"
     RdpTransport.TCP -> "TCP"
+    RdpTransport.TCP_FALLBACK -> "TCP（UDP 回退）"
+    RdpTransport.UDP_R -> "UDP-R"
+    RdpTransport.UDP_L -> "UDP-L"
+    RdpTransport.UDP2 -> "UDP2"
     RdpTransport.UNKNOWN -> "检测中…"
 }
+
+private fun udpFallbackReason(stats: RdpTransportStats): String {
+    val stage = when (stats.failureStage.toInt()) {
+        1 -> "协议类型未支持"
+        2 -> "RDP 目标地址无效"
+        3 -> "UDP socket 连接失败"
+        4 -> "UDP SYN 发送失败"
+        5 -> "UDP SYN 无响应；检查 frp/防火墙 UDP 映射"
+        6 -> "UDP SYN-ACK 接收失败"
+        7 -> "UDP SYN-ACK 解析失败"
+        8 -> "本地资源不足"
+        9 -> "UDP final ACK 发送失败"
+        10 -> "服务端 UDP 版本不支持"
+        11 -> "UDP TLS/DTLS 握手失败"
+        12 -> "Tunnel Create Request 发送失败"
+        13 -> "Tunnel Create Response 无响应"
+        14 -> "服务端拒绝 Tunnel Create"
+        else -> "服务端未建立 UDP tunnel"
+    }
+    val socket = if (stats.socketError != 0L) "，socket=${stats.socketError}" else ""
+    val hr = if (stats.tunnelHr != 0L) "，HRESULT=${formatHr(stats.tunnelHr)}" else ""
+    return "$stage$hr$socket"
+}
+
+private fun formatHr(value: Long): String = String.format(Locale.US, "0x%08X", value)
 
 private fun statusFullLabel(status: SessionConnectionStatus): String = when (status) {
     SessionConnectionStatus.Idle -> "未连接"
@@ -245,10 +309,11 @@ private fun statusFullLabel(status: SessionConnectionStatus): String = when (sta
     is SessionConnectionStatus.Failed -> "连接失败"
 }
 
-private fun formatDuration(sec: Long): String {
-    if (sec < 0) return "00:00"
-    val h = sec / 3600
-    val m = (sec % 3600) / 60
-    val s = sec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+private fun formatBytes(bytes: Long): String {
+    val value = bytes.coerceAtLeast(0)
+    return when {
+        value >= 1_048_576L -> String.format(Locale.US, "%.1f MB", value / 1_048_576.0)
+        value >= 1024L -> String.format(Locale.US, "%.1f KB", value / 1024.0)
+        else -> "$value B"
+    }
 }

@@ -15,6 +15,7 @@ import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
 import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportStats
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
@@ -71,8 +72,17 @@ data class SessionUiState(
      * first sample. See [RdpClient.controlLatencyMs].
      */
     val controlLatencyMs: Int = -1,
+    /**
+     * Display-pipeline latency in ms (decode→on-screen present) — the part [controlLatencyMs] does NOT
+     * measure. Felt latency ≈ controlLatencyMs + presentLagMs. -1 until the first drawn frame.
+     */
+    val presentLagMs: Int = -1,
+    /** Diagnostic (METRIC-4): discrete-input samples that got a timely frame (accepted) vs none (discarded). */
+    val latencyAccepted: Int = 0,
+    val latencyDiscarded: Int = 0,
     /** Negotiated network transport (TCP / RDP-UDP multitransport) for the status badge (issue #2). */
     val transport: RdpTransport = RdpTransport.UNKNOWN,
+    val transportStats: RdpTransportStats = RdpTransportStats(),
     val targetFrameRate: Int = 0,
     /**
      * Whether this connection has folder redirection on (整盘共享). When true, SessionScreen prompts
@@ -332,11 +342,17 @@ class SessionViewModel @Inject constructor(
                             monitorLayoutRetryJob?.cancel()
                         }
                     }
-                    // GraphicsUpdated (content-driven, 30-60 Hz and 0 when idle) is no longer
-                    // counted for FPS. The counter is now ticked from RdpSurface.onFrameRendered
-                    // (see onFrameRendered below) so the displayed number reflects the steady
-                    // render rate / configured target frame rate instead of dropping to 0 the
-                    // moment the remote screen stops changing.
+                    is RdpEvent.GraphicsUpdated -> {
+                        // FPS = the genuine CONTENT update rate (how often the remote picture
+                        // actually changed), counted here per published frame. This deliberately
+                        // REVERTS the earlier "count render frames via onFrameRendered" design:
+                        // that counted the self-redraw loop, which in 自动/auto mode (targetFrameRate
+                        // == 0) runs at the device refresh rate (e.g. 120 Hz) and reported ~120 fps
+                        // even when the remote screen barely changed (用户反馈: 帧数虚高，肉眼根本没那么
+                        // 高). Counting content frames matches what the eye sees — idle ⇒ ~0, video ⇒
+                        // ~content fps — and is honest. The 1 Hz ticker still samples snapshot().
+                        fpsCounter.tick()
+                    }
                     else -> Unit
                 }
             }
@@ -352,21 +368,26 @@ class SessionViewModel @Inject constructor(
                 if (current.status is SessionConnectionStatus.Connected && current.connectedAtMs > 0L) {
                     val now = System.currentTimeMillis()
                     val dur = (now - current.connectedAtMs) / 1000L
-                    // transportInfo() is a cheap in-memory native getter; the RDP-UDP multitransport
-                    // bootstrap finishes a few seconds after Connected, so polling each tick is how
-                    // the badge flips TCP→UDP once it comes up.
+                    // transportInfo() is a cheap in-memory native getter. Polling each tick lets
+                    // the badge flip only when a real UDP/UDP2 tunnel state appears.
                     val transport = decodeTransport(rdpClient.transportInfo())
+                    val transportStats = rdpClient.transportStats()
                     _state.update {
                         it.copy(
                             fps = fpsCounter.snapshot(),
                             durationSec = dur,
                             latencyMs = lastLatencyMs,
-                            // Felt control latency can never be below the raw network RTT — clamp up so
-                            // the low-percentile estimate can't read under that physical floor.
-                            controlLatencyMs = rdpClient.controlLatencyMs().let { cl ->
-                                if (cl >= 0 && lastLatencyMs >= 0) maxOf(cl, lastLatencyMs) else cl
-                            },
+                            // 操控延迟 = the raw empirical input→decode estimate (METRIC-2: the old
+                            // maxOf(cl, lastLatencyMs) clamp to a fresh TCP-handshake RTT was DROPPED —
+                            // the handshake includes the server's listen/accept path and over-reported
+                            // the floor, while the empirical sample already physically includes the
+                            // network leg). The network RTT is now shown on its OWN row, not folded in.
+                            controlLatencyMs = rdpClient.controlLatencyMs(),
+                            presentLagMs = rdpClient.presentLagMs(),
+                            latencyAccepted = rdpClient.latencyAccepted(),
+                            latencyDiscarded = rdpClient.latencyDiscarded(),
                             transport = transport,
+                            transportStats = transportStats,
                         )
                     }
                 } else {
@@ -374,7 +395,10 @@ class SessionViewModel @Inject constructor(
                     // multi-term check isn't flagged as a complex `if` condition).
                     val hasStaleMetrics = current.fps != 0 || current.durationSec != 0L ||
                         current.latencyMs != -1 || current.controlLatencyMs != -1 ||
-                        current.transport != RdpTransport.UNKNOWN
+                        current.presentLagMs != -1 || current.latencyAccepted != 0 ||
+                        current.latencyDiscarded != 0 ||
+                        current.transport != RdpTransport.UNKNOWN ||
+                        current.transportStats != RdpTransportStats()
                     if (hasStaleMetrics) {
                         _state.update {
                             it.copy(
@@ -382,7 +406,11 @@ class SessionViewModel @Inject constructor(
                                 durationSec = 0L,
                                 latencyMs = -1,
                                 controlLatencyMs = -1,
+                                presentLagMs = -1,
+                                latencyAccepted = 0,
+                                latencyDiscarded = 0,
                                 transport = RdpTransport.UNKNOWN,
+                                transportStats = RdpTransportStats(),
                             )
                         }
                     }
@@ -415,14 +443,6 @@ class SessionViewModel @Inject constructor(
     }
 
     /**
-     * Invoked by RdpSurface once per actually-rendered frame (always on the UI thread). This —
-     * not the content-update event — drives the FPS counter, so the value the 1 Hz ticker
-     * snapshots is the steady render rate (target frame rate clamped to the screen refresh
-     * rate), not the bursty/zero-when-idle content rate.
-     */
-    fun onFrameRendered() = fpsCounter.tick()
-
-    /**
      * Periodically snapshot the live remote framebuffer into this connection's desktop thumbnail
      * (issue: 读取被控电脑桌面图片放到选项中). The connection list card shows the latest snapshot, so
      * a returning user sees what the desktop actually looked like rather than a generic icon. Cheap:
@@ -451,11 +471,22 @@ class SessionViewModel @Inject constructor(
         thumbnailStore.save(st.connectionId, snap)
     }
 
-    /** Decode the native [RdpClient.transportInfo] bitfield: -1 → UNKNOWN, bit0 set → UDP, else TCP. */
-    private fun decodeTransport(raw: Int): RdpTransport = when {
-        raw < 0 -> RdpTransport.UNKNOWN
-        raw and 0x1 != 0 -> RdpTransport.UDP
-        else -> RdpTransport.TCP
+    /** Decode the native [RdpClient.transportInfo] bitfield. */
+    private fun decodeTransport(raw: Int): RdpTransport {
+        if (raw < 0) return RdpTransport.UNKNOWN
+        val state = raw and TRANSPORT_STATE_MASK
+        return when (state) {
+            TRANSPORT_STATE_TCP ->
+                if (raw and TRANSPORT_FLAG_UDP_FALLBACK != 0) {
+                    RdpTransport.TCP_FALLBACK
+                } else {
+                    RdpTransport.TCP
+                }
+            TRANSPORT_STATE_UDP_R -> RdpTransport.UDP_R
+            TRANSPORT_STATE_UDP_L -> RdpTransport.UDP_L
+            TRANSPORT_STATE_UDP2 -> RdpTransport.UDP2
+            else -> RdpTransport.UNKNOWN
+        }
     }
 
     /**
@@ -553,6 +584,7 @@ class SessionViewModel @Inject constructor(
                 initialWidth = initialW,
                 initialHeight = initialH,
                 acceptedCertThumbprint = entity.certThumbSha256,
+                performanceFlags = entity.performanceFlags,
             )
             // Remember everything an auto-reconnect needs, and reset reconnect bookkeeping for this
             // fresh user-initiated connect.
@@ -872,6 +904,12 @@ class SessionViewModel @Inject constructor(
         // Store) shows ~1:1 on phones and stays ~100–200 KB. snapshot() never upscales beyond the
         // framebuffer, so a sub-1280 remote desktop just stores at its own size.
         private const val THUMB_MAX_DIM = 1280
+        private const val TRANSPORT_STATE_MASK = 0x0F
+        private const val TRANSPORT_STATE_TCP = 0x01
+        private const val TRANSPORT_STATE_UDP_R = 0x02
+        private const val TRANSPORT_STATE_UDP_L = 0x03
+        private const val TRANSPORT_STATE_UDP2 = 0x04
+        private const val TRANSPORT_FLAG_UDP_FALLBACK = 0x100
         // Dynamic-resolution default initial size (issue: 1920×1080 fallback) and the 16:9 bounding box
         // used by capToDynamicMax to derive the long-edge cap from the chosen short-edge cap.
         private const val DEFAULT_DYNAMIC_WIDTH = 1920

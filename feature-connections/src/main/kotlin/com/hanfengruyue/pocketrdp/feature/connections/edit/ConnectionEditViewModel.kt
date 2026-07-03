@@ -26,12 +26,21 @@ data class ConnectionEditUiState(
     val colorDepth: Int = 32,
     val useH264: Boolean = true,
     // false = 画质优先 (AVC444), true = 流畅优先 (AVC420). Only meaningful while useH264.
-    val preferAvc420: Boolean = false,
+    // Default TRUE (流畅优先) — matches ConnectionEntity.preferAvc420's intended low-latency default.
+    // (This is the FORM default a NEW connection persists via repository.save; the entity default is
+    // bypassed by save()'s explicit copy, so the form default is the one that actually governs. It was
+    // false here, which silently put every new connection on the heavier AVC444 dual-stream decode path
+    // despite the entity comment — the 操控延迟 default-inconsistency bug.)
+    val preferAvc420: Boolean = true,
     val useGfx: Boolean = true,
     val dynamicResolution: Boolean = true,
     // Max remote-resolution cap while dynamic-resolution is on. 0 = 跟随设备 (no cap); 720/1080/1440 =
     // short-edge px cap (long edge bounded to 16:9). See ConnectionEntity.dynamicResMax.
-    val dynamicResMax: Int = 0,
+    // Default 1080 — matches the entity's intended low-latency default (a phone's full 1440p+ view is a
+    // 4 MP+ frame to encode AND decode every frame; the 1080p cap roughly halves that). Was 0 here, which
+    // — like preferAvc420 above — let new connections render uncapped at the phone's full resolution,
+    // the second half of the same default-inconsistency 操控延迟 bug.
+    val dynamicResMax: Int = 1080,
     val useMultitransport: Boolean = true,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,
@@ -49,6 +58,9 @@ data class ConnectionEditUiState(
     // 0 = 模拟鼠标 (TRACKPAD), 1 = 直接触屏 (TOUCH / native multi-touch).
     val defaultInputMode: Int = 0,
     val targetFrameRate: Int = 0,
+    // Per-connection performance bitmask (ConnectionEntity.performanceFlags). Default 0 = rich desktop.
+    // The 低延迟视觉 toggle flips bit ConnectionEntity.PERF_LOW_LATENCY_VISUALS (-wallpaper -themes).
+    val performanceFlags: Int = 0,
     val saving: Boolean = false,
     val saved: Boolean = false,
     val errors: List<String> = emptyList(),
@@ -102,6 +114,7 @@ class ConnectionEditViewModel @Inject constructor(
                             customHeight = if (entity.customHeight > 0) entity.customHeight.toString() else "1080",
                             defaultInputMode = entity.defaultInputMode,
                             targetFrameRate = entity.targetFrameRate,
+                            performanceFlags = entity.performanceFlags,
                         )
                     }
                 } else {
@@ -144,6 +157,16 @@ class ConnectionEditViewModel @Inject constructor(
     fun updateCustomWidth(value: String) = _state.update { it.copy(customWidth = value.filter { ch -> ch.isDigit() }.take(5)) }
     fun updateCustomHeight(value: String) = _state.update { it.copy(customHeight = value.filter { ch -> ch.isDigit() }.take(5)) }
     fun updateDefaultInputMode(value: Int) = _state.update { it.copy(defaultInputMode = value) }
+
+    /** 低延迟视觉: toggle the PERF_LOW_LATENCY_VISUALS bit (server drops wallpaper + themes). */
+    fun toggleLowLatencyVisuals(value: Boolean) = _state.update {
+        val flags = if (value) {
+            it.performanceFlags or ConnectionEntity.PERF_LOW_LATENCY_VISUALS
+        } else {
+            it.performanceFlags and ConnectionEntity.PERF_LOW_LATENCY_VISUALS.inv()
+        }
+        it.copy(performanceFlags = flags)
+    }
 
     fun save() {
         val s = _state.value
@@ -193,6 +216,7 @@ class ConnectionEditViewModel @Inject constructor(
                 customHeight = if (s.useCustomResolution) s.customHeight.toIntOrNull() ?: 0 else 0,
                 defaultInputMode = s.defaultInputMode,
                 targetFrameRate = s.targetFrameRate,
+                performanceFlags = s.performanceFlags,
             )
             _state.update { it.copy(saving = false, saved = true) }
         }

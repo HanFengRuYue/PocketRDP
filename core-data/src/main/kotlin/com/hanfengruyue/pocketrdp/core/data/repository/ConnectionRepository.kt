@@ -40,6 +40,7 @@ class ConnectionRepository @Inject constructor(
         customHeight: Int,
         defaultInputMode: Int,
         targetFrameRate: Int,
+        performanceFlags: Int,
     ): Long {
         val sealed = if (plainPassword.isEmpty() && existing != null) {
             CredentialCipher.Sealed(existing.passwordCipher, existing.passwordIv)
@@ -70,6 +71,7 @@ class ConnectionRepository @Inject constructor(
             customHeight = customHeight,
             defaultInputMode = defaultInputMode,
             targetFrameRate = targetFrameRate,
+            performanceFlags = performanceFlags,
         )
         return dao.upsert(entity)
     }

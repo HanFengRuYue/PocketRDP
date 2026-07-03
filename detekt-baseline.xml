@@ -3,6 +3,7 @@
   <ManuallySuppressedIssues/>
   <CurrentIssues>
     <ID>ComplexCondition:RdpClient.kt$RdpClient.&lt;no name provided&gt;$!r.isEmpty &amp;&amp; !(x &lt;= r.left &amp;&amp; y &lt;= r.top &amp;&amp; x + w &gt;= r.right &amp;&amp; y + h &gt;= r.bottom)</ID>
+    <ID>ComplexCondition:RdpInputController.kt$RdpInputController$(userZoom &lt;= 1f &amp;&amp; !lifted) || viewW &lt;= 0f || viewH &lt;= 0f</ID>
     <ID>ComplexCondition:RdpSurface.kt$RdpSurface$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
     <ID>ComplexCondition:SessionGestures.kt$!consumed &amp;&amp; !holdDragActive &amp;&amp; !longPressFired &amp;&amp; dur &lt; TAP_TIMEOUT_MS &amp;&amp; totalMove &lt; TAP_SLOP_PX</ID>
     <ID>ComplexCondition:SessionScreen.kt$mode == InputMode.TRACKPAD &amp;&amp; current != null &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
@@ -12,18 +13,15 @@
     <ID>CyclomaticComplexMethod:Connection.kt$ConnectionEntity$override fun equals(other: Any?): Boolean</ID>
     <ID>CyclomaticComplexMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
     <ID>CyclomaticComplexMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, first: PointerInputChange, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
-    <ID>CyclomaticComplexMethod:SessionScreen.kt$@Composable private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Modifier)</ID>
     <ID>CyclomaticComplexMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
     <ID>LongMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
     <ID>LongMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, first: PointerInputChange, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
-    <ID>LongMethod:SessionScreen.kt$@Composable private fun ZoomControls(controller: RdpInputController, modifier: Modifier = Modifier)</ID>
     <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
-    <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
-    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, preferAvc420: Boolean, useGfx: Boolean, dynamicResolution: Boolean, dynamicResMax: Int, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, )</ID>
-    <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFrameRendered: () -&gt; Unit, )</ID>
-    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, durationSec: Long, fps: Int, latencyMs: Int, controlLatencyMs: Int, transport: RdpTransport, mode: InputMode, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, fps: Int, controlLatencyMs: Int, presentLagMs: Int, networkRttMs: Int, latencyAccepted: Int, latencyDiscarded: Int, transport: RdpTransport, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, preferAvc420: Boolean, useGfx: Boolean, dynamicResolution: Boolean, dynamicResMax: Int, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, performanceFlags: Int, )</ID>
+    <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFramePresented: (presentLagMs: Long) -&gt; Unit, )</ID>
+    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, fps: Int, controlLatencyMs: Int, presentLagMs: Int, networkRttMs: Int, latencyAccepted: Int, latencyDiscarded: Int, transport: RdpTransport, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:SessionGestures.kt$while</ID>
-    <ID>LoopWithTooManyJumpStatements:SessionScreen.kt$while</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1080</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1280</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1440</ID>
@@ -49,8 +47,6 @@
     <ID>MagicNumber:SessionStatusBadges.kt$0xFF9E9E9E</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFFE53935</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFFFFB300</ID>
-    <ID>MagicNumber:SessionStatusBadges.kt$3600</ID>
-    <ID>MagicNumber:SessionStatusBadges.kt$60</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000L</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$2000</ID>
@@ -69,9 +65,7 @@
     <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean</ID>
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard</ID>
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp</ID>
-    <ID>MaxLineLength:SessionScreen.kt$private const val ZOOM_RELOCATE_LONG_PRESS_MS = 350L // hold the pill still this long → drag to relocate it (matches PAN_HANDLE_LONG_PRESS_MS)</ID>
     <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) }</ID>
-    <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("输入模式：${if (mode == InputMode.TRACKPAD) "模拟鼠标" else "直接触屏"}", style = MaterialTheme.typography.bodySmall) }</ID>
     <ID>MaxLineLength:Type.kt$bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.5.sp)</ID>
     <ID>MaxLineLength:Type.kt$bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)</ID>
     <ID>MaxLineLength:Type.kt$displayLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 57.sp, lineHeight = 64.sp, letterSpacing = (-0.25).sp)</ID>

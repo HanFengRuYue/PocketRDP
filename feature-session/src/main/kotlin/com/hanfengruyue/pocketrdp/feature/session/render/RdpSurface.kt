@@ -64,12 +64,21 @@ class RdpSurface @JvmOverloads constructor(
     @Volatile
     var targetFrameRate: Int = 0
 
-    /** Invoked once per actually-rendered frame (UI thread). Drives the FPS counter. */
-    var onFrameRendered: (() -> Unit)? = null
-
     /** uptimeMillis of the current frame's start; scheduleNextFrame paces the next frame from it. */
     @Volatile
     private var lastFrameAtMs: Long = 0L
+
+    /**
+     * Passive decode→present latency report. Invoked from [onDraw] (UI thread) ONLY when a newly
+     * committed front frame is drawn, with how long it waited between commit and this draw (ms). Set by
+     * SessionScreen → RdpClient.recordPresentLag. MUST stay passive: it must NOT postInvalidate and must
+     * NOT feed the FPS counter (which stays content-frame-sourced), so it can't re-inflate the render
+     * rate or unfix the throttle — the markDirty no-op rationale still holds.
+     */
+    var onFramePresented: ((presentLagMs: Long) -> Unit)? = null
+
+    /** Last front-buffer sequence we reported a present-lag for, so each frame is timed at most once. */
+    private var lastPresentedSeq: Long = -1L
 
     init {
         isFocusable = false
@@ -142,8 +151,18 @@ class RdpSurface @JvmOverloads constructor(
                 canvas.restore()
             }
         }
-        // One actually-rendered frame — drives the FPS counter (render rate, not content rate).
-        onFrameRendered?.invoke()
+        // Decode→present latency (passive metric): if this draw shows a freshly-committed front frame
+        // (its sequence advanced since we last reported), tell the listener how long it waited between
+        // commit and now. Strictly passive — no invalidate, never touches the FPS counter — so it cannot
+        // re-inflate the render rate or unfix the throttle (the markDirty no-op rationale stays intact).
+        val b = buffer
+        if (bm != null && b != null) {
+            val seq = b.peekFrontSeq()
+            if (seq != lastPresentedSeq) {
+                lastPresentedSeq = seq
+                onFramePresented?.invoke(SystemClock.uptimeMillis() - b.peekFrontCommitMs())
+            }
+        }
         // Belt-and-braces continuous redraw: always re-schedule the next frame as long as we are
         // attached. This self-loop must NEVER stop while attached — it is the load-bearing guard
         // against the historical "connected but black screen" bug (markDirty can't be relied on to

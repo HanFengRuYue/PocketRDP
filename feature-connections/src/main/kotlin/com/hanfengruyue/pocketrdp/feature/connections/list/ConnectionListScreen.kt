@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -50,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -57,7 +59,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -70,10 +72,24 @@ import java.util.Locale
 // Card geometry / styling tunables (kept as property declarations so detekt's MagicNumber rule,
 // which ignores property initializers, doesn't flag them).
 private val cardCornerDp = 20.dp
+private val landscapeCardCornerDp = 14.dp
 private val bannerPlaySizeDp = 44.dp
 private val placeholderIconDp = 40.dp
+private val emptyIconDp = 72.dp
+private val emptyLandscapeGapDp = 20.dp
+private val landscapeLayoutMinWidthDp = 560.dp
+private val landscapeListHorizontalPaddingDp = 24.dp
+private val landscapeListVerticalPaddingDp = 12.dp
+private val landscapeCardSpacingDp = 12.dp
+private val landscapeCardPaddingDp = 12.dp
+private val landscapeThumbnailWidthDp = 220.dp
+private val landscapeThumbnailHeightDp = 124.dp
+private val landscapeThumbnailCornerDp = 10.dp
+private val landscapeContentGapDp = 12.dp
+private val landscapeMetaPillCornerDp = 8.dp
 private const val DESKTOP_ASPECT = 16f / 9f
 private const val SCRIM_ALPHA = 0.55f
+private const val META_PILL_ALPHA = 0.46f
 private const val PLACEHOLDER_ICON_ALPHA = 0.7f
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -115,7 +131,11 @@ fun ConnectionListScreen(
         },
     ) { padding ->
         when {
-            state.isLoading -> LoadingBox(padding)
+            state.isLoading -> {
+                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
             state.connections.isEmpty() -> EmptyState(padding)
             else -> ConnectionList(
                 items = state.connections,
@@ -155,33 +175,55 @@ fun ConnectionListScreen(
 }
 
 @Composable
-private fun LoadingBox(padding: PaddingValues) {
-    Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
-}
-
-@Composable
 private fun EmptyState(padding: PaddingValues) {
-    Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Default.Computer,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.size(16.dp))
-            Text(
-                "还没有保存的远程电脑",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.size(4.dp))
-            Text(
-                "点右下角“新建连接”来添加你的第一台 Windows 主机",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+        val useLandscapeLayout = maxWidth >= landscapeLayoutMinWidthDp && maxWidth > maxHeight
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (useLandscapeLayout) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(emptyLandscapeGapDp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Computer,
+                        contentDescription = null,
+                        modifier = Modifier.size(emptyIconDp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Column(horizontalAlignment = Alignment.Start) {
+                        Text(
+                            "还没有保存的远程电脑",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            "点右下角“新建连接”来添加你的第一台 Windows 主机",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Computer,
+                        contentDescription = null,
+                        modifier = Modifier.size(emptyIconDp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.size(16.dp))
+                    Text(
+                        "还没有保存的远程电脑",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    Text(
+                        "点右下角“新建连接”来添加你的第一台 Windows 主机",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }
@@ -199,20 +241,33 @@ private fun ConnectionList(
     // (the session just saved a fresh snapshot, but the DB row didn't change so the list flow won't
     // re-emit on its own).
     val refreshKey = rememberThumbnailRefreshKey()
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(padding),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        items(items, key = { it.id }) { conn ->
-            ConnectionCard(
-                entity = conn,
-                refreshKey = refreshKey,
-                loadThumbnail = loadThumbnail,
-                onEdit = { onEdit(conn.id) },
-                onConnect = { onConnect(conn.id) },
-                onDelete = { onDelete(conn) },
-            )
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+        val useLandscapeLayout = maxWidth >= landscapeLayoutMinWidthDp && maxWidth > maxHeight
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = if (useLandscapeLayout) {
+                PaddingValues(
+                    horizontal = landscapeListHorizontalPaddingDp,
+                    vertical = landscapeListVerticalPaddingDp,
+                )
+            } else {
+                PaddingValues(horizontal = 16.dp, vertical = 16.dp)
+            },
+            verticalArrangement = Arrangement.spacedBy(
+                if (useLandscapeLayout) landscapeCardSpacingDp else 16.dp,
+            ),
+        ) {
+            items(items, key = { it.id }) { conn ->
+                ConnectionCard(
+                    entity = conn,
+                    refreshKey = refreshKey,
+                    useLandscapeLayout = useLandscapeLayout,
+                    loadThumbnail = loadThumbnail,
+                    onEdit = { onEdit(conn.id) },
+                    onConnect = { onConnect(conn.id) },
+                    onDelete = { onDelete(conn) },
+                )
+            }
         }
     }
 }
@@ -236,6 +291,7 @@ private fun rememberThumbnailRefreshKey(): Int {
 private fun ConnectionCard(
     entity: ConnectionEntity,
     refreshKey: Int,
+    useLandscapeLayout: Boolean,
     loadThumbnail: suspend (Long) -> Bitmap?,
     onEdit: () -> Unit,
     onConnect: () -> Unit,
@@ -249,45 +305,34 @@ private fun ConnectionCard(
     ElevatedCard(
         onClick = onConnect,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(cardCornerDp),
+        shape = RoundedCornerShape(if (useLandscapeLayout) landscapeCardCornerDp else cardCornerDp),
         elevation = CardDefaults.elevatedCardElevation(),
     ) {
-        DesktopThumbnail(
-            bitmap = thumbnail,
-            host = entity.host,
-            modifier = Modifier.fillMaxWidth().aspectRatio(DESKTOP_ASPECT),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = entity.name.ifBlank { entity.host },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = "${entity.username.ifBlank { "(no user)" }} @ ${entity.host}:${entity.port}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = "上次使用 · ${relativeLastUsed(entity.lastUsedAt)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            IconButton(onClick = onEdit) {
-                Icon(Icons.Default.Edit, contentDescription = "编辑")
-            }
-            IconButton(onClick = { confirmDelete = true }) {
-                Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+        if (useLandscapeLayout) {
+            LandscapeConnectionCardContent(
+                entity = entity,
+                thumbnail = thumbnail,
+                onConnect = onConnect,
+                onEdit = onEdit,
+                onDelete = { confirmDelete = true },
+            )
+        } else {
+            DesktopThumbnail(
+                bitmap = thumbnail,
+                host = entity.host,
+                modifier = Modifier.fillMaxWidth().aspectRatio(DESKTOP_ASPECT),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConnectionSummary(entity = entity, modifier = Modifier.weight(1f))
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "编辑")
+                }
+                IconButton(onClick = { confirmDelete = true }) {
+                    Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -298,6 +343,93 @@ private fun ConnectionCard(
             onConfirm = { confirmDelete = false; onDelete() },
             onDismiss = { confirmDelete = false },
         )
+    }
+}
+
+@Composable
+private fun LandscapeConnectionCardContent(
+    entity: ConnectionEntity,
+    thumbnail: Bitmap?,
+    onConnect: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(landscapeCardPaddingDp),
+        horizontalArrangement = Arrangement.spacedBy(landscapeContentGapDp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DesktopThumbnail(
+            bitmap = thumbnail,
+            host = entity.host,
+            modifier = Modifier
+                .size(width = landscapeThumbnailWidthDp, height = landscapeThumbnailHeightDp)
+                .clip(RoundedCornerShape(landscapeThumbnailCornerDp)),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            ConnectionSummary(entity = entity, showLastUsed = false)
+            Surface(
+                shape = RoundedCornerShape(landscapeMetaPillCornerDp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = META_PILL_ALPHA),
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ) {
+                Text(
+                    text = "上次使用 · ${relativeLastUsed(entity.lastUsedAt)}",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = onConnect) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "连接")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "编辑")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionSummary(
+    entity: ConnectionEntity,
+    modifier: Modifier = Modifier,
+    showLastUsed: Boolean = true,
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = entity.name.ifBlank { entity.host },
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = "${entity.username.ifBlank { "(no user)" }} @ ${entity.host}:${entity.port}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (showLastUsed) {
+            Text(
+                text = "上次使用 · ${relativeLastUsed(entity.lastUsedAt)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
     }
 }
 

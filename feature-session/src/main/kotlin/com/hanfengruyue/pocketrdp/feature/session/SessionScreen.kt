@@ -18,8 +18,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +35,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
@@ -39,7 +43,9 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -53,10 +59,7 @@ import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,14 +79,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
@@ -93,6 +101,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -101,7 +110,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
@@ -263,6 +272,13 @@ fun SessionScreen(
     }
 
     Scaffold(
+        // 会话背景恒为纯黑：Scaffold 默认 containerColor = colorScheme.background（本机是 Material You
+        // 动态深灰，深色回退 Neutral10、浅色近白，都不是黑）。半透明黑 TopAppBar(TOOLBAR_BG, 0.7 alpha)
+        // 主动丢弃顶部 inset 铺满顶部约 64dp，叠在这层非黑背景上 → 顶部露出一条灰色。画面区 SessionCanvas
+        // 是不透明 Color.Black 且被工具栏顶到下方，所以只有工具栏那条露灰。底色改纯黑后该条变纯黑
+        // （0.7黑叠纯黑=纯黑），TOOLBAR_BG 的半透明值保持不变 → 叠在画面上的浮动控件仍是黑色半透明玻璃，
+        // 配色风格不变（用户：要的是黑色半透明，不要纯不透明黑）。
+        containerColor = Color.Black,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             AnimatedVisibility(
@@ -273,22 +289,24 @@ fun SessionScreen(
                 TopAppBar(
                     title = {
                         // Title slot doubles as the status-info opener. SessionStatusTitle renders
-                        // [● connectionName ⏷] and shows the dropdown with full session metrics
-                        // (resolution, duration, FPS, mode, sticky mods, last error). Keeping the
-                        // chip wall out of TopAppBar.actions prevents the title from being pushed
-                        // off-screen in portrait orientation.
+                        // [● connectionName ⏷] and shows the dropdown with the session metrics
+                        // (resolution, FPS, control latency, transport, sticky mods, last error).
+                        // Keeping the chip wall out of TopAppBar.actions prevents the title from
+                        // being pushed off-screen in portrait orientation.
                         SessionStatusTitle(
                             status = state.status,
                             connectionName = state.connectionName,
                             connectionId = connectionId,
                             remoteWidth = state.remoteWidth,
                             remoteHeight = state.remoteHeight,
-                            durationSec = state.durationSec,
                             fps = state.fps,
-                            latencyMs = state.latencyMs,
                             controlLatencyMs = state.controlLatencyMs,
+                            presentLagMs = state.presentLagMs,
+                            networkRttMs = state.latencyMs,
+                            latencyAccepted = state.latencyAccepted,
+                            latencyDiscarded = state.latencyDiscarded,
                             transport = state.transport,
-                            mode = state.mode,
+                            transportStats = state.transportStats,
                             host = state.connectionHost,
                             stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
                             lastError = state.lastError,
@@ -333,7 +351,12 @@ fun SessionScreen(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                        // Solid black bar, white content (用户需求: 工具栏改黑底白字，不要半透明灰玻璃).
+                        containerColor = TOOLBAR_BG,
+                        scrolledContainerColor = TOOLBAR_BG,
+                        titleContentColor = TOOLBAR_CONTENT,
+                        navigationIconContentColor = TOOLBAR_CONTENT,
+                        actionIconContentColor = TOOLBAR_CONTENT,
                     ),
                     // Deliberately DROP the top inset so the bar draws right up into the camera /
                     // notch row at the very top of the screen, reclaiming that strip for the toolbar
@@ -388,7 +411,10 @@ fun SessionScreen(
                 mode = state.mode,
                 onViewSizeChanged = viewModel::onSurfaceResized,
                 targetFrameRate = state.targetFrameRate,
-                onFrameRendered = viewModel::onFrameRendered,
+                // Decode→present latency feedback: RdpSurface reports each drawn frame's commit→draw
+                // wait so the status panel can show the display-pipeline lag the input→decode metric
+                // can't see (METRIC-1). Passive — see RdpSurface.onFramePresented / recordPresentLag.
+                onFramePresented = rdpClient::recordPresentLag,
             )
 
             // Immersive exit affordance: a translucent FAB sitting above the framebuffer in
@@ -406,17 +432,19 @@ fun SessionScreen(
             ) {
                 SmallFloatingActionButton(
                     onClick = viewModel::toggleImmersive,
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                    containerColor = TOOLBAR_BG,
+                    contentColor = TOOLBAR_CONTENT,
                 ) {
                     Icon(Icons.Default.FullscreenExit, contentDescription = "退出全屏")
                 }
             }
 
-            // Local zoom + move controls. Shown in BOTH input modes. Wrapped in a fillMaxSize box
-            // with imePadding() so that when the soft keyboard is up they relocate into the still-
-            // visible strip ABOVE the keyboard (and the function-key toolbar) instead of being hidden
-            // — the user can now zoom AND pan the picture WHILE typing (用户需求: 呼出键盘时也能缩放和
-            // 移动画面). imePadding() collapses to 0 when no keyboard is shown, so the off-keyboard
+            // Local zoom pill (BOTH input modes) + move handle (native-touch only — see below).
+            // Wrapped in a fillMaxSize box with imePadding() so that when the soft keyboard is up they
+            // relocate into the still-visible strip ABOVE the keyboard (and the function-key toolbar)
+            // instead of being hidden — the user can still zoom the picture WHILE typing, and pan it
+            // too: in TOUCH mode via the move handle, in TRACKPAD mode via the keyboard-aware cursor-
+            // follow (用户需求: 呼出键盘时也能缩放和移动画面). imePadding() collapses to 0 when no keyboard is shown, so the off-keyboard
             // layout is unchanged; it is a layout-phase inset read (not a composable-body read) so the
             // keyboard animation re-lays-out only this overlay box, never SessionCanvas. The box has no
             // pointerInput, so its empty area doesn't intercept gestures — only the controls do (each
@@ -437,15 +465,17 @@ fun SessionScreen(
                         .padding(12.dp),
                 )
 
-                // Move handle (only while zoomed in): drag it to pan the magnified picture; long-press
-                // it then drag to relocate the handle itself (so it doesn't cover what you want to tap).
-                // Normally shown ONLY in native-touch mode — in TRACKPAD mode the view auto-follows the
-                // virtual cursor when zoomed (RdpInputController.followCursorWhenZoomed), so dragging the
-                // cursor already pans and the handle is redundant (用户需求 模拟鼠标模式隐藏控制杆、用手势
-                // 拖动画面). BUT while the keyboard is up the user is typing, not dragging the cursor, so
-                // cursor-follow can't pan — we show the handle in BOTH modes then so a zoomed picture
-                // stays movable from behind the keyboard.
-                if (state.mode == InputMode.TOUCH || state.imeVisible) {
+                // Move handle: drag it to pan the magnified picture; long-press it then drag to relocate
+                // the handle itself (so it doesn't cover what you want to tap). Shown ONLY in native-touch
+                // mode — including while the keyboard is up. In TRACKPAD mode the picture instead auto-
+                // follows the virtual cursor (RdpInputController.followCursorWhenZoomed), which is now
+                // keyboard-aware: it pans even at 100% zoom while the keyboard has lifted the picture and
+                // keeps the cursor in the visible band above the keyboard, so dragging the cursor already
+                // pans and the handle would just fight it. Keep it hidden in TRACKPAD, keyboard or not
+                // (用户需求: 模拟鼠标模式下呼出键盘仍用光标跟随移动画面，不要切成移动杆). TOUCH mode has no
+                // cursor to follow, so the handle stays the way to pan there (PanHandle shows itself only
+                // while zoomed or keyboard-lifted).
+                if (state.mode == InputMode.TOUCH) {
                     PanHandle(
                         controller = controller,
                         modifier = Modifier.align(Alignment.Center),
@@ -453,24 +483,37 @@ fun SessionScreen(
                 }
             }
 
-            // Function-key toolbar (Esc / Ctrl / Alt / Win / Tab / CAD): shown only while the soft
-            // keyboard is up. It now FLOATS as a BOTTOM OVERLAY (imePadding lifts it just above the
-            // keyboard) instead of being a Column sibling — being a sibling is exactly what shrank the
-            // canvas and reset the zoom/pan (see the SessionCanvas comment above). As an overlay it
-            // sits on top of the full-screen gesture surface, so SessionToolbar consumes its own
-            // touches to stop taps (and the gaps between chips) leaking through to the canvas beneath.
+            // Function-key toolbar (a single scrollable row: Esc / Ctrl / Alt / Shift / Win / Tab /
+            // arrows / Home·End·PgUp·PgDn / Ins·Del / CAD / F1–F12): shown only while the soft keyboard is up. It
+            // FLOATS as a BOTTOM OVERLAY (imePadding lifts it just above the keyboard) instead of being
+            // a Column sibling — being a sibling is exactly what shrank the canvas and reset the
+            // zoom/pan (see the SessionCanvas comment above). As an overlay it sits on top of the
+            // full-screen gesture surface, so SessionToolbar consumes its own touches to stop taps (and
+            // the gaps between chips) leaking through to the canvas beneath.
+            // Its measured visual height feeds ImeLiftEffect so the keyboard-lift clears the toolbar
+            // too. Read via a lambda inside ImeLiftEffect so a height change doesn't recompose
+            // SessionCanvas (keeps the per-frame ime read isolated).
+            val functionToolbarHeightPx = remember { mutableIntStateOf(0) }
             AnimatedVisibility(
                 visible = state.imeVisible && state.chromeVisible,
                 enter = slideInVertically { it } + fadeIn(),
                 exit = slideOutVertically { it } + fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
-                SessionToolbar(viewModel = viewModel, state = state)
+                SessionToolbar(
+                    viewModel = viewModel,
+                    state = state,
+                    onBarHeightChanged = { functionToolbarHeightPx.intValue = it },
+                )
             }
 
             // Feeds the soft-keyboard (+ function-key toolbar) height into the controller so the
             // framebuffer is lifted just clear of it while typing — see ImeLiftEffect.
-            ImeLiftEffect(controller = controller, chromeVisible = state.chromeVisible)
+            ImeLiftEffect(
+                controller = controller,
+                chromeVisible = state.chromeVisible,
+                toolbarHeightPx = { functionToolbarHeightPx.intValue },
+            )
 
             // Hidden IME bridge — Compose tree always contains it, but it only requests
             // focus when state.imeVisible is true.
@@ -548,31 +591,42 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
     if (mask and ScancodeMap.Modifier.WIN != 0) add("Win")
 }
 
-// Height (dp) of the function-key toolbar (a Material3 BottomAppBar) that floats just above the
-// keyboard while typing — added to the keyboard height so the lift clears the toolbar too, not just
-// the keyboard.
-private const val FUNCTION_TOOLBAR_HEIGHT_DP = 80
+// Session chrome palette (用户需求: 黑色半透明 — 先前的纯不透明黑被否，要半透明；浮动的缩放药丸/移动杆/
+// 退出按钮也一并改黑). Translucent BLACK so the picture shows through the floating function-key bar and the
+// pills like dark glass, while the white content stays legible. Shared by the TopAppBar, the function-key
+// bar, the zoom pill, the move handle and the exit FAB. 0.7 keeps it clearly see-through yet readable.
+private const val CHROME_ALPHA = 0.7f
+private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
+private val TOOLBAR_CONTENT = Color.White
+// Outline alpha for an inactive (un-pressed) key pill on the translucent black bar.
+private const val KEY_BORDER_ALPHA = 0.55f
 
 /**
  * Drives the keyboard-lift (issue: 呼出键盘后画面被下方键盘挡住看不见). Reads the live soft-keyboard height
  * from `WindowInsets.ime` and (when the function-key toolbar is showing above it) adds the toolbar's
- * height, then feeds the total bottom occlusion to the controller, which translates the framebuffer up
- * just enough to keep its lower part visible above the keyboard.
+ * MEASURED visual height, then feeds the total bottom occlusion to the controller, which translates the
+ * framebuffer up just enough to keep its lower part visible above the keyboard. Using the measured
+ * height (via [toolbarHeightPx]) instead of a constant keeps the lift correct regardless of the bar's
+ * actual height, so the toolbar never re-covers the picture.
  *
  * Kept as its OWN tiny composable so the per-animation-frame recomposition from reading the (animating)
- * ime inset is confined here and never re-runs SessionCanvas. The lift is a pure transform — it does
- * NOT resize the canvas, so it never re-fits the picture or resets the user's zoom/pan (the reason the
- * canvas itself is deliberately kept full-size; see the SessionCanvas comment).
+ * ime inset is confined here and never re-runs SessionCanvas. [toolbarHeightPx] is a lambda so reading
+ * the height state happens inside THIS composable's scope — updating it recomposes only here, not the
+ * caller. The lift is a pure transform — it does NOT resize the canvas, so it never re-fits the picture
+ * or resets the user's zoom/pan (the reason the canvas itself is deliberately kept full-size; see the
+ * SessionCanvas comment).
  */
 @Composable
-private fun ImeLiftEffect(controller: RdpInputController, chromeVisible: Boolean) {
+private fun ImeLiftEffect(
+    controller: RdpInputController,
+    chromeVisible: Boolean,
+    toolbarHeightPx: () -> Int,
+) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val toolbarPx = if (imeBottomPx > 0 && chromeVisible) {
-        with(density) { FUNCTION_TOOLBAR_HEIGHT_DP.dp.toPx() }
-    } else {
-        0f
-    }
+    // Add the function-key toolbar's height only while it actually shows (keyboard up AND chrome
+    // visible) — it floats just above the keyboard, so the picture must clear both.
+    val toolbarPx = if (imeBottomPx > 0 && chromeVisible) toolbarHeightPx().toFloat() else 0f
     SideEffect { controller.setBottomOcclusion(imeBottomPx + toolbarPx) }
 }
 
@@ -613,6 +667,43 @@ private fun Modifier.consumeAllPointerInput(): Modifier = pointerInput(Unit) {
     }
 }
 
+/**
+ * 给横向滚动条加左右边缘渐隐：哪一侧还有可滑到的内容，该侧内容就淡出成透明，作为"还能继续滑动"的
+ * 视觉提示（用户反馈：功能键栏一排显示不全、看不出能左右滑）。用 CompositingStrategy.Offscreen 离屏
+ * 图层 + BlendMode.DstIn 蒙版实现：只把"内容层"（滚动的键）在边缘抹成透明；更外层单独绘制的背景黑条
+ * 不在这个离屏层里、不受影响，所以呈现"键滑入边缘暗处"的干净效果。纯绘制层、不新增命中测试节点，所以
+ * 既不拦截点击/滚动，也不破坏 consumeAllPointerInput 对键间空隙触摸的兜底。必须放在 horizontalScroll
+ * 之前，渐隐才固定在视口左右边缘而非随内容一起滚走。
+ */
+private fun Modifier.scrollEdgeFade(state: ScrollState, fadeWidth: Dp = 24.dp): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        val w = fadeWidth.toPx()
+        if (state.canScrollBackward) {
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0f to Color.Transparent,
+                    1f to Color.Black,
+                    startX = 0f,
+                    endX = w,
+                ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+        if (state.canScrollForward) {
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0f to Color.Black,
+                    1f to Color.Transparent,
+                    startX = size.width - w,
+                    endX = size.width,
+                ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+    }
+
 @Composable
 private fun SessionCanvas(
     modifier: Modifier,
@@ -623,7 +714,7 @@ private fun SessionCanvas(
     mode: InputMode,
     onViewSizeChanged: (width: Int, height: Int) -> Unit,
     targetFrameRate: Int,
-    onFrameRendered: () -> Unit,
+    onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
     val current by buffer.current.collectAsStateWithLifecycle(initialValue = null)
     var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
@@ -683,10 +774,12 @@ private fun SessionCanvas(
             factory = { ctx ->
                 RdpSurface(ctx).also { surface ->
                     surface.setBackgroundColor(Color.Black.toArgb())
-                    surface.onFrameRendered = onFrameRendered
                     // Read frames straight from the double buffer's front (complete) buffer; the
                     // render loop pulls peekFront() each tick (no per-frame setBacking/recompose).
                     surface.buffer = buffer
+                    // Passive decode→present latency report (METRIC-1) — fired only when a new frame is
+                    // drawn; never invalidates or touches the FPS counter.
+                    surface.onFramePresented = onFramePresented
                     surfaceRef = surface
                 }
             },
@@ -727,19 +820,59 @@ private fun SessionCanvas(
     }
 }
 
+/** F1–F12 keys for the function-key bar (label → Windows VK). */
+private val functionKeyVks: List<Pair<String, Int>> = listOf(
+    "F1" to ScancodeMap.VK.F1, "F2" to ScancodeMap.VK.F2, "F3" to ScancodeMap.VK.F3,
+    "F4" to ScancodeMap.VK.F4, "F5" to ScancodeMap.VK.F5, "F6" to ScancodeMap.VK.F6,
+    "F7" to ScancodeMap.VK.F7, "F8" to ScancodeMap.VK.F8, "F9" to ScancodeMap.VK.F9,
+    "F10" to ScancodeMap.VK.F10, "F11" to ScancodeMap.VK.F11, "F12" to ScancodeMap.VK.F12,
+)
+
+/** Navigation / editing keys for the function-key bar (label → Windows VK). Arrows etc. carry KBDEXT. */
+private val navKeyVks: List<Pair<String, Int>> = listOf(
+    "←" to ScancodeMap.VK.LEFT, "↑" to ScancodeMap.VK.UP, "↓" to ScancodeMap.VK.DOWN,
+    "→" to ScancodeMap.VK.RIGHT, "Home" to ScancodeMap.VK.HOME, "End" to ScancodeMap.VK.END,
+    "PgUp" to ScancodeMap.VK.PAGE_UP, "PgDn" to ScancodeMap.VK.PAGE_DOWN,
+    "Ins" to ScancodeMap.VK.INSERT, "Del" to ScancodeMap.VK.DELETE,
+)
+
+/**
+ * Function-key toolbar shown while the soft keyboard is up — a SINGLE horizontally-scrollable row on a
+ * translucent BLACK bar with WHITE keys (用户需求: 改成 1 排、黑色半透明). No expand/collapse toggle and no
+ * hide-keyboard button (用户需求: 展开/收起按钮不要; 收键盘用上方工具栏的键盘按钮即可) — just the keys, swipe
+ * left/right to reach them all (Esc / sticky Ctrl·Alt·Shift / Win / Tab / arrows / Home·End·PgUp·PgDn /
+ * Ins·Del / CAD / F1–F12). With no trailing fixed buttons, the row scrolls cleanly edge-to-edge so nothing
+ * is crowded/clipped the way the earlier toggle+keyboard buttons were (用户反馈: 右侧功能键被遮挡).
+ *
+ * The bar fill + measured height live on the INNER Row so [onBarHeightChanged] reports the bar's VISUAL
+ * height (NOT including the outer imePadding) — that height drives ImeLiftEffect's keyboard-lift. imePadding
+ * (outer Box) lifts the whole bar above the keyboard, and consumeAllPointerInput swallows every touch within
+ * the bar so taps (and the gaps between keys) don't leak into the full-screen gesture surface beneath this
+ * floating overlay.
+ */
 @Composable
-private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
-    BottomAppBar(
-        // imePadding lifts the toolbar to sit directly above the soft keyboard. consumeAllPointerInput
-        // makes the bar swallow every touch within its bounds (including the gaps between chips) so
-        // that — now that the toolbar is a free-floating overlay on top of the full-screen gesture
-        // surface rather than a Column sibling beside it — a tap on the bar never leaks through to the
-        // canvas and moves the remote cursor / drops a touch contact behind the keyboard.
+private fun SessionToolbar(
+    viewModel: SessionViewModel,
+    state: SessionUiState,
+    onBarHeightChanged: (Int) -> Unit,
+) {
+    Box(
         modifier = Modifier.fillMaxWidth().imePadding().consumeAllPointerInput(),
+        contentAlignment = Alignment.BottomCenter,
     ) {
+        val keyScroll = rememberScrollState()
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(TOOLBAR_BG)
+                .onSizeChanged { onBarHeightChanged(it.height) }
+                // 边缘渐隐：哪一侧还有可滑到的键，那侧就淡出，提示"可左右滑动看更多键"（用户反馈：功能键
+                // 栏一排显示不全、看不出能滑）。纯绘制层、不拦截指针，滚动/点击/穿透兜底都不受影响。必须在
+                // horizontalScroll 之前，渐隐才固定在视口左右边缘而非随内容滚走。
+                .scrollEdgeFade(keyScroll)
+                .horizontalScroll(keyScroll)
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ToolbarKey("Esc") { viewModel.sendKey(ScancodeMap.VK.ESCAPE) }
@@ -760,10 +893,9 @@ private fun SessionToolbar(viewModel: SessionViewModel, state: SessionUiState) {
             )
             ToolbarKey("Win") { viewModel.sendKey(ScancodeMap.VK.LWIN) }
             ToolbarKey("Tab") { viewModel.sendKey(ScancodeMap.VK.TAB) }
+            navKeyVks.forEach { (label, vk) -> ToolbarKey(label) { viewModel.sendKey(vk) } }
             ToolbarKey("CAD") { viewModel.sendCtrlAltDel() }
-            IconButton(onClick = viewModel::toggleIme) {
-                Icon(Icons.Default.KeyboardHide, contentDescription = "收起键盘")
-            }
+            functionKeyVks.forEach { (label, vk) -> ToolbarKey(label) { viewModel.sendKey(vk) } }
         }
     }
 }
@@ -812,7 +944,7 @@ private fun ZoomControls(
     // The pill remembers where it was dragged (long-press-then-drag relocates it, like the move handle).
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
     var pillSize by remember { mutableStateOf(IntSize.Zero) }
-    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+    val containerColor = TOOLBAR_BG
     // Re-clamp on container/pill reflow (soft keyboard, rotation) so the pill stays reachable.
     LaunchedEffect(containerSize, pillSize) {
         handleOffset = clampPillOffset(handleOffset, 0f, 0f, containerSize, pillSize)
@@ -843,14 +975,14 @@ private fun ZoomControls(
             Icon(
                 imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.ZoomIn,
                 contentDescription = "缩放：上滑放大、下滑缩小，双击复位；长按后拖动可移动此按钮",
-                tint = MaterialTheme.colorScheme.onSurface,
+                tint = TOOLBAR_CONTENT,
             )
             // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
             if (dragging || zoomed) {
                 Text(
                     text = "$pct%",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = TOOLBAR_CONTENT,
                 )
             }
         }
@@ -996,7 +1128,7 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
     val keyboardLifted = transform.offsetY < 0f
     if (!zoomed && !keyboardLifted) return
 
-    val containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+    val containerColor = TOOLBAR_BG
     Surface(
         modifier = modifier
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
@@ -1058,22 +1190,53 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
             Icon(
                 imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
                 contentDescription = "拖动以移动放大后的画面；长按后拖动可移动此按钮",
-                tint = MaterialTheme.colorScheme.onSurface,
+                tint = TOOLBAR_CONTENT,
             )
         }
     }
 }
 
+/**
+ * A momentary key on the black function-key bar: white label inside a thin white-outline pill,
+ * transparent fill (用户需求: 黑底白字). Built from a clickable [Surface] (not AssistChip) so we fully
+ * control the white-on-black palette.
+ */
 @Composable
 private fun ToolbarKey(label: String, onClick: () -> Unit) {
-    AssistChip(onClick = onClick, label = { Text(label) })
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = Color.Transparent,
+        contentColor = TOOLBAR_CONTENT,
+        border = BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+    ) {
+        Box(
+            modifier = Modifier.heightIn(min = 34.dp).padding(horizontal = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
+    }
 }
 
+/**
+ * A latching modifier key (Ctrl/Alt/Shift) on the black bar. Inactive = white-outline pill with white
+ * text; active = SOLID white fill with black text, so the latched state reads clearly (用户需求: 黑底白字).
+ */
 @Composable
 private fun StickyToolbarChip(label: String, active: Boolean, onToggle: () -> Unit) {
-    FilterChip(
-        selected = active,
+    Surface(
         onClick = onToggle,
-        label = { Text(label) },
-    )
+        shape = RoundedCornerShape(8.dp),
+        color = if (active) TOOLBAR_CONTENT else Color.Transparent,
+        contentColor = if (active) TOOLBAR_BG else TOOLBAR_CONTENT,
+        border = if (active) null else BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+    ) {
+        Box(
+            modifier = Modifier.heightIn(min = 34.dp).padding(horizontal = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
+    }
 }
