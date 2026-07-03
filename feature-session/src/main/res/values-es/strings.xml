@@ -7,7 +7,7 @@
     <string name="session_cd_disconnect">Desconectar</string>
     <string name="session_cd_exit_fullscreen">Salir de pantalla completa</string>
     <string name="session_cd_expand_status">Mostrar información de la sesión</string>
-    <string name="session_loading_remote_frame">Esperando imagen remota…</string>
+    <string name="session_loading_remote_frame">Conectando, esperando imagen remota…</string>
     <string name="session_battery_title">¿Permitir actividad en segundo plano?</string>
     <string name="session_battery_message">Para mantener esta conexión de escritorio remoto cuando cambias de app o bloqueas la pantalla, añade PocketRDP a la lista permitida de optimización de batería. De lo contrario, el sistema puede cortar la conexión en segundo plano para ahorrar energía.</string>
     <string name="session_action_allow">Permitir</string>
@@ -22,7 +22,8 @@
     <string name="session_status_host">Host: %1$s</string>
     <string name="session_status_resolution">Resolución remota: %1$d×%2$d</string>
     <string name="session_status_fps">Frecuencia: %1$d fps</string>
-    <string name="session_status_total_latency">Latencia total: %1$s</string>
+    <string name="session_status_transport">Transporte: %1$s</string>
+    <string name="session_status_total_latency">Latencia: %1$s</string>
     <string name="session_status_sticky_modifiers">Modificadores fijos: %1$s</string>
     <string name="session_status_last_error">Último error: %1$s</string>
     <string name="session_status_measuring">Midiendo…</string>

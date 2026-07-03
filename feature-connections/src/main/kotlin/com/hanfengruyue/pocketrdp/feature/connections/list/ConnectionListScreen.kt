@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +60,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -94,6 +96,9 @@ private val landscapeThumbnailHeightDp = 124.dp
 private val landscapeThumbnailCornerDp = 10.dp
 private val landscapeContentGapDp = 12.dp
 private val landscapeMetaPillCornerDp = 8.dp
+private val runningBadgeSizeDp = 62.dp
+private val runningBadgeCoreDp = 42.dp
+private val runningBadgeIconDp = 28.dp
 private const val DESKTOP_ASPECT = 16f / 9f
 private const val SCRIM_ALPHA = 0.55f
 private const val META_PILL_ALPHA = 0.46f
@@ -531,28 +536,50 @@ private fun DesktopThumbnail(bitmap: Bitmap?, host: String?, isActive: Boolean, 
 private fun RunningBadge(modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "running-session")
     val haloAlpha by transition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 0.52f,
-        animationSpec = infiniteRepeatable(animation = tween(720), repeatMode = RepeatMode.Reverse),
+        initialValue = 0.22f,
+        targetValue = 0.82f,
+        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
         label = "running-session-halo",
     )
-    Box(modifier = modifier.size(42.dp), contentAlignment = Alignment.Center) {
+    val haloScale by transition.animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.18f,
+        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
+        label = "running-session-halo-scale",
+    )
+    val coreScale by transition.animateFloat(
+        initialValue = 0.94f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
+        label = "running-session-core-scale",
+    )
+    Box(modifier = modifier.size(runningBadgeSizeDp), contentAlignment = Alignment.Center) {
         Surface(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = haloScale
+                    scaleY = haloScale
+                },
             shape = CircleShape,
             color = MaterialTheme.colorScheme.primary.copy(alpha = haloAlpha),
             contentColor = Color.White,
         ) {}
         Surface(
-            modifier = Modifier.size(32.dp),
+            modifier = Modifier
+                .size(runningBadgeCoreDp)
+                .graphicsLayer {
+                    scaleX = coreScale
+                    scaleY = coreScale
+                },
             shape = CircleShape,
-            color = Color(0xFF1B5E20),
+            color = Color(0xFF00A83B),
             contentColor = Color.White,
         ) {
             Icon(
-                imageVector = Icons.Default.Computer,
+                imageVector = Icons.Default.SettingsEthernet,
                 contentDescription = stringResource(R.string.connection_running),
-                modifier = Modifier.padding(7.dp).size(18.dp),
+                modifier = Modifier.padding(7.dp).size(runningBadgeIconDp),
             )
         }
     }

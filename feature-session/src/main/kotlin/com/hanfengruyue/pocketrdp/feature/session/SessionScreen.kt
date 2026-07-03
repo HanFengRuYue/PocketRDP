@@ -15,6 +15,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -57,6 +62,7 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.OpenWith
+import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
@@ -555,6 +561,71 @@ fun SessionScreen(
 }
 
 @Composable
+private fun ConnectingFrameOverlay() {
+    val transition = rememberInfiniteTransition(label = "session-frame-loading")
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.34f,
+        targetValue = 0.82f,
+        animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
+        label = "session-frame-loading-alpha",
+    )
+    val pulseScale by transition.animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
+        label = "session-frame-loading-scale",
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.42f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color.Black.copy(alpha = 0.72f),
+            contentColor = Color.White,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Surface(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .graphicsLayer {
+                                scaleX = pulseScale
+                                scaleY = pulseScale
+                            },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = pulseAlpha),
+                        contentColor = Color.White,
+                    ) {}
+                    Icon(
+                        imageVector = Icons.Default.SettingsEthernet,
+                        contentDescription = null,
+                        modifier = Modifier.size(34.dp),
+                        tint = Color.White,
+                    )
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(72.dp),
+                        color = Color.White,
+                        strokeWidth = 3.dp,
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.session_loading_remote_frame),
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -740,7 +811,6 @@ private fun SessionCanvas(
     targetFrameRate: Int,
     onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
-    val current by buffer.current.collectAsStateWithLifecycle(initialValue = null)
     val hasPublishedFrame by buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
     var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
     var viewSize by remember { mutableStateOf(0 to 0) }
@@ -783,16 +853,6 @@ private fun SessionCanvas(
             .sessionGestures(controller = controller),
         contentAlignment = Alignment.Center,
     ) {
-        if (!hasPublishedFrame) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                CircularProgressIndicator(color = Color.White)
-                Text(stringResource(R.string.session_loading_remote_frame), color = Color.White)
-            }
-        }
-
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
@@ -813,6 +873,10 @@ private fun SessionCanvas(
                 surface.targetFrameRate = targetFrameRate
             },
         )
+
+        if (!hasPublishedFrame) {
+            ConnectingFrameOverlay()
+        }
 
         // Trackpad-mode cursor overlay. The native FreeRDP cursor pixels aren't currently
         // routed up to the UI (OnPointerSet is unused) so without this the user has no

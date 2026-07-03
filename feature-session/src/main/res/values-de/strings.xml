@@ -7,7 +7,7 @@
     <string name="session_cd_disconnect">Trennen</string>
     <string name="session_cd_exit_fullscreen">Vollbild verlassen</string>
     <string name="session_cd_expand_status">Sitzungsinformationen anzeigen</string>
-    <string name="session_loading_remote_frame">Warte auf Remote-Bild…</string>
+    <string name="session_loading_remote_frame">Verbindung wird hergestellt, warte auf Remote-Bild…</string>
     <string name="session_battery_title">Hintergrundbetrieb erlauben?</string>
     <string name="session_battery_message">Damit diese Remotedesktop-Verbindung beim Wechseln der App oder beim Sperren des Bildschirms aktiv bleibt, füge PocketRDP zur Ausnahmeliste der Akkuoptimierung hinzu. Andernfalls kann das System die Hintergrundverbindung zum Stromsparen trennen.</string>
     <string name="session_action_allow">Erlauben</string>
@@ -22,7 +22,8 @@
     <string name="session_status_host">Host: %1$s</string>
     <string name="session_status_resolution">Remote-Auflösung: %1$d×%2$d</string>
     <string name="session_status_fps">Bildrate: %1$d fps</string>
-    <string name="session_status_total_latency">Gesamtlatenz: %1$s</string>
+    <string name="session_status_transport">Transport: %1$s</string>
+    <string name="session_status_total_latency">Latenz: %1$s</string>
     <string name="session_status_sticky_modifiers">Einrastende Modifikatoren: %1$s</string>
     <string name="session_status_last_error">Letzter Fehler: %1$s</string>
     <string name="session_status_measuring">Messung…</string>
