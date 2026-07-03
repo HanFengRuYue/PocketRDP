@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import javax.inject.Inject
+import javax.inject.Singleton
 import kotlin.math.roundToInt
 
 /**
@@ -27,6 +28,7 @@ import kotlin.math.roundToInt
  * dirty region is via OnGraphicsUpdate, and we pull pixels into our own Bitmap by calling
  * LibFreeRDP.updateGraphics(inst, bitmap, x, y, w, h). See android_freerdp.c.
  */
+@Singleton
 class RdpClient @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
@@ -36,7 +38,7 @@ class RdpClient @Inject constructor(
     private val _events = MutableSharedFlow<RdpEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<RdpEvent> = _events.asSharedFlow()
 
-    private var nativeInstance: Long = 0L
+    @Volatile private var nativeInstance: Long = 0L
     private var connectThread: Thread? = null
     private var acceptedCertThumb: String? = null
 
@@ -158,10 +160,14 @@ class RdpClient @Inject constructor(
             val ok = LibFreeRDP.connect(inst)
             if (!ok) {
                 val err = LibFreeRDP.freerdp_get_last_error_string(inst)
-                PocketLogger.e(TAG, "freerdp_connect returned false (last_error='$err')")
-                emit(RdpEvent.Failed("freerdp_connect returned false: $err"))
-                LibFreeRDP.unregisterEventListener(inst)
-                LibFreeRDP.unregisterUIEventListener(inst)
+                if (isCurrentInstance(inst)) {
+                    PocketLogger.e(TAG, "freerdp_connect returned false (last_error='$err')")
+                    emit(RdpEvent.Failed("freerdp_connect returned false: $err"))
+                    LibFreeRDP.unregisterEventListener(inst)
+                    LibFreeRDP.unregisterUIEventListener(inst)
+                } else {
+                    PocketLogger.d(TAG, "stale freerdp_connect return ignored (inst=$inst last_error='$err')")
+                }
             }
         }, "freerdp-connect-$inst").also { it.isDaemon = true; it.start() }
     }
@@ -429,18 +435,29 @@ class RdpClient @Inject constructor(
         _events.tryEmit(event)
     }
 
+    private fun isCurrentInstance(inst: Long): Boolean = nativeInstance == inst
+
     private val eventListener = object : LibFreeRDP.EventListener {
-        override fun OnPreConnect(inst: Long) { PocketLogger.d(TAG, "OnPreConnect inst=$inst") }
+        override fun OnPreConnect(inst: Long) {
+            if (!isCurrentInstance(inst)) return
+            PocketLogger.d(TAG, "OnPreConnect inst=$inst")
+        }
         override fun OnConnectionSuccess(inst: Long) {
+            if (!isCurrentInstance(inst)) return
             PocketLogger.i(TAG, "OnConnectionSuccess inst=$inst")
             emit(RdpEvent.Connected)
         }
         override fun OnConnectionFailure(inst: Long) {
+            if (!isCurrentInstance(inst)) return
             PocketLogger.e(TAG, "OnConnectionFailure inst=$inst")
             emit(RdpEvent.Failed("connection failure"))
         }
-        override fun OnDisconnecting(inst: Long) { PocketLogger.d(TAG, "OnDisconnecting inst=$inst") }
+        override fun OnDisconnecting(inst: Long) {
+            if (!isCurrentInstance(inst)) return
+            PocketLogger.d(TAG, "OnDisconnecting inst=$inst")
+        }
         override fun OnDisconnected(inst: Long) {
+            if (!isCurrentInstance(inst)) return
             PocketLogger.i(TAG, "OnDisconnected inst=$inst")
             emit(RdpEvent.Disconnected(reason = null))
         }
@@ -448,6 +465,7 @@ class RdpClient @Inject constructor(
 
     private val uiEventListener = object : LibFreeRDP.UIEventListener {
         override fun OnAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean {
+            if (!isCurrentInstance(inst)) return false
             emit(RdpEvent.CredentialsRequired)
             return false
         }
@@ -455,6 +473,7 @@ class RdpClient @Inject constructor(
         override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean = false
 
         override fun OnVerifyCertificateEx(inst: Long, host: String, port: Long, commonName: String, subject: String, issuer: String, fingerprint: String, flags: Long): Int {
+            if (!isCurrentInstance(inst)) return 0
             val sha256 = fingerprint.lowercase().replace(":", "")
             return if (acceptedCertThumb != null && acceptedCertThumb.equals(sha256, ignoreCase = true)) {
                 1
@@ -465,11 +484,13 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnVerifyChangedCertificateEx(inst: Long, host: String, port: Long, commonName: String, subject: String, issuer: String, fingerprint: String, oldSubject: String, oldIssuer: String, oldFingerprint: String, flags: Long): Int {
+            if (!isCurrentInstance(inst)) return 0
             emit(RdpEvent.CertificatePrompt(host, fingerprint, isChange = true))
             return 0
         }
 
         override fun OnGraphicsUpdate(inst: Long, x: Int, y: Int, w: Int, h: Int) {
+            if (!isCurrentInstance(inst)) return
             // End-to-end control-latency sampling: this frame is fully decoded (the gdi buffer is
             // ready before this callback). If an input is pending from an idle→action edge, the gap
             // to now is a genuine press→screen round-trip — feed it to the EMA. (See markDiscreteInput.)
@@ -503,12 +524,14 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnGraphicsResize(inst: Long, width: Int, height: Int, bpp: Int) {
+            if (!isCurrentInstance(inst)) return
             PocketLogger.i(TAG, "OnGraphicsResize ${width}x$height bpp=$bpp")
             val bm = buffer.resize(width, height)
             emit(RdpEvent.GraphicsResized(width, height, bm))
         }
 
         override fun OnRemoteClipboardChanged(inst: Long, data: String) {
+            if (!isCurrentInstance(inst)) return
             emit(RdpEvent.ClipboardReceived(data))
         }
 
