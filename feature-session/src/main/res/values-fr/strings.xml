@@ -17,6 +17,11 @@
     <string name="session_action_grant">Accorder</string>
     <string name="session_zoom_cd">Zoom : glissez vers le haut pour agrandir, vers le bas pour réduire, double touchez pour réinitialiser, appuyez longuement puis faites glisser pour déplacer ce bouton</string>
     <string name="session_pan_cd">Faites glisser pour déplacer la vue agrandie ; appuyez longuement puis faites glisser pour déplacer ce bouton</string>
+    <string name="session_toolbar_page_quick">Rapide</string>
+    <string name="session_toolbar_page_navigation">Nav.</string>
+    <string name="session_toolbar_page_function">Touches F</string>
+    <string name="session_toolbar_send">Envoyer</string>
+    <string name="session_toolbar_cancel">Annuler</string>
 
     <string name="session_status_title_fallback">Session #%1$d</string>
     <string name="session_status_host">Hôte : %1$s</string>

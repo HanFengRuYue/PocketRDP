@@ -17,6 +17,11 @@
     <string name="session_action_grant">Conceder</string>
     <string name="session_zoom_cd">Zoom: deslize para cima para ampliar, para baixo para reduzir, toque duas vezes para redefinir, mantenha pressionado e arraste para mover este botão</string>
     <string name="session_pan_cd">Arraste para mover a visualização ampliada; mantenha pressionado e arraste para mover este botão</string>
+    <string name="session_toolbar_page_quick">Rápidas</string>
+    <string name="session_toolbar_page_navigation">Nav.</string>
+    <string name="session_toolbar_page_function">Teclas F</string>
+    <string name="session_toolbar_send">Enviar</string>
+    <string name="session_toolbar_cancel">Cancelar</string>
 
     <string name="session_status_title_fallback">Sessão #%1$d</string>
     <string name="session_status_host">Host: %1$s</string>

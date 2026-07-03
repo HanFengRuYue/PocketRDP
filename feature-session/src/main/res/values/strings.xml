@@ -17,6 +17,11 @@
     <string name="session_action_grant">去授权</string>
     <string name="session_zoom_cd">缩放：上滑放大、下滑缩小，双击复位；长按后拖动可移动此按钮</string>
     <string name="session_pan_cd">拖动以移动放大后的画面；长按后拖动可移动此按钮</string>
+    <string name="session_toolbar_page_quick">常用</string>
+    <string name="session_toolbar_page_navigation">导航</string>
+    <string name="session_toolbar_page_function">F 键</string>
+    <string name="session_toolbar_send">发送</string>
+    <string name="session_toolbar_cancel">取消</string>
 
     <string name="session_status_title_fallback">会话 #%1$d</string>
     <string name="session_status_host">主机：%1$s</string>

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.annotation.StringRes
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,9 +27,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -48,8 +49,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -94,12 +95,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
@@ -110,7 +107,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -762,43 +759,6 @@ private fun Modifier.consumeAllPointerInput(): Modifier = pointerInput(Unit) {
     }
 }
 
-/**
- * 给横向滚动条加左右边缘渐隐：哪一侧还有可滑到的内容，该侧内容就淡出成透明，作为"还能继续滑动"的
- * 视觉提示（用户反馈：功能键栏一排显示不全、看不出能左右滑）。用 CompositingStrategy.Offscreen 离屏
- * 图层 + BlendMode.DstIn 蒙版实现：只把"内容层"（滚动的键）在边缘抹成透明；更外层单独绘制的背景黑条
- * 不在这个离屏层里、不受影响，所以呈现"键滑入边缘暗处"的干净效果。纯绘制层、不新增命中测试节点，所以
- * 既不拦截点击/滚动，也不破坏 consumeAllPointerInput 对键间空隙触摸的兜底。必须放在 horizontalScroll
- * 之前，渐隐才固定在视口左右边缘而非随内容一起滚走。
- */
-private fun Modifier.scrollEdgeFade(state: ScrollState, fadeWidth: Dp = 24.dp): Modifier = this
-    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-    .drawWithContent {
-        drawContent()
-        val w = fadeWidth.toPx()
-        if (state.canScrollBackward) {
-            drawRect(
-                brush = Brush.horizontalGradient(
-                    0f to Color.Transparent,
-                    1f to Color.Black,
-                    startX = 0f,
-                    endX = w,
-                ),
-                blendMode = BlendMode.DstIn,
-            )
-        }
-        if (state.canScrollForward) {
-            drawRect(
-                brush = Brush.horizontalGradient(
-                    0f to Color.Black,
-                    1f to Color.Transparent,
-                    startX = size.width - w,
-                    endX = size.width,
-                ),
-                blendMode = BlendMode.DstIn,
-            )
-        }
-    }
-
 @Composable
 private fun SessionCanvas(
     modifier: Modifier,
@@ -911,34 +871,107 @@ private fun SessionCanvas(
 }
 
 /** F1–F12 keys for the function-key bar (label → Windows VK). */
-private val functionKeyVks: List<Pair<String, Int>> = listOf(
-    "F1" to ScancodeMap.VK.F1, "F2" to ScancodeMap.VK.F2, "F3" to ScancodeMap.VK.F3,
-    "F4" to ScancodeMap.VK.F4, "F5" to ScancodeMap.VK.F5, "F6" to ScancodeMap.VK.F6,
-    "F7" to ScancodeMap.VK.F7, "F8" to ScancodeMap.VK.F8, "F9" to ScancodeMap.VK.F9,
-    "F10" to ScancodeMap.VK.F10, "F11" to ScancodeMap.VK.F11, "F12" to ScancodeMap.VK.F12,
+private val functionKeyRows: List<List<ToolbarKeySpec>> = listOf(
+    listOf("F1", "F2", "F3", "F4", "F5", "F6").mapIndexed { index, label ->
+        ToolbarKeySpec(label, ScancodeMap.VK.F1 + index)
+    },
+    listOf("F7", "F8", "F9", "F10", "F11", "F12").mapIndexed { index, label ->
+        ToolbarKeySpec(label, ScancodeMap.VK.F7 + index)
+    },
 )
 
 /** Navigation / editing keys for the function-key bar (label → Windows VK). Arrows etc. carry KBDEXT. */
-private val navKeyVks: List<Pair<String, Int>> = listOf(
-    "←" to ScancodeMap.VK.LEFT, "↑" to ScancodeMap.VK.UP, "↓" to ScancodeMap.VK.DOWN,
-    "→" to ScancodeMap.VK.RIGHT, "Home" to ScancodeMap.VK.HOME, "End" to ScancodeMap.VK.END,
-    "PgUp" to ScancodeMap.VK.PAGE_UP, "PgDn" to ScancodeMap.VK.PAGE_DOWN,
-    "Ins" to ScancodeMap.VK.INSERT, "Del" to ScancodeMap.VK.DELETE,
+private val navigationKeyRows: List<List<ToolbarKeySpec>> = listOf(
+    listOf(
+        ToolbarKeySpec("↑", ScancodeMap.VK.UP),
+        ToolbarKeySpec("↓", ScancodeMap.VK.DOWN),
+        ToolbarKeySpec("←", ScancodeMap.VK.LEFT),
+        ToolbarKeySpec("→", ScancodeMap.VK.RIGHT),
+    ),
+    listOf(
+        ToolbarKeySpec("Home", ScancodeMap.VK.HOME),
+        ToolbarKeySpec("End", ScancodeMap.VK.END),
+        ToolbarKeySpec("PgUp", ScancodeMap.VK.PAGE_UP),
+        ToolbarKeySpec("PgDn", ScancodeMap.VK.PAGE_DOWN),
+    ),
+    listOf(
+        ToolbarKeySpec("Ins", ScancodeMap.VK.INSERT),
+        ToolbarKeySpec("Del", ScancodeMap.VK.DELETE),
+        ToolbarKeySpec("Back", ScancodeMap.VK.BACK),
+        ToolbarKeySpec("Enter", ScancodeMap.VK.RETURN),
+    ),
 )
 
+private val quickKeyRows: List<List<ToolbarKeySpec>> = listOf(
+    listOf(
+        ToolbarKeySpec("Esc", ScancodeMap.VK.ESCAPE),
+        ToolbarKeySpec("Tab", ScancodeMap.VK.TAB),
+        ToolbarKeySpec("Back", ScancodeMap.VK.BACK),
+        ToolbarKeySpec("Enter", ScancodeMap.VK.RETURN),
+    ),
+)
+
+private const val VK_A = 0x41
+private const val VK_C = 0x43
+private const val VK_D = 0x44
+private const val VK_F = 0x46
+private const val VK_R = 0x52
+private const val VK_S = 0x53
+private const val VK_V = 0x56
+private const val VK_X = 0x58
+private const val VK_Z = 0x5A
+
+private val quickComboRows: List<List<ToolbarComboSpec>> = listOf(
+    listOf(
+        ToolbarComboSpec("Ctrl+C", VK_C, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("Ctrl+V", VK_V, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("Ctrl+X", VK_X, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("Ctrl+A", VK_A, ScancodeMap.Modifier.CTRL),
+    ),
+    listOf(
+        ToolbarComboSpec("Ctrl+Z", VK_Z, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("Ctrl+S", VK_S, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("Alt+Tab", ScancodeMap.VK.TAB, ScancodeMap.Modifier.ALT),
+        ToolbarComboSpec("Win+D", VK_D, ScancodeMap.Modifier.WIN),
+    ),
+    listOf(
+        ToolbarComboSpec("Win+R", VK_R, ScancodeMap.Modifier.WIN),
+        ToolbarComboSpec("Ctrl+F", VK_F, ScancodeMap.Modifier.CTRL),
+    ),
+    listOf(
+        ToolbarComboSpec("Ctrl+Shift+Esc", ScancodeMap.VK.ESCAPE, ScancodeMap.Modifier.CTRL or ScancodeMap.Modifier.SHIFT),
+        ToolbarComboSpec("CAD", null, 0, isCtrlAltDel = true),
+    ),
+)
+
+private val toolbarModifierSpecs: List<ToolbarModifierSpec> = listOf(
+    ToolbarModifierSpec("Ctrl", ScancodeMap.Modifier.CTRL),
+    ToolbarModifierSpec("Alt", ScancodeMap.Modifier.ALT),
+    ToolbarModifierSpec("Shift", ScancodeMap.Modifier.SHIFT),
+    ToolbarModifierSpec("Win", ScancodeMap.Modifier.WIN),
+)
+
+private enum class ToolbarPage(@StringRes val labelRes: Int) {
+    QUICK(R.string.session_toolbar_page_quick),
+    NAVIGATION(R.string.session_toolbar_page_navigation),
+    FUNCTION(R.string.session_toolbar_page_function),
+}
+
+private data class ToolbarKeySpec(val label: String, val vk: Int)
+
+private data class ToolbarComboSpec(
+    val label: String,
+    val keyVk: Int?,
+    val modifiers: Int,
+    val isCtrlAltDel: Boolean = false,
+)
+
+private data class ToolbarModifierSpec(val label: String, val flag: Int)
+
 /**
- * Function-key toolbar shown while the soft keyboard is up — a SINGLE horizontally-scrollable row on a
- * translucent BLACK bar with WHITE keys (用户需求: 改成 1 排、黑色半透明). No expand/collapse toggle and no
- * hide-keyboard button (用户需求: 展开/收起按钮不要; 收键盘用上方工具栏的键盘按钮即可) — just the keys, swipe
- * left/right to reach them all (Esc / sticky Ctrl·Alt·Shift / Win / Tab / arrows / Home·End·PgUp·PgDn /
- * Ins·Del / CAD / F1–F12). With no trailing fixed buttons, the row scrolls cleanly edge-to-edge so nothing
- * is crowded/clipped the way the earlier toggle+keyboard buttons were (用户反馈: 右侧功能键被遮挡).
- *
- * The bar fill + measured height live on the INNER Row so [onBarHeightChanged] reports the bar's VISUAL
- * height (NOT including the outer imePadding) — that height drives ImeLiftEffect's keyboard-lift. imePadding
- * (outer Box) lifts the whole bar above the keyboard, and consumeAllPointerInput swallows every touch within
- * the bar so taps (and the gaps between keys) don't leak into the full-screen gesture surface beneath this
- * floating overlay.
+ * Function-key toolbar shown while the soft keyboard is up. It deliberately avoids horizontal scrolling:
+ * fixed pages keep every key tappable, while long-pressing any regular key opens a one-shot chord builder.
+ * The background layer consumes only the empty gaps so toolbar touches never leak into the session canvas.
  */
 @Composable
 private fun SessionToolbar(
@@ -948,45 +981,74 @@ private fun SessionToolbar(
     onBarHeightChanged: (Int) -> Unit,
 ) {
     Box(
-        modifier = Modifier.fillMaxWidth().imePadding().consumeAllPointerInput(),
+        modifier = Modifier.fillMaxWidth().imePadding(),
         contentAlignment = Alignment.BottomCenter,
     ) {
-        val keyScroll = rememberScrollState()
-        Row(
+        var page by remember { mutableStateOf(ToolbarPage.QUICK) }
+        var comboTarget by remember { mutableStateOf<ToolbarKeySpec?>(null) }
+        var comboMask by remember { mutableIntStateOf(ScancodeMap.Modifier.CTRL) }
+        val openCombo: (ToolbarKeySpec) -> Unit = { target ->
+            comboTarget = target
+            comboMask = state.stickyModifiers.takeIf { it != 0 } ?: ScancodeMap.Modifier.CTRL
+        }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(containerColor)
+                .consumeAllPointerInput(),
+        )
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(containerColor)
                 .onSizeChanged { onBarHeightChanged(it.height) }
-                // 边缘渐隐：哪一侧还有可滑到的键，那侧就淡出，提示"可左右滑动看更多键"（用户反馈：功能键
-                // 栏一排显示不全、看不出能滑）。纯绘制层、不拦截指针，滚动/点击/穿透兜底都不受影响。必须在
-                // horizontalScroll 之前，渐隐才固定在视口左右边缘而非随内容滚走。
-                .scrollEdgeFade(keyScroll)
-                .horizontalScroll(keyScroll)
                 .padding(horizontal = 8.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ToolbarKey("Esc") { viewModel.sendKey(ScancodeMap.VK.ESCAPE) }
-            StickyToolbarChip(
-                label = "Ctrl",
-                active = state.stickyModifiers and ScancodeMap.Modifier.CTRL != 0,
-                onToggle = { viewModel.toggleStickyModifier(ScancodeMap.Modifier.CTRL) },
+            ToolbarPageTabs(selected = page, onSelect = { selected ->
+                page = selected
+                comboTarget = null
+            })
+            ToolbarModifierRow(
+                stickyMask = state.stickyModifiers,
+                onToggle = viewModel::toggleStickyModifier,
             )
-            StickyToolbarChip(
-                label = "Alt",
-                active = state.stickyModifiers and ScancodeMap.Modifier.ALT != 0,
-                onToggle = { viewModel.toggleStickyModifier(ScancodeMap.Modifier.ALT) },
-            )
-            StickyToolbarChip(
-                label = "Shift",
-                active = state.stickyModifiers and ScancodeMap.Modifier.SHIFT != 0,
-                onToggle = { viewModel.toggleStickyModifier(ScancodeMap.Modifier.SHIFT) },
-            )
-            ToolbarKey("Win") { viewModel.sendKey(ScancodeMap.VK.LWIN) }
-            ToolbarKey("Tab") { viewModel.sendKey(ScancodeMap.VK.TAB) }
-            navKeyVks.forEach { (label, vk) -> ToolbarKey(label) { viewModel.sendKey(vk) } }
-            ToolbarKey("CAD") { viewModel.sendCtrlAltDel() }
-            functionKeyVks.forEach { (label, vk) -> ToolbarKey(label) { viewModel.sendKey(vk) } }
+            val target = comboTarget
+            if (target != null) {
+                ToolbarComboBuilder(
+                    target = target,
+                    selectedMask = comboMask,
+                    onToggleModifier = { flag -> comboMask = comboMask xor flag },
+                    onSend = {
+                        viewModel.sendKeyWithModifiers(target.vk, comboMask)
+                        comboTarget = null
+                    },
+                    onCancel = { comboTarget = null },
+                )
+            } else {
+                when (page) {
+                    ToolbarPage.QUICK -> {
+                        ToolbarKeyRows(rows = quickKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
+                        ToolbarComboRows(
+                            rows = quickComboRows,
+                            onCombo = { combo ->
+                                if (combo.isCtrlAltDel) {
+                                    viewModel.sendCtrlAltDel()
+                                } else {
+                                    combo.keyVk?.let { viewModel.sendKeyWithModifiers(it, combo.modifiers) }
+                                }
+                            },
+                        )
+                    }
+                    ToolbarPage.NAVIGATION -> {
+                        ToolbarKeyRows(rows = navigationKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
+                    }
+                    ToolbarPage.FUNCTION -> {
+                        ToolbarKeyRows(rows = functionKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
+                    }
+                }
+            }
         }
     }
 }
@@ -1296,19 +1358,160 @@ private fun PanHandle(
  * control the white-on-black palette.
  */
 @Composable
-private fun ToolbarKey(label: String, onClick: () -> Unit) {
+private fun ToolbarPageTabs(selected: ToolbarPage, onSelect: (ToolbarPage) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ToolbarPage.entries.forEach { page ->
+            ToolbarToggleChip(
+                label = stringResource(page.labelRes),
+                active = selected == page,
+                onClick = { onSelect(page) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolbarModifierRow(stickyMask: Int, onToggle: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        toolbarModifierSpecs.forEach { spec ->
+            ToolbarToggleChip(
+                label = spec.label,
+                active = stickyMask and spec.flag != 0,
+                onClick = { onToggle(spec.flag) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolbarKeyRows(
+    rows: List<List<ToolbarKeySpec>>,
+    onKey: (Int) -> Unit,
+    onLongKey: (ToolbarKeySpec) -> Unit,
+) {
+    rows.forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            row.forEach { key ->
+                ToolbarKey(
+                    label = key.label,
+                    onClick = { onKey(key.vk) },
+                    onLongClick = { onLongKey(key) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolbarComboRows(rows: List<List<ToolbarComboSpec>>, onCombo: (ToolbarComboSpec) -> Unit) {
+    rows.forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            row.forEach { combo ->
+                ToolbarKey(
+                    label = combo.label,
+                    onClick = { onCombo(combo) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolbarComboBuilder(
+    target: ToolbarKeySpec,
+    selectedMask: Int,
+    onToggleModifier: (Int) -> Unit,
+    onSend: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ToolbarPreviewChip(
+                label = buildChordLabel(selectedMask, target.label),
+                modifier = Modifier.weight(1.4f),
+            )
+            ToolbarKey(
+                label = stringResource(R.string.session_toolbar_send),
+                onClick = onSend,
+                modifier = Modifier.weight(0.9f),
+            )
+            ToolbarKey(
+                label = stringResource(R.string.session_toolbar_cancel),
+                onClick = onCancel,
+                modifier = Modifier.weight(0.9f),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            toolbarModifierSpecs.forEach { spec ->
+                ToolbarToggleChip(
+                    label = spec.label,
+                    active = selectedMask and spec.flag != 0,
+                    onClick = { onToggleModifier(spec.flag) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+private fun buildChordLabel(mask: Int, keyLabel: String): String =
+    (toolbarModifierSpecs.filter { spec -> mask and spec.flag != 0 }.map { it.label } + keyLabel)
+        .joinToString("+")
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ToolbarKey(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+) {
     Surface(
-        onClick = onClick,
+        modifier = modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick,
+        ),
         shape = RoundedCornerShape(8.dp),
         color = Color.Transparent,
         contentColor = TOOLBAR_CONTENT,
         border = BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
     ) {
         Box(
-            modifier = Modifier.heightIn(min = 34.dp).padding(horizontal = 10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 36.dp)
+                .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -1318,19 +1521,54 @@ private fun ToolbarKey(label: String, onClick: () -> Unit) {
  * text; active = SOLID white fill with black text, so the latched state reads clearly (用户需求: 黑底白字).
  */
 @Composable
-private fun StickyToolbarChip(label: String, active: Boolean, onToggle: () -> Unit) {
+private fun ToolbarToggleChip(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
-        onClick = onToggle,
+        onClick = onClick,
+        modifier = modifier,
         shape = RoundedCornerShape(8.dp),
         color = if (active) TOOLBAR_CONTENT else Color.Transparent,
         contentColor = if (active) TOOLBAR_BG else TOOLBAR_CONTENT,
         border = if (active) null else BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
     ) {
         Box(
-            modifier = Modifier.heightIn(min = 34.dp).padding(horizontal = 10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 34.dp)
+                .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolbarPreviewChip(label: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.widthIn(min = 96.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = TOOLBAR_CONTENT.copy(alpha = 0.16f),
+        contentColor = TOOLBAR_CONTENT,
+        border = BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 36.dp)
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
         }
     }
 }

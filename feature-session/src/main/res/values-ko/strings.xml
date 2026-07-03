@@ -17,6 +17,11 @@
     <string name="session_action_grant">권한 허용</string>
     <string name="session_zoom_cd">확대/축소: 위로 밀면 확대, 아래로 밀면 축소, 두 번 탭하면 초기화, 길게 누른 뒤 드래그하면 이 버튼 이동</string>
     <string name="session_pan_cd">확대된 화면을 이동하려면 드래그하세요. 이 버튼을 옮기려면 길게 누른 뒤 드래그하세요</string>
+    <string name="session_toolbar_page_quick">빠른 키</string>
+    <string name="session_toolbar_page_navigation">탐색</string>
+    <string name="session_toolbar_page_function">F 키</string>
+    <string name="session_toolbar_send">보내기</string>
+    <string name="session_toolbar_cancel">취소</string>
 
     <string name="session_status_title_fallback">세션 #%1$d</string>
     <string name="session_status_host">호스트: %1$s</string>

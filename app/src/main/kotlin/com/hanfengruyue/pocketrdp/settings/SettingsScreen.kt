@@ -1,5 +1,6 @@
 package com.hanfengruyue.pocketrdp.settings
 
+import android.content.Context
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material3.AssistChip
@@ -30,8 +32,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -49,6 +53,8 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val appVersion = remember(context.packageName) { packageVersionName(context) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -136,6 +142,17 @@ fun SettingsScreen(
                     onChange = viewModel::setControlAlpha,
                 )
             }
+
+            SettingCard(title = stringResource(R.string.settings_about_title), icon = Icons.Default.Info) {
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.settings_about_version, appVersion))
+                Text(
+                    stringResource(
+                        R.string.settings_about_author,
+                        stringResource(R.string.settings_about_author_name),
+                    ),
+                )
+            }
         }
     }
 }
@@ -179,6 +196,10 @@ private fun themeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.LIGHT -> R.string.settings_theme_light
     ThemeMode.DARK -> R.string.settings_theme_dark
 }
+
+@Suppress("DEPRECATION")
+private fun packageVersionName(context: Context): String =
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
 
 private data class LanguageOption(val tag: String, @StringRes val labelRes: Int)
 
