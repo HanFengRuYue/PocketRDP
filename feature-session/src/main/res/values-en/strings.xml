@@ -17,6 +17,11 @@
     <string name="session_action_grant">Grant</string>
     <string name="session_zoom_cd">Zoom: swipe up to zoom in, swipe down to zoom out, double tap to reset, long press and drag to move this button</string>
     <string name="session_pan_cd">Drag to move the enlarged view; long press and drag to move this button</string>
+    <string name="session_toolbar_page_quick">Quick</string>
+    <string name="session_toolbar_page_navigation">Nav</string>
+    <string name="session_toolbar_page_function">F keys</string>
+    <string name="session_toolbar_send">Send</string>
+    <string name="session_toolbar_cancel">Cancel</string>
 
     <string name="session_status_title_fallback">Session #%1$d</string>
     <string name="session_status_host">Host: %1$s</string>

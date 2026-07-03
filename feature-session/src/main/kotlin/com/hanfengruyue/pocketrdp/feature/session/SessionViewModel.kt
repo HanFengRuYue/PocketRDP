@@ -94,6 +94,13 @@ data class SessionUiState(
     val lastError: String? = null,
 )
 
+private val toolbarModifierOrder = listOf(
+    ScancodeMap.Modifier.CTRL,
+    ScancodeMap.Modifier.ALT,
+    ScancodeMap.Modifier.SHIFT,
+    ScancodeMap.Modifier.WIN,
+)
+
 @HiltViewModel
 class SessionViewModel @Inject constructor(
     val rdpClient: RdpClient,
@@ -719,6 +726,19 @@ class SessionViewModel @Inject constructor(
     fun sendKey(vk: Int) {
         rdpClient.sendKeyEvent(vk, true)
         rdpClient.sendKeyEvent(vk, false)
+    }
+
+    /** Send a one-shot key chord without disturbing already latched toolbar modifiers. */
+    fun sendKeyWithModifiers(vk: Int, modifierMask: Int) {
+        val stickyMask = _state.value.stickyModifiers
+        val transientModifiers = toolbarModifierOrder
+            .filter { flag -> modifierMask and flag != 0 && stickyMask and flag == 0 }
+            .mapNotNull { flag -> ScancodeMap.Modifier.vkFor(flag) }
+
+        transientModifiers.forEach { modVk -> rdpClient.sendKeyEvent(modVk, true) }
+        rdpClient.sendKeyEvent(vk, true)
+        rdpClient.sendKeyEvent(vk, false)
+        transientModifiers.asReversed().forEach { modVk -> rdpClient.sendKeyEvent(modVk, false) }
     }
 
     /** Forward a discrete VK down/up — used by the IME bridge's onPreviewKeyEvent path. */

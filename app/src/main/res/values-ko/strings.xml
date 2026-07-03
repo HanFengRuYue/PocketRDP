@@ -13,6 +13,9 @@
     <string name="settings_toolbar_alpha_title">상단 및 하단 도구 모음</string>
     <string name="settings_controls_alpha_title">확대 버튼과 이동 조이스틱</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
+    <string name="settings_about_title">앱 정보</string>
+    <string name="settings_about_version">버전: %1$s</string>
+    <string name="settings_about_author">작성자: %1$s</string>
     <string name="settings_theme_system">시스템 따르기</string>
     <string name="settings_theme_light">라이트</string>
     <string name="settings_theme_dark">다크</string>

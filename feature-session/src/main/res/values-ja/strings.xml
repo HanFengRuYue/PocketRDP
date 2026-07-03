@@ -17,6 +17,11 @@
     <string name="session_action_grant">権限を付与</string>
     <string name="session_zoom_cd">ズーム: 上にスワイプで拡大、下にスワイプで縮小、ダブルタップでリセット、長押ししてドラッグでこのボタンを移動</string>
     <string name="session_pan_cd">ドラッグして拡大表示を移動、長押ししてドラッグでこのボタンを移動</string>
+    <string name="session_toolbar_page_quick">クイック</string>
+    <string name="session_toolbar_page_navigation">ナビ</string>
+    <string name="session_toolbar_page_function">F キー</string>
+    <string name="session_toolbar_send">送信</string>
+    <string name="session_toolbar_cancel">キャンセル</string>
 
     <string name="session_status_title_fallback">セッション #%1$d</string>
     <string name="session_status_host">ホスト: %1$s</string>

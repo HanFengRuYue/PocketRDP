@@ -17,6 +17,11 @@
     <string name="session_action_grant">Gewähren</string>
     <string name="session_zoom_cd">Zoom: nach oben wischen zum Vergrößern, nach unten zum Verkleinern, doppelt tippen zum Zurücksetzen, lange drücken und ziehen zum Verschieben dieser Taste</string>
     <string name="session_pan_cd">Ziehen, um die vergrößerte Ansicht zu bewegen; lange drücken und ziehen, um diese Taste zu verschieben</string>
+    <string name="session_toolbar_page_quick">Schnell</string>
+    <string name="session_toolbar_page_navigation">Navigation</string>
+    <string name="session_toolbar_page_function">F-Tasten</string>
+    <string name="session_toolbar_send">Senden</string>
+    <string name="session_toolbar_cancel">Abbrechen</string>
 
     <string name="session_status_title_fallback">Sitzung #%1$d</string>
     <string name="session_status_host">Host: %1$s</string>
