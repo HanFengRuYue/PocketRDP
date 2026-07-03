@@ -7,7 +7,7 @@
     <string name="session_cd_disconnect">연결 끊기</string>
     <string name="session_cd_exit_fullscreen">전체 화면 종료</string>
     <string name="session_cd_expand_status">세션 정보 펼치기</string>
-    <string name="session_loading_remote_frame">원격 화면을 기다리는 중…</string>
+    <string name="session_loading_remote_frame">연결 중, 원격 화면을 기다리는 중…</string>
     <string name="session_battery_title">백그라운드 유지를 허용할까요?</string>
     <string name="session_battery_message">앱을 전환하거나 화면을 잠가도 이 원격 데스크톱 연결을 유지하려면 PocketRDP를 배터리 최적화 허용 목록에 추가하세요. 그렇지 않으면 절전 중 시스템이 백그라운드 연결을 끊을 수 있습니다.</string>
     <string name="session_action_allow">허용</string>
@@ -22,7 +22,8 @@
     <string name="session_status_host">호스트: %1$s</string>
     <string name="session_status_resolution">원격 해상도: %1$d×%2$d</string>
     <string name="session_status_fps">프레임 속도: %1$d fps</string>
-    <string name="session_status_total_latency">총 지연 시간: %1$s</string>
+    <string name="session_status_transport">전송: %1$s</string>
+    <string name="session_status_total_latency">지연 시간: %1$s</string>
     <string name="session_status_sticky_modifiers">고정 보조키: %1$s</string>
     <string name="session_status_last_error">최근 오류: %1$s</string>
     <string name="session_status_measuring">측정 중…</string>

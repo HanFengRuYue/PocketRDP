@@ -7,7 +7,7 @@
     <string name="session_cd_disconnect">Disconnect</string>
     <string name="session_cd_exit_fullscreen">Exit full screen</string>
     <string name="session_cd_expand_status">Expand session information</string>
-    <string name="session_loading_remote_frame">Waiting for remote frame…</string>
+    <string name="session_loading_remote_frame">Connecting, waiting for remote display…</string>
     <string name="session_battery_title">Allow background keep-alive?</string>
     <string name="session_battery_message">To keep this remote desktop connected when you switch apps or lock the screen, add PocketRDP to the battery optimization allowlist. Otherwise the system may cut off the background connection while saving power.</string>
     <string name="session_action_allow">Allow</string>
@@ -22,7 +22,8 @@
     <string name="session_status_host">Host: %1$s</string>
     <string name="session_status_resolution">Remote resolution: %1$d×%2$d</string>
     <string name="session_status_fps">Frame rate: %1$d fps</string>
-    <string name="session_status_total_latency">Total latency: %1$s</string>
+    <string name="session_status_transport">Transport: %1$s</string>
+    <string name="session_status_total_latency">Latency: %1$s</string>
     <string name="session_status_sticky_modifiers">Sticky modifiers: %1$s</string>
     <string name="session_status_last_error">Latest error: %1$s</string>
     <string name="session_status_measuring">Measuring…</string>

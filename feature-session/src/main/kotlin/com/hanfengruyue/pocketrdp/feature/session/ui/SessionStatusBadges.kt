@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -150,6 +151,16 @@ fun SessionStatusTitle(
                     onClick = { expanded = false },
                 )
                 DropdownMenuItem(
+                    text = {
+                        MenuText(
+                            stringResource(R.string.session_status_transport, transportLabel(transport)),
+                            menuContentColor,
+                        )
+                    },
+                    leadingIcon = { MenuRowIcon(Icons.Default.SettingsEthernet, menuContentColor) },
+                    onClick = { expanded = false },
+                )
+                DropdownMenuItem(
                     text = { MenuText(stringResource(R.string.session_status_total_latency, totalLatency), menuContentColor) },
                     leadingIcon = { MenuRowIcon(Icons.Default.Bolt, menuContentColor) },
                     onClick = { expanded = false },
@@ -217,6 +228,16 @@ private fun MenuText(text: String, color: Color) {
 private fun totalLatencyLabel(vararg values: Int): String {
     val valid = values.filter { it >= 0 }
     return if (valid.isEmpty()) stringResource(R.string.session_status_measuring) else "${valid.sum()} ms"
+}
+
+@Composable
+private fun transportLabel(transport: RdpTransport): String = when (transport) {
+    RdpTransport.TCP,
+    RdpTransport.TCP_FALLBACK -> "TCP"
+    RdpTransport.UDP_R,
+    RdpTransport.UDP_L,
+    RdpTransport.UDP2 -> "UDP"
+    RdpTransport.UNKNOWN -> stringResource(R.string.session_status_measuring)
 }
 
 @Composable
