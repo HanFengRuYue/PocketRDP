@@ -250,9 +250,10 @@ class RdpInputController(
 
     /**
      * Move the virtual cursor by a screen-space delta (trackpad). Divides by viewportScale*userZoom
-     * so sensitivity matches what the user sees. When the picture is zoomed (userZoom > 1) the view
-     * auto-pans to keep the cursor on-screen — see [followCursorWhenZoomed]. That is the restored
-     * "缩放后画面跟随光标" behaviour and is TRACKPAD-ONLY (drag is never called in native-touch mode).
+     * so sensitivity matches what the user sees. When the picture is zoomed (userZoom > 1) OR the soft
+     * keyboard has auto-lifted it the view auto-pans to keep the cursor on-screen — see
+     * [followCursorWhenZoomed]. That is the restored "缩放后画面跟随光标" behaviour and is TRACKPAD-ONLY
+     * (drag is never called in native-touch mode).
      * It is safe here precisely because the trackpad cursor is decoupled from the finger: panning the
      * view does NOT move where the next click lands (clicks use virtualX/Y in remote space), unlike
      * native touch where view-follow between a tap's down/up turned taps into drags.
@@ -273,22 +274,40 @@ class RdpInputController(
     }
 
     /**
-     * Pan the magnified view so the virtual cursor stays visible ("缩放后画面跟随光标"). No-op at 1×
-     * (the whole framebuffer is already on-screen). Uses a centred dead-zone: the view only moves
-     * once the cursor pushes past a margin band near an edge, so small cursor moves don't jitter the
-     * picture. The cursor can still reach the framebuffer's own edges — [clampPan] caps the pan, after
-     * which the cursor travels the remaining gap to the true edge. TRACKPAD-only (see [drag]).
+     * Pan the view so the virtual cursor stays visible ("缩放后画面跟随光标") — the TRACKPAD-only auto-pan.
+     * Active when there is something to pan: either the picture is magnified (zoom > 1), OR the soft
+     * keyboard has auto-lifted it ([imeOffsetY] < 0) so that even at 100% zoom dragging the cursor toward
+     * the now-off-screen top pulls it back down into view (用户需求: 模拟鼠标模式下呼出键盘仍用光标跟随移动
+     * 画面，而不是切到移动杆). Uses a centred dead-zone: the view only moves once the cursor pushes past a
+     * margin band near an edge, so small cursor moves don't jitter the picture. The cursor can still reach
+     * the framebuffer's own edges — [clampPan] caps the pan, after which the cursor travels the remaining
+     * gap to the true edge. TRACKPAD-only (see [drag]).
+     *
+     * Keyboard-aware in two ways: (1) the cursor's on-screen Y includes [imeOffsetY], because the
+     * crosshair/framebuffer layer draws at translationY = panY + offsetY — without it the dead-zone was
+     * computed against the un-lifted frame and a follow could slip the cursor behind the keyboard; and
+     * (2) the bottom of the follow band is the keyboard's top edge ([bottomOcclusionPx]), NOT the view
+     * bottom, so the cursor is always kept in the strip that's actually visible above the keyboard.
      */
     private fun followCursorWhenZoomed() {
-        if (userZoom <= 1f || viewW <= 0f || viewH <= 0f) return
+        val lifted = imeOffsetY < 0f
+        if ((userZoom <= 1f && !lifted) || viewW <= 0f || viewH <= 0f) return
         val cx = viewW / 2f
         val cy = viewH / 2f
-        // Where the cursor currently sits on screen under the viewport + user transform:
-        // screen = centre + zoom*(base - centre) + pan, base = letterboxed fit-to-view position.
+        // Where the cursor currently sits on screen under the viewport + user transform + keyboard lift:
+        // screen = centre + zoom*(base - centre) + pan (+ imeOffsetY on Y), base = letterboxed fit pos.
         val sx = cx + userZoom * ((viewportDx + virtualX * viewportScale) - cx) + userPanX
-        val sy = cy + userZoom * ((viewportDy + virtualY * viewportScale) - cy) + userPanY
+        val sy = cy + userZoom * ((viewportDy + virtualY * viewportScale) - cy) + userPanY + imeOffsetY
+        // Keep the cursor inside the VISIBLE band (above the keyboard) — visibleBottom collapses to
+        // viewH when nothing occludes the bottom, so off-keyboard behaviour is unchanged.
+        val visibleBottom = (viewH - bottomOcclusionPx).coerceAtLeast(1f)
         val marginX = viewW * FOLLOW_MARGIN_FRAC
-        val marginY = viewH * FOLLOW_MARGIN_FRAC
+        // marginY is a fraction of the VISIBLE band (NOT viewH) so the dead-zone is always the central
+        // 50% of what's actually visible above the keyboard — same relative feel as off-keyboard. Using
+        // viewH here would be a bug: under a tall keyboard (occl > viewH/2) a viewH-based margin exceeds
+        // visibleBottom/2, so the top guard (sy < marginY) and bottom guard (sy > visibleBottom - marginY)
+        // cross and the cursor oscillates between them. A visibleBottom-based margin can never invert.
+        val marginY = visibleBottom * FOLLOW_MARGIN_FRAC
         var changed = false
         when {
             sx < marginX -> { userPanX += marginX - sx; changed = true }
@@ -296,7 +315,7 @@ class RdpInputController(
         }
         when {
             sy < marginY -> { userPanY += marginY - sy; changed = true }
-            sy > viewH - marginY -> { userPanY += (viewH - marginY) - sy; changed = true }
+            sy > visibleBottom - marginY -> { userPanY += (visibleBottom - marginY) - sy; changed = true }
         }
         if (changed) {
             clampPan()

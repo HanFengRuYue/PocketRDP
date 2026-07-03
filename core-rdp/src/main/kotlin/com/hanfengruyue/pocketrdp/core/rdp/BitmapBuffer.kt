@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.core.rdp
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.SystemClock
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,13 @@ class BitmapBuffer {
     // rect before the next swap or the published frame would be missing it.
     private var lastRect: Rect? = null
 
+    // Monotonic publish sequence + the uptime each front frame was committed. The renderer reads these
+    // (peekFrontSeq / peekFrontCommitMs) to measure decode→present latency: when onDraw sees the seq
+    // advance, (now − commitMs) is how long that frame waited between decode-done and being drawn. Reads
+    // are racy-but-cheap (a metric) — a swap mid-read at worst attributes a slightly newer commit time.
+    @Volatile private var frontSeq: Long = 0L
+    @Volatile private var frontCommitMs: Long = 0L
+
     private val _current = MutableStateFlow<Bitmap?>(null)
     /** Non-null once a framebuffer has been allocated. Identity is NOT meaningful per frame — used
      *  only to flip the "waiting for remote frame" placeholder. */
@@ -62,6 +70,13 @@ class BitmapBuffer {
     /** Front buffer the UI draws — a complete, stable frame. Drawn outside the lock; safe because
      *  the worker only ever writes the back buffer (see class doc). */
     fun peekFront(): Bitmap? = synchronized(lock) { front }
+
+    /** Monotonic sequence of the current front frame; advances on every [commitFrame]. The renderer
+     *  uses a change in this value to detect a freshly-published frame (decode→present timing). */
+    fun peekFrontSeq(): Long = frontSeq
+
+    /** Uptime (ms) the current front frame was committed — paired with [peekFrontSeq] for present timing. */
+    fun peekFrontCommitMs(): Long = frontCommitMs
 
     /**
      * Thread-safe, downscaled COPY of the current front frame — used for the per-connection desktop
@@ -115,6 +130,8 @@ class BitmapBuffer {
             front = back
             back = tmp
             lastRect = Rect(x, y, x + w, y + h)
+            frontSeq++
+            frontCommitMs = SystemClock.uptimeMillis()
         }
         _dirty.tryEmit(Rect(x, y, x + w, y + h))
     }

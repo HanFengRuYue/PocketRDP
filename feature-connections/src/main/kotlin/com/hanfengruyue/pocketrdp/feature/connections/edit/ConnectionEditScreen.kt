@@ -63,8 +63,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -189,7 +190,7 @@ fun ConnectionEditScreen(
                     steps = 7,
                 )
                 Text(
-                    "远程 Windows 桌面字体/界面的显示倍率（非本地画面放大；本地放大用画面上的缩放按钮）。",
+                    "远端 Windows 界面/字体显示倍率，非本地画面放大。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -211,8 +212,8 @@ fun ConnectionEditScreen(
                 }
             }
             Text(
-                "画面以此帧率持续刷新（不再随内容静止归零），实际不超过本机屏幕刷新率。" +
-                    "远端可提供的帧率仍取决于被控电脑（Windows 远程桌面默认约 30fps），请按其能力设上限。",
+                "画面刷新帧率上限，不超过本机屏幕刷新率；实际帧率取决于被控电脑。" +
+                    "内网/低延迟建议选「自动」或 60/120：固定 30 会给每帧额外加最多约 33ms 的显示等待。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -232,15 +233,14 @@ fun ConnectionEditScreen(
                 }
             }
             Text(
-                "模拟鼠标=虚拟光标+点按拖动；直接触屏=手指作为 Windows 原生触摸点（多点/捏合交给 Windows）。进入会话后仍可随时切换。",
+                "模拟鼠标=虚拟光标；直接触屏=原生触摸点。会话内可随时切换。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             SwitchRow(
                 title = "启用 H.264 视频加速",
-                subtitle = "用 H.264 压缩远端画面，大幅降低视频/动画卡顿；优先用设备硬件解码（MediaCodec），" +
-                    "不可用时回退 FFmpeg 软解。关闭则用 RemoteFX。需主机支持，不支持时自动回退",
+                subtitle = "H.264 压缩画面，降低视频卡顿；优先硬解、回退软解。关闭则用 RemoteFX，需主机支持。",
                 checked = state.useH264,
                 onChange = viewModel::toggleH264,
                 icon = Icons.Default.Videocam,
@@ -261,16 +261,14 @@ fun ConnectionEditScreen(
                     }
                 }
                 Text(
-                    "默认「流畅优先」：AVC420（4:2:0 单流），解码开销约减半、操控延迟最低，也是硬件解码最稳的路径，" +
-                        "仅色度/文字边缘略软。「画质优先」：AVC444 全彩 4:4:4，文字最清晰，但解码更重、延迟更高，" +
-                        "个别机型硬解可能花屏。追求跟手选流畅优先。",
+                    "流畅优先=AVC420，解码轻、延迟低；画质优先=AVC444 全彩，文字更清晰但更重。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             SwitchRow(
                 title = "启用 GFX 图形管道",
-                subtitle = "RemoteFX 渐进编码路径。开启 H.264 时图形管道会被强制启用（AVC444 只能走 GFX 通道）",
+                subtitle = "RemoteFX 渐进编码；开启 H.264 时强制启用。",
                 // When H.264 is on, the H264 branch in buildCommandLine always emits /gfx:AVC444 and
                 // this toggle is bypassed — so lock it ON+disabled to reflect reality instead of
                 // showing a switch that silently does nothing (field bug: 关掉 GFX 却仍生效).
@@ -278,6 +276,13 @@ fun ConnectionEditScreen(
                 enabled = !state.useH264,
                 onChange = viewModel::toggleGfx,
                 icon = Icons.Default.AutoAwesome,
+            )
+            SwitchRow(
+                title = "低延迟视觉",
+                subtitle = "关闭远端墙纸和主题特效，减轻每帧编码/解码负担。内网建议开启；纯视觉变化。",
+                checked = (state.performanceFlags and ConnectionEntity.PERF_LOW_LATENCY_VISUALS) != 0,
+                onChange = viewModel::toggleLowLatencyVisuals,
+                icon = Icons.Default.Bolt,
             )
             SwitchRow(
                 title = "动态分辨率",
@@ -304,15 +309,14 @@ fun ConnectionEditScreen(
                     }
                 }
                 Text(
-                    "限制远端最高分辨率，避免直接套用手机高分屏导致被控电脑渲染压力过大。" +
-                        "跟随设备=按手机视图实际尺寸；其余按所选高度等比缩小（如 1080p ≈ 最高 1920×1080）。",
+                    "限制远端最高分辨率，避免高分屏拖慢被控电脑。跟随设备=按视图实际尺寸。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             SwitchRow(
                 title = "固定自定义分辨率",
-                subtitle = "连接时远端固定为指定宽高（开启后将关闭动态分辨率）",
+                subtitle = "远端固定为指定宽高（将关闭动态分辨率）。",
                 checked = state.useCustomResolution,
                 onChange = viewModel::toggleCustomResolution,
                 icon = Icons.Default.FitScreen,
@@ -360,7 +364,7 @@ fun ConnectionEditScreen(
             }
             SwitchRow(
                 title = "UDP 多路传输",
-                subtitle = "RDP-UDP 通道，弱网/高延迟下更流畅；服务器不支持时自动回退 TCP",
+                subtitle = "需 frp/服务器在同一公网地址和端口开放 UDP；不支持或被阻断时回退 TCP。",
                 checked = state.useMultitransport,
                 onChange = viewModel::toggleMultitransport,
                 icon = Icons.Default.Bolt,
@@ -371,15 +375,14 @@ fun ConnectionEditScreen(
 
             SwitchRow(
                 title = "剪贴板双向同步",
-                subtitle = "复制的文字在手机与被控电脑之间双向共享（图片暂不支持）",
+                subtitle = "手机与电脑间双向同步复制的文字（暂不支持图片）。",
                 checked = state.redirectClipboard,
                 onChange = viewModel::toggleClipboard,
                 icon = Icons.Default.ContentPaste,
             )
             SwitchRow(
                 title = "文件夹重定向",
-                subtitle = "把整个手机存储（/storage/emulated/0）挂载到被控电脑（资源管理器出现「PocketRDP」盘）；" +
-                    "需授予「所有文件访问」权限，开启时会跳转系统设置授权",
+                subtitle = "把手机存储挂载为电脑里的「PocketRDP」盘，需「所有文件访问」权限。",
                 checked = state.redirectFiles,
                 onChange = { on ->
                     viewModel.toggleFiles(on)
@@ -409,8 +412,7 @@ fun ConnectionEditScreen(
                 }
             }
             Text(
-                "控制端播放=远端声音传到手机播放（占带宽，需主机允许音频重定向）；" +
-                    "被控端播放=声音留在被控电脑自己的扬声器；停用=不传输音频。",
+                "控制端播放=声音传到手机；被控端播放=留在电脑；停用=不传输。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

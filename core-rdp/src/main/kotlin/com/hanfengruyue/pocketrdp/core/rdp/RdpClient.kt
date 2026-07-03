@@ -70,6 +70,23 @@ class RdpClient @Inject constructor(
     private val latencySamples = IntArray(CONTROL_LATENCY_SAMPLE_WINDOW)
     private var latencySampleCount = 0
     private var latencySampleHead = 0
+    // Diagnostic counters (METRIC-4): how many discrete-input samples were accepted (a timely frame
+    // closed them) vs discarded (no frame within CONTROL_LATENCY_RESPONSE_WINDOW_MS → the press caused
+    // no visible change / we'd have mispaired). A high discard ratio means presses aren't producing
+    // frames — the latency is server-side / the screen is inert, NOT the client being slow.
+    @Volatile private var latencyAcceptedCount = 0
+    @Volatile private var latencyDiscardedCount = 0
+
+    // --- Display-pipeline latency (decode→present), the part controlLatencyMs does NOT measure ---
+    // RdpSurface reports, for each newly-drawn frame, how long it sat between commitFrame (decode done,
+    // back→front swap) and actually being blitted on screen (commit→onDraw self-loop tick + the canvas
+    // record; the async RenderThread texture upload after this is still uncounted). Felt latency ≈
+    // controlLatencyMs (input→decode) + presentLagMs (decode→present). A rolling median over recent
+    // frames rejects the odd outlier. Fed by [recordPresentLag] from the UI/RenderThread; reset on connect.
+    private val presentLagLock = Any()
+    private val presentLagSamples = IntArray(PRESENT_LAG_SAMPLE_WINDOW)
+    private var presentLagCount = 0
+    private var presentLagHead = 0
 
     // Diagnostic: throttled "frames are still arriving" heartbeat. OnGraphicsUpdate is too frequent
     // to log per-call, but if the remote picture FREEZES (no graphics after the initial resize) the
@@ -115,6 +132,9 @@ class RdpClient @Inject constructor(
         pendingInputAtMs = 0L
         lastServerFrameAtMs = 0L
         synchronized(latencyLock) { latencySampleCount = 0; latencySampleHead = 0 }
+        latencyAcceptedCount = 0
+        latencyDiscardedCount = 0
+        synchronized(presentLagLock) { presentLagCount = 0; presentLagHead = 0 }
         gfxUpdateCount = 0
         lastGfxLogMs = 0L
         PocketLogger.d(TAG, "freerdp instance allocated: $inst")
@@ -288,7 +308,11 @@ class RdpClient @Inject constructor(
         // caught a later unrelated frame — discard rather than feed a bogus high sample. (The window is
         // deliberately not tighter than this: real felt latency can be a couple hundred ms, and a too-
         // tight window would starve the estimator of genuine samples.)
-        if (sample < 0L || sample > CONTROL_LATENCY_RESPONSE_WINDOW_MS) return
+        if (sample < 0L || sample > CONTROL_LATENCY_RESPONSE_WINDOW_MS) {
+            latencyDiscardedCount++
+            return
+        }
+        latencyAcceptedCount++
         synchronized(latencyLock) {
             latencySamples[latencySampleHead] = sample.toInt()
             latencySampleHead = (latencySampleHead + 1) % latencySamples.size
@@ -296,14 +320,62 @@ class RdpClient @Inject constructor(
         }
     }
 
+    /** Accepted-sample count (a discrete input that got a timely frame) — METRIC-4 diagnostic. */
+    fun latencyAccepted(): Int = latencyAcceptedCount
+
+    /** Discarded-sample count (a discrete input with no frame within the window) — METRIC-4 diagnostic. */
+    fun latencyDiscarded(): Int = latencyDiscardedCount
+
+    /**
+     * Record one decode→present delay (ms) reported by [com.hanfengruyue.pocketrdp.feature.session.render]'s
+     * RdpSurface when it draws a newly-committed frame. This is the display-pipeline latency the
+     * input→decode [controlLatencyMs] metric structurally cannot see. Passive: never invalidates,
+     * never feeds the FPS counter (which stays sourced from content frames).
+     */
+    fun recordPresentLag(lagMs: Long) {
+        if (lagMs < 0L || lagMs > PRESENT_LAG_MAX_MS) return
+        synchronized(presentLagLock) {
+            presentLagSamples[presentLagHead] = lagMs.toInt()
+            presentLagHead = (presentLagHead + 1) % presentLagSamples.size
+            if (presentLagCount < presentLagSamples.size) presentLagCount++
+        }
+    }
+
+    /** Rolling MEDIAN decode→present delay (ms); -1 until the first sample. See [recordPresentLag]. */
+    fun presentLagMs(): Int {
+        synchronized(presentLagLock) {
+            val n = presentLagCount
+            if (n == 0) return -1
+            val sorted = presentLagSamples.copyOf(n).also { it.sort() }
+            return sorted[n / 2]
+        }
+    }
+
     /**
      * Negotiated transport bitfield (see [LibFreeRDP.getTransportInfo]); -1 when no live session.
-     * bit0 = RDP-UDP multitransport active (UDP), bits 1+ = selected security protocol. The status
-     * badge maps this to [RdpTransport].
+     * bits 0..3 = actual transport state (TCP/UDP-R/UDP-L/UDP2), bit 8 = UDP requested but
+     * fallback, bit 9 = server requested multitransport, bits 4..7 = selected security protocol.
      */
     fun transportInfo(): Int {
         val inst = nativeInstance
         return if (inst == 0L) -1 else LibFreeRDP.getTransportInfo(inst)
+    }
+
+    /** UDP transport counters: bytes/packets counted below TLS, so they should track frp UDP traffic. */
+    fun transportStats(): RdpTransportStats {
+        val inst = nativeInstance
+        if (inst == 0L) return RdpTransportStats()
+        val raw = LibFreeRDP.getTransportStats(inst) ?: return RdpTransportStats()
+        return RdpTransportStats(
+            inBytes = raw.getOrElse(0) { 0L },
+            outBytes = raw.getOrElse(1) { 0L },
+            inPackets = raw.getOrElse(2) { 0L },
+            outPackets = raw.getOrElse(3) { 0L },
+            retransmits = raw.getOrElse(4) { 0L },
+            failureStage = raw.getOrElse(5) { 0L },
+            tunnelHr = raw.getOrElse(6) { 0L },
+            socketError = raw.getOrElse(7) { 0L },
+        )
     }
 
     fun sendClipboard(data: String) {
@@ -492,8 +564,9 @@ class RdpClient @Inject constructor(
         // server if it doesn't support RDPEI.
         args += "/multitouch"
         if (p.dynamicResolution) args += "/dynamic-resolution"
-        // RDP-UDP multitransport (UDP-R + UDP-L/FEC). Core RDP protocol, present in the prebuilt
-        // .so (not a codec), and auto-falls-back to TCP if the server doesn't negotiate it.
+        // RDP-UDP multitransport capability (UDP-R/UDP-L/UDP2). Real UDP traffic requires the
+        // native tunnel implementation to establish an RDP-UDP/RDPEMT channel AND the public endpoint
+        // (frp/server/firewall) to expose UDP on the same host:port; otherwise the session stays on TCP.
         // CRITICAL — emit the explicit DISABLE form when the user turns it off: FreeRDP defaults
         // SupportMultitransport=TRUE (+ non-zero MultitransportFlags) in settings.c, so simply
         // NOT adding "/multitransport" is a no-op — UDP would still be negotiated (field bug:
@@ -507,6 +580,17 @@ class RdpClient @Inject constructor(
         // — e.g. a mobile NAT / public-IP port-forward (host:port) silently dropping an idle TCP
         // connection after ~18 s, observed as "连上几秒就断开". Harmless when the link is stable.
         args += "/auto-reconnect"
+        // 低延迟视觉 (performanceFlags bit PERF_LOW_LATENCY_VISUALS): force-disable the remote desktop's
+        // wallpaper + themes so each frame the server encodes (and the client decodes) carries less
+        // high-frequency detail. MUST use the '-' sigil (BOOL-option disable form): "-wallpaper" sets
+        // FreeRDP_DisableWallpaper=TRUE via the enable=FALSE path. "/wallpaper:off" would FAIL
+        // freerdp_parse_arguments with COMMAND_LINE_ERROR_UNEXPECTED_VALUE (a BOOL option rejects a
+        // trailing value — same trap as /multitransport). Modest on a LAN under H.264/GFX (the whole
+        // desktop is video-encoded regardless), so it's opt-in per connection, default off.
+        if (p.performanceFlags and PERF_LOW_LATENCY_VISUALS != 0) {
+            args += "-wallpaper"
+            args += "-themes"
+        }
         // Remote desktop DPI scaling. Use /scale-desktop (FreeRDP_DesktopScaleFactor, accepts any
         // 100..500) — NOT /scale, which parse_scale_options() hard-limits to {100,140,180}: every
         // value >180 silently collapsed to 180, so the 100–300 % slider's 200/250/300 were
@@ -548,6 +632,9 @@ class RdpClient @Inject constructor(
 
     companion object {
         private const val TAG = "RdpClient"
+        // performanceFlags bit (mirrors ConnectionEntity.PERF_LOW_LATENCY_VISUALS) — drop wallpaper+themes.
+        // core-rdp does not depend on core-data, so the value is duplicated here; keep the two in sync.
+        const val PERF_LOW_LATENCY_VISUALS = 1
         // Per-connection cap on keyboard-input debug logs. Captures the start-of-typing
         // pattern (which is what we need to investigate "input → disconnect" timing) without
         // flooding logs when the user holds a key or pastes long text.
@@ -573,6 +660,11 @@ class RdpClient @Inject constructor(
         // fix). 20 samples ≈ tens of seconds of interaction; P25 = trustworthy low end without min-lock.
         private const val CONTROL_LATENCY_SAMPLE_WINDOW = 20
         private const val CONTROL_LATENCY_PERCENTILE = 0.25f
+        // Decode→present (display-pipeline) latency estimator: rolling median over this many recent
+        // drawn frames; samples above the cap are dropped as outliers (e.g. a frame held while the app
+        // was backgrounded). ~30 frames ≈ 0.5–1 s of drawing at 30–60 fps.
+        private const val PRESENT_LAG_SAMPLE_WINDOW = 30
+        private const val PRESENT_LAG_MAX_MS = 1000L
         // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
         private const val GFX_LOG_INTERVAL_MS = 2000L
     }
