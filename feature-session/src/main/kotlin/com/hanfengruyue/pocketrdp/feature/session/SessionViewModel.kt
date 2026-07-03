@@ -226,9 +226,7 @@ class SessionViewModel @Inject constructor(
     fun ensureStarted(connectionId: Long) {
         if (connectionId <= 0L) return
         val current = _state.value
-        if (current.connectionId == connectionId && current.status !is SessionConnectionStatus.Idle &&
-            !current.allFilesAccessRequired
-        ) return
+        if (!shouldLaunchConnect(current, connectionId)) return
         _state.update { it.copy(connectionId = connectionId) }
         launchConnect(connectionId)
     }
@@ -951,5 +949,17 @@ class SessionViewModel @Inject constructor(
         // also caps the number of tries — after the last one we give up and stop the keep-alive
         // service. Resets to attempt 0 on every successful Connected.
         private val RECONNECT_BACKOFF_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000)
+    }
+}
+
+internal fun shouldLaunchConnect(current: SessionUiState, requestedConnectionId: Long): Boolean {
+    if (requestedConnectionId <= 0L) return false
+    if (current.connectionId != requestedConnectionId || current.allFilesAccessRequired) return true
+    return when (current.status) {
+        SessionConnectionStatus.Idle,
+        is SessionConnectionStatus.Disconnected,
+        is SessionConnectionStatus.Failed -> true
+        SessionConnectionStatus.Connecting,
+        SessionConnectionStatus.Connected -> false
     }
 }
