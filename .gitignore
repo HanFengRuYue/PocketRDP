@@ -1,5 +1,6 @@
 # Gradle
 .gradle/
+.kotlin/
 build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
@@ -22,6 +23,7 @@ render.experimental.xml
 local.properties
 local.properties.windows-backup
 keystore.properties
+keystore/
 *.jks
 *.keystore
 google-services.json
@@ -39,6 +41,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Codex local runtime state
+.agents/
+.codex/
+.codex-remote-attachments/
 
 # Native build cache
 /third_party/FreeRDP-build/
