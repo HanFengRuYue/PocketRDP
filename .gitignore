@@ -12,7 +12,11 @@ build/
 *.ipr
 out/
 captures/
+.externalNativeBuild/
 .cxx/
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
 
 # Local config
 local.properties
@@ -20,6 +24,13 @@ local.properties.windows-backup
 keystore.properties
 *.jks
 *.keystore
+google-services.json
+
+# Android build outputs and profiling
+*.aab
+*.apk
+output-metadata.json
+*.hprof
 
 # OS / editor
 .DS_Store
