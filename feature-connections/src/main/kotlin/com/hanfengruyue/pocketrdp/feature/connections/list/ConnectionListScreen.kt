@@ -1,5 +1,10 @@
 package com.hanfengruyue.pocketrdp.feature.connections.list
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -20,7 +25,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
@@ -56,6 +60,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,6 +71,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
+import com.hanfengruyue.pocketrdp.feature.connections.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -98,9 +105,10 @@ fun ConnectionListScreen(
     onAddNew: () -> Unit,
     onEdit: (Long) -> Unit,
     onConnect: (Long) -> Unit,
-    onOpenLogs: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenKeepAliveGuide: () -> Unit = {},
     showKeepAliveHint: Boolean = false,
+    activeSessionIds: Set<Long> = emptySet(),
     viewModel: ConnectionListViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -111,13 +119,10 @@ fun ConnectionListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("PocketRDP") },
+                title = { Text(stringResource(R.string.connection_app_name)) },
                 actions = {
-                    IconButton(onClick = onOpenKeepAliveGuide) {
-                        Icon(Icons.Default.Settings, contentDescription = "后台保活设置")
-                    }
-                    IconButton(onClick = onOpenLogs) {
-                        Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = "日志")
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.connection_action_settings))
                     }
                 },
             )
@@ -126,7 +131,7 @@ fun ConnectionListScreen(
             ExtendedFloatingActionButton(
                 onClick = onAddNew,
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("新建连接") },
+                text = { Text(stringResource(R.string.connection_action_new)) },
             )
         },
     ) { padding ->
@@ -144,6 +149,7 @@ fun ConnectionListScreen(
                 onEdit = onEdit,
                 onConnect = onConnect,
                 onDelete = viewModel::delete,
+                activeSessionIds = activeSessionIds,
             )
         }
     }
@@ -154,21 +160,22 @@ fun ConnectionListScreen(
     if (showKeepAliveHint && !keepAliveHintDismissed) {
         AlertDialog(
             onDismissRequest = { keepAliveHintDismissed = true },
-            title = { Text("远程连接被系统中断了？") },
+            title = { Text(stringResource(R.string.connection_keep_alive_hint_title)) },
             text = {
                 Text(
-                    "检测到上次的远程会话可能被系统在后台清理掉了。要在切到后台 / 锁屏时保持连接不断，" +
-                        "需要在系统设置里允许 PocketRDP 自启动并取消后台限制。是否查看保活设置？",
+                    stringResource(R.string.connection_keep_alive_hint_body),
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     keepAliveHintDismissed = true
                     onOpenKeepAliveGuide()
-                }) { Text("查看保活设置") }
+                }) { Text(stringResource(R.string.connection_keep_alive_hint_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { keepAliveHintDismissed = true }) { Text("忽略") }
+                TextButton(onClick = { keepAliveHintDismissed = true }) {
+                    Text(stringResource(R.string.connection_action_ignore))
+                }
             },
         )
     }
@@ -192,12 +199,12 @@ private fun EmptyState(padding: PaddingValues) {
                     )
                     Column(horizontalAlignment = Alignment.Start) {
                         Text(
-                            "还没有保存的远程电脑",
+                            stringResource(R.string.connection_empty_title),
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Spacer(Modifier.size(4.dp))
                         Text(
-                            "点右下角“新建连接”来添加你的第一台 Windows 主机",
+                            stringResource(R.string.connection_empty_body),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -213,12 +220,12 @@ private fun EmptyState(padding: PaddingValues) {
                     )
                     Spacer(Modifier.size(16.dp))
                     Text(
-                        "还没有保存的远程电脑",
+                        stringResource(R.string.connection_empty_title),
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.size(4.dp))
                     Text(
-                        "点右下角“新建连接”来添加你的第一台 Windows 主机",
+                        stringResource(R.string.connection_empty_body),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -236,6 +243,7 @@ private fun ConnectionList(
     onEdit: (Long) -> Unit,
     onConnect: (Long) -> Unit,
     onDelete: (ConnectionEntity) -> Unit,
+    activeSessionIds: Set<Long>,
 ) {
     // Bump on every ON_RESUME so cards reload their thumbnails when the user returns from a session
     // (the session just saved a fresh snapshot, but the DB row didn't change so the list flow won't
@@ -266,6 +274,7 @@ private fun ConnectionList(
                     onEdit = { onEdit(conn.id) },
                     onConnect = { onConnect(conn.id) },
                     onDelete = { onDelete(conn) },
+                    isActive = activeSessionIds.contains(conn.id),
                 )
             }
         }
@@ -296,6 +305,7 @@ private fun ConnectionCard(
     onEdit: () -> Unit,
     onConnect: () -> Unit,
     onDelete: () -> Unit,
+    isActive: Boolean,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     val thumbnail by produceState<Bitmap?>(initialValue = null, entity.id, refreshKey) {
@@ -315,11 +325,13 @@ private fun ConnectionCard(
                 onConnect = onConnect,
                 onEdit = onEdit,
                 onDelete = { confirmDelete = true },
+                isActive = isActive,
             )
         } else {
             DesktopThumbnail(
                 bitmap = thumbnail,
-                host = entity.host,
+                host = entity.host.takeIf { entity.name.isBlank() },
+                isActive = isActive,
                 modifier = Modifier.fillMaxWidth().aspectRatio(DESKTOP_ASPECT),
             )
             Row(
@@ -328,10 +340,14 @@ private fun ConnectionCard(
             ) {
                 ConnectionSummary(entity = entity, modifier = Modifier.weight(1f))
                 IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = "编辑")
+                    Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
                 }
                 IconButton(onClick = { confirmDelete = true }) {
-                    Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = stringResource(R.string.connection_action_delete),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
@@ -353,6 +369,7 @@ private fun LandscapeConnectionCardContent(
     onConnect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    isActive: Boolean,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(landscapeCardPaddingDp),
@@ -361,7 +378,8 @@ private fun LandscapeConnectionCardContent(
     ) {
         DesktopThumbnail(
             bitmap = thumbnail,
-            host = entity.host,
+            host = entity.host.takeIf { entity.name.isBlank() },
+            isActive = isActive,
             modifier = Modifier
                 .size(width = landscapeThumbnailWidthDp, height = landscapeThumbnailHeightDp)
                 .clip(RoundedCornerShape(landscapeThumbnailCornerDp)),
@@ -376,8 +394,9 @@ private fun LandscapeConnectionCardContent(
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = META_PILL_ALPHA),
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             ) {
+                val lastUsed = relativeLastUsed(entity.lastUsedAt)
                 Text(
-                    text = "上次使用 · ${relativeLastUsed(entity.lastUsedAt)}",
+                    text = stringResource(R.string.connection_last_used_format, lastUsed),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
@@ -387,14 +406,18 @@ private fun LandscapeConnectionCardContent(
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             IconButton(onClick = onConnect) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "连接")
+                Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.connection_action_connect))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = "编辑")
+                    Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
                 }
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error)
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = stringResource(R.string.connection_action_delete),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
@@ -408,6 +431,7 @@ private fun ConnectionSummary(
     showLastUsed: Boolean = true,
 ) {
     Column(modifier = modifier) {
+        val noUser = stringResource(R.string.connection_no_user)
         Text(
             text = entity.name.ifBlank { entity.host },
             style = MaterialTheme.typography.titleMedium,
@@ -415,16 +439,19 @@ private fun ConnectionSummary(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
-            text = "${entity.username.ifBlank { "(no user)" }} @ ${entity.host}:${entity.port}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (showLastUsed) {
+        if (entity.name.isBlank()) {
             Text(
-                text = "上次使用 · ${relativeLastUsed(entity.lastUsedAt)}",
+                text = "${entity.username.ifBlank { noUser }} @ ${entity.host}:${entity.port}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (showLastUsed) {
+            val lastUsed = relativeLastUsed(entity.lastUsedAt)
+            Text(
+                text = stringResource(R.string.connection_last_used_format, lastUsed),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -439,12 +466,12 @@ private fun ConnectionSummary(
  * connect" affordance (the whole card is clickable).
  */
 @Composable
-private fun DesktopThumbnail(bitmap: Bitmap?, host: String, modifier: Modifier = Modifier) {
+private fun DesktopThumbnail(bitmap: Bitmap?, host: String?, isActive: Boolean, modifier: Modifier = Modifier) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         if (bitmap != null) {
             Image(
                 bitmap = bitmap.asImageBitmap(),
-                contentDescription = "远程桌面预览",
+                contentDescription = stringResource(R.string.connection_remote_preview),
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
@@ -469,16 +496,21 @@ private fun DesktopThumbnail(bitmap: Bitmap?, host: String, modifier: Modifier =
                         modifier = Modifier.size(placeholderIconDp),
                         tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = PLACEHOLDER_ICON_ALPHA),
                     )
-                    Spacer(Modifier.size(8.dp))
-                    Text(
-                        text = host,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (!host.isNullOrBlank()) {
+                        Spacer(Modifier.size(8.dp))
+                        Text(
+                            text = host,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
+        }
+        if (isActive) {
+            RunningBadge(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp))
         }
         Surface(
             modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).size(bannerPlaySizeDp),
@@ -496,18 +528,49 @@ private fun DesktopThumbnail(bitmap: Bitmap?, host: String, modifier: Modifier =
 }
 
 @Composable
+private fun RunningBadge(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "running-session")
+    val haloAlpha by transition.animateFloat(
+        initialValue = 0.18f,
+        targetValue = 0.52f,
+        animationSpec = infiniteRepeatable(animation = tween(720), repeatMode = RepeatMode.Reverse),
+        label = "running-session-halo",
+    )
+    Box(modifier = modifier.size(42.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = haloAlpha),
+            contentColor = Color.White,
+        ) {}
+        Surface(
+            modifier = Modifier.size(32.dp),
+            shape = CircleShape,
+            color = Color(0xFF1B5E20),
+            contentColor = Color.White,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Computer,
+                contentDescription = stringResource(R.string.connection_running),
+                modifier = Modifier.padding(7.dp).size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun DeleteConfirmDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("删除连接") },
-        text = { Text("确定删除“$name”吗？此操作无法撤销。") },
+        title = { Text(stringResource(R.string.connection_delete_title)) },
+        text = { Text(stringResource(R.string.connection_delete_body, name)) },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text("删除", color = MaterialTheme.colorScheme.error)
+                Text(stringResource(R.string.connection_action_delete), color = MaterialTheme.colorScheme.error)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.connection_action_cancel)) }
         },
     )
 }
@@ -518,15 +581,25 @@ private const val DAY_AGO = 86_400_000L
 private const val WEEK_AGO = 7 * 86_400_000L
 
 /** Human-friendly "last used" label: 刚刚 / N 分钟前 / N 小时前 / N 天前 / yyyy-MM-dd. */
+@Composable
 private fun relativeLastUsed(ms: Long): String {
-    if (ms <= 0L) return "尚未使用"
+    if (ms <= 0L) return stringResource(R.string.connection_last_used_never)
     val diff = System.currentTimeMillis() - ms
     return when {
-        diff < 0L -> "刚刚"
-        diff < MIN_AGO -> "刚刚"
-        diff < HOUR_AGO -> "${diff / MIN_AGO} 分钟前"
-        diff < DAY_AGO -> "${diff / HOUR_AGO} 小时前"
-        diff < WEEK_AGO -> "${diff / DAY_AGO} 天前"
+        diff < 0L -> stringResource(R.string.connection_last_used_just_now)
+        diff < MIN_AGO -> stringResource(R.string.connection_last_used_just_now)
+        diff < HOUR_AGO -> {
+            val minutes = (diff / MIN_AGO).toInt()
+            pluralStringResource(R.plurals.connection_last_used_minutes_ago, minutes, minutes)
+        }
+        diff < DAY_AGO -> {
+            val hours = (diff / HOUR_AGO).toInt()
+            pluralStringResource(R.plurals.connection_last_used_hours_ago, hours, hours)
+        }
+        diff < WEEK_AGO -> {
+            val days = (diff / DAY_AGO).toInt()
+            pluralStringResource(R.plurals.connection_last_used_days_ago, days, days)
+        }
         else -> SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(ms))
     }
 }

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_cd_back">返回</string>
+    <string name="session_cd_keyboard">键盘</string>
+    <string name="session_cd_switch_input_mode">切换输入模式</string>
+    <string name="session_cd_fullscreen">全屏</string>
+    <string name="session_cd_disconnect">断开</string>
+    <string name="session_cd_exit_fullscreen">退出全屏</string>
+    <string name="session_cd_expand_status">展开会话信息</string>
+    <string name="session_loading_remote_frame">等待远端帧…</string>
+    <string name="session_battery_title">允许后台保活？</string>
+    <string name="session_battery_message">为了在你切到其他应用或锁屏时保持这个远程桌面连接不断开，建议把 PocketRDP 加入电池优化白名单。否则系统在省电时可能会切断后台连接。</string>
+    <string name="session_action_allow">去允许</string>
+    <string name="session_action_not_now">暂不</string>
+    <string name="session_all_files_title">允许访问所有文件？</string>
+    <string name="session_all_files_message">「文件夹重定向」会把你手机的整个存储挂载到被控电脑（资源管理器里的「PocketRDP」盘）。这需要授予 PocketRDP「所有文件访问」权限。授权后返回本应用，会自动继续连接并挂载磁盘。</string>
+    <string name="session_action_grant">去授权</string>
+    <string name="session_zoom_cd">缩放：上滑放大、下滑缩小，双击复位；长按后拖动可移动此按钮</string>
+    <string name="session_pan_cd">拖动以移动放大后的画面；长按后拖动可移动此按钮</string>
+
+    <string name="session_status_title_fallback">会话 #%1$d</string>
+    <string name="session_status_host">主机：%1$s</string>
+    <string name="session_status_resolution">远端分辨率：%1$d×%2$d</string>
+    <string name="session_status_fps">帧率：%1$d fps</string>
+    <string name="session_status_total_latency">总延迟：%1$s</string>
+    <string name="session_status_sticky_modifiers">粘滞修饰键：%1$s</string>
+    <string name="session_status_last_error">最近错误：%1$s</string>
+    <string name="session_status_measuring">测量中…</string>
+    <string name="session_status_idle">未连接</string>
+    <string name="session_status_connecting">正在连接…</string>
+    <string name="session_status_connected">已连接</string>
+    <string name="session_status_disconnected">已断开 (%1$s)</string>
+    <string name="session_status_failed">连接失败</string>
+    <string name="session_status_unknown_reason">—</string>
+
+    <string name="session_notification_channel_name">远程会话保活</string>
+    <string name="session_notification_channel_description">保持远程桌面连接在后台不断开时显示的常驻通知</string>
+    <string name="session_notification_status_connecting">正在连接…</string>
+    <string name="session_notification_status_connected">已连接</string>
+    <string name="session_notification_status_reconnecting">连接中断，正在重连…</string>
+    <string name="session_notification_status_failed">连接失败</string>
+    <string name="session_notification_title">远程桌面会话</string>
+    <string name="session_notification_disconnect_action">断开</string>
+</resources>

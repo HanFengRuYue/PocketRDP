@@ -57,6 +57,9 @@ class BitmapBuffer {
      *  only to flip the "waiting for remote frame" placeholder. */
     val current: StateFlow<Bitmap?> = _current.asStateFlow()
 
+    private val _hasPublishedFrame = MutableStateFlow(false)
+    val hasPublishedFrame: StateFlow<Boolean> = _hasPublishedFrame.asStateFlow()
+
     private val _dirty = MutableSharedFlow<Rect>(extraBufferCapacity = 256)
     val dirty: SharedFlow<Rect> = _dirty.asSharedFlow()
 
@@ -116,6 +119,7 @@ class BitmapBuffer {
             lastRect = null
         }
         _current.value = newFront
+        _hasPublishedFrame.value = false
         // Deliberately do NOT recycle the old bitmaps (see class doc) — let GC reclaim them.
         return newFront
     }
@@ -133,6 +137,7 @@ class BitmapBuffer {
             frontSeq++
             frontCommitMs = SystemClock.uptimeMillis()
         }
+        _hasPublishedFrame.value = true
         _dirty.tryEmit(Rect(x, y, x + w, y + h))
     }
 
@@ -147,5 +152,6 @@ class BitmapBuffer {
             lastRect = null
         }
         _current.value = null
+        _hasPublishedFrame.value = false
     }
 }

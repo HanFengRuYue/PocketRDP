@@ -13,6 +13,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class ConnectionEditError {
+    NAME_REQUIRED,
+    HOST_REQUIRED,
+    PORT_INVALID,
+    USERNAME_REQUIRED,
+    PASSWORD_REQUIRED,
+    CUSTOM_WIDTH_INVALID,
+    CUSTOM_HEIGHT_INVALID,
+}
+
 data class ConnectionEditUiState(
     val isLoading: Boolean = true,
     val id: Long? = null,
@@ -63,7 +73,7 @@ data class ConnectionEditUiState(
     val performanceFlags: Int = 0,
     val saving: Boolean = false,
     val saved: Boolean = false,
-    val errors: List<String> = emptyList(),
+    val errors: List<ConnectionEditError> = emptyList(),
 )
 
 @HiltViewModel
@@ -171,17 +181,17 @@ class ConnectionEditViewModel @Inject constructor(
     fun save() {
         val s = _state.value
         val errors = buildList {
-            if (s.name.isBlank()) add("名称不能为空")
-            if (s.host.isBlank()) add("主机地址不能为空")
+            if (s.name.isBlank()) add(ConnectionEditError.NAME_REQUIRED)
+            if (s.host.isBlank()) add(ConnectionEditError.HOST_REQUIRED)
             val p = s.port.toIntOrNull()
-            if (p == null || p !in 1..65535) add("端口需为 1-65535")
-            if (s.username.isBlank()) add("用户名不能为空")
-            if (s.password.isEmpty() && !s.hasExistingPassword) add("密码不能为空")
+            if (p == null || p !in 1..65535) add(ConnectionEditError.PORT_INVALID)
+            if (s.username.isBlank()) add(ConnectionEditError.USERNAME_REQUIRED)
+            if (s.password.isEmpty() && !s.hasExistingPassword) add(ConnectionEditError.PASSWORD_REQUIRED)
             if (s.useCustomResolution) {
                 val w = s.customWidth.toIntOrNull()
                 val h = s.customHeight.toIntOrNull()
-                if (w == null || w !in 200..8192) add("自定义宽度需为 200-8192")
-                if (h == null || h !in 200..8192) add("自定义高度需为 200-8192")
+                if (w == null || w !in 200..8192) add(ConnectionEditError.CUSTOM_WIDTH_INVALID)
+                if (h == null || h !in 200..8192) add(ConnectionEditError.CUSTOM_HEIGHT_INVALID)
             }
         }
         if (errors.isNotEmpty()) {

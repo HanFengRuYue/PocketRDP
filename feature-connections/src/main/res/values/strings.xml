@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="connection_app_name">PocketRDP</string>
+    <string name="connection_action_settings">设置</string>
+    <string name="connection_action_new">新建连接</string>
+    <string name="connection_action_ignore">忽略</string>
+    <string name="connection_action_edit">编辑</string>
+    <string name="connection_action_delete">删除</string>
+    <string name="connection_action_connect">连接</string>
+    <string name="connection_action_cancel">取消</string>
+    <string name="connection_action_back">返回</string>
+    <string name="connection_action_save">保存</string>
+    <string name="connection_action_saving">保存中…</string>
+
+    <string name="connection_keep_alive_hint_title">远程连接被系统中断了？</string>
+    <string name="connection_keep_alive_hint_body">检测到上次的远程会话可能被系统在后台清理掉了。要在切到后台 / 锁屏时保持连接不断，需要在系统设置里允许 PocketRDP 自启动并取消后台限制。是否查看保活设置？</string>
+    <string name="connection_keep_alive_hint_confirm">查看保活设置</string>
+
+    <string name="connection_empty_title">还没有保存的远程电脑</string>
+    <string name="connection_empty_body">点右下角“新建连接”来添加你的第一台 Windows 主机</string>
+    <string name="connection_last_used_format">上次使用 · %1$s</string>
+    <string name="connection_no_user">(无用户)</string>
+    <string name="connection_remote_preview">远程桌面预览</string>
+    <string name="connection_running">正在控制</string>
+    <string name="connection_delete_title">删除连接</string>
+    <string name="connection_delete_body">确定删除“%1$s”吗？此操作无法撤销。</string>
+    <string name="connection_last_used_never">尚未使用</string>
+    <string name="connection_last_used_just_now">刚刚</string>
+    <plurals name="connection_last_used_minutes_ago">
+        <item quantity="other">%1$d 分钟前</item>
+    </plurals>
+    <plurals name="connection_last_used_hours_ago">
+        <item quantity="other">%1$d 小时前</item>
+    </plurals>
+    <plurals name="connection_last_used_days_ago">
+        <item quantity="other">%1$d 天前</item>
+    </plurals>
+
+    <string name="connection_edit_title_new">新建连接</string>
+    <string name="connection_edit_title_edit">编辑连接</string>
+    <string name="connection_section_basic">基础信息</string>
+    <string name="connection_field_name">名称（仅本地显示）</string>
+    <string name="connection_field_host">主机 IP 或域名</string>
+    <string name="connection_field_port">端口</string>
+    <string name="connection_field_username">用户名</string>
+    <string name="connection_field_domain">域（可选）</string>
+    <string name="connection_field_password">密码</string>
+    <string name="connection_field_password_keep">密码（留空保持不变）</string>
+    <string name="connection_section_display">显示与画质</string>
+    <string name="connection_color_depth">色深</string>
+    <string name="connection_color_depth_bits">%1$d 位</string>
+    <string name="connection_desktop_scale">远程桌面缩放：%1$d%%</string>
+    <string name="connection_desktop_scale_desc">远端 Windows 界面/字体显示倍率，非本地画面放大。</string>
+    <string name="connection_fixed_frame_rate">固定帧率</string>
+    <string name="connection_auto">自动</string>
+    <string name="connection_fixed_frame_rate_desc">限制画面刷新率；不确定时选“自动”。</string>
+    <string name="connection_default_input_mode">默认输入模式</string>
+    <string name="connection_input_mode_trackpad">模拟鼠标</string>
+    <string name="connection_input_mode_touch">直接触屏</string>
+    <string name="connection_default_input_mode_desc">模拟鼠标=虚拟光标；直接触屏=原生触摸点。会话内可随时切换。</string>
+    <string name="connection_h264_title">启用 H.264 视频加速</string>
+    <string name="connection_h264_desc">压缩远程画面，减少卡顿；关闭后使用兼容模式。</string>
+    <string name="connection_h264_tier">H.264 画质档</string>
+    <string name="connection_quality_first">画质优先</string>
+    <string name="connection_smooth_first">流畅优先</string>
+    <string name="connection_h264_tier_desc">流畅优先延迟更低；画质优先文字更清晰。</string>
+    <string name="connection_gfx_title">兼容图形模式</string>
+    <string name="connection_gfx_desc">仅在关闭视频加速时使用。</string>
+    <string name="connection_low_latency_visuals_title">低延迟视觉</string>
+    <string name="connection_low_latency_visuals_desc">关闭远端墙纸和动画，减少延迟。</string>
+    <string name="connection_dynamic_resolution_title">动态分辨率</string>
+    <string name="connection_dynamic_resolution_desc">屏幕旋转/拉伸时远端跟随调整</string>
+    <string name="connection_dynamic_resolution_max">动态分辨率上限</string>
+    <string name="connection_follow_device">跟随设备</string>
+    <string name="connection_dynamic_resolution_max_desc">限制远端分辨率，降低卡顿。</string>
+    <string name="connection_custom_resolution_title">固定自定义分辨率</string>
+    <string name="connection_custom_resolution_desc">远端固定为指定宽高（将关闭动态分辨率）。</string>
+    <string name="connection_width">宽度</string>
+    <string name="connection_height">高度</string>
+    <string name="connection_multitransport_title">UDP 多路传输</string>
+    <string name="connection_multitransport_desc">需要服务器和网络允许同端口 UDP；不可用时自动回退 TCP。</string>
+    <string name="connection_section_redirection">重定向</string>
+    <string name="connection_clipboard_title">剪贴板双向同步</string>
+    <string name="connection_clipboard_desc">手机与电脑间双向同步复制的文字（暂不支持图片）。</string>
+    <string name="connection_files_title">文件夹重定向</string>
+    <string name="connection_files_desc">把手机存储显示为电脑里的“PocketRDP”盘。</string>
+    <string name="connection_files_permission_desc">需要先授予“所有文件访问”权限，否则连接时电脑端不会出现 PocketRDP 盘。</string>
+    <string name="connection_files_permission_action">授予文件访问权限</string>
+    <string name="connection_audio_title">远程音频</string>
+    <string name="connection_audio_client">控制端播放</string>
+    <string name="connection_audio_server">被控端播放</string>
+    <string name="connection_audio_disabled">停用音频</string>
+    <string name="connection_audio_desc">控制端播放=声音传到手机；被控端播放=留在电脑；停用=不传输。</string>
+    <string name="connection_error_bullet">• %1$s</string>
+    <string name="connection_error_name_required">名称不能为空</string>
+    <string name="connection_error_host_required">主机地址不能为空</string>
+    <string name="connection_error_port_invalid">端口需为 1-65535</string>
+    <string name="connection_error_username_required">用户名不能为空</string>
+    <string name="connection_error_password_required">密码不能为空</string>
+    <string name="connection_error_custom_width_invalid">自定义宽度需为 200-8192</string>
+    <string name="connection_error_custom_height_invalid">自定义高度需为 200-8192</string>
+</resources>

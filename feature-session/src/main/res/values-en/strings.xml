@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_cd_back">Back</string>
+    <string name="session_cd_keyboard">Keyboard</string>
+    <string name="session_cd_switch_input_mode">Switch input mode</string>
+    <string name="session_cd_fullscreen">Full screen</string>
+    <string name="session_cd_disconnect">Disconnect</string>
+    <string name="session_cd_exit_fullscreen">Exit full screen</string>
+    <string name="session_cd_expand_status">Expand session information</string>
+    <string name="session_loading_remote_frame">Waiting for remote frame…</string>
+    <string name="session_battery_title">Allow background keep-alive?</string>
+    <string name="session_battery_message">To keep this remote desktop connected when you switch apps or lock the screen, add PocketRDP to the battery optimization allowlist. Otherwise the system may cut off the background connection while saving power.</string>
+    <string name="session_action_allow">Allow</string>
+    <string name="session_action_not_now">Not now</string>
+    <string name="session_all_files_title">Allow access to all files?</string>
+    <string name="session_all_files_message">Folder redirection mounts all phone storage on the remote computer as the PocketRDP drive in File Explorer. PocketRDP needs All files access for this. Reconnect after granting permission to mount the drive.</string>
+    <string name="session_action_grant">Grant</string>
+    <string name="session_zoom_cd">Zoom: swipe up to zoom in, swipe down to zoom out, double tap to reset, long press and drag to move this button</string>
+    <string name="session_pan_cd">Drag to move the enlarged view; long press and drag to move this button</string>
+
+    <string name="session_status_title_fallback">Session #%1$d</string>
+    <string name="session_status_host">Host: %1$s</string>
+    <string name="session_status_resolution">Remote resolution: %1$d×%2$d</string>
+    <string name="session_status_fps">Frame rate: %1$d fps</string>
+    <string name="session_status_total_latency">Total latency: %1$s</string>
+    <string name="session_status_sticky_modifiers">Sticky modifiers: %1$s</string>
+    <string name="session_status_last_error">Latest error: %1$s</string>
+    <string name="session_status_measuring">Measuring…</string>
+    <string name="session_status_idle">Not connected</string>
+    <string name="session_status_connecting">Connecting…</string>
+    <string name="session_status_connected">Connected</string>
+    <string name="session_status_disconnected">Disconnected (%1$s)</string>
+    <string name="session_status_failed">Connection failed</string>
+    <string name="session_status_unknown_reason">—</string>
+
+    <string name="session_notification_channel_name">Remote session keep-alive</string>
+    <string name="session_notification_channel_description">Persistent notification shown while keeping a remote desktop connection alive in the background</string>
+    <string name="session_notification_status_connecting">Connecting…</string>
+    <string name="session_notification_status_connected">Connected</string>
+    <string name="session_notification_status_reconnecting">Connection interrupted, reconnecting…</string>
+    <string name="session_notification_status_failed">Connection failed</string>
+    <string name="session_notification_title">Remote desktop session</string>
+    <string name="session_notification_disconnect_action">Disconnect</string>
+</resources>

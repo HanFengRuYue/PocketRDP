@@ -90,6 +90,7 @@ data class SessionUiState(
      * remote "PocketRDP" drive shows empty. Loaded from entity.redirectFiles in launchConnect.
      */
     val filesRedirectEnabled: Boolean = false,
+    val allFilesAccessRequired: Boolean = false,
     val lastError: String? = null,
 )
 
@@ -222,6 +223,23 @@ class SessionViewModel @Inject constructor(
         if (id > 0L) launchConnect(id)
     }
 
+    fun ensureStarted(connectionId: Long) {
+        if (connectionId <= 0L) return
+        val current = _state.value
+        if (current.connectionId == connectionId && current.status !is SessionConnectionStatus.Idle &&
+            !current.allFilesAccessRequired
+        ) return
+        _state.update { it.copy(connectionId = connectionId) }
+        launchConnect(connectionId)
+    }
+
+    fun retryAfterAllFilesAccess() {
+        val current = _state.value
+        if (!current.allFilesAccessRequired || !Environment.isExternalStorageManager()) return
+        _state.update { it.copy(allFilesAccessRequired = false, lastError = null) }
+        launchConnect(current.connectionId)
+    }
+
     /**
      * Single ordered consumer of [typeChannel]: types each committed text chunk on a background
      * thread, paced by [TextInputEncoder.typeThrottled]. One consumer (not one coroutine per chunk)
@@ -259,7 +277,7 @@ class SessionViewModel @Inject constructor(
                         val wasReconnect = reconnectAttempt > 0
                         reconnectAttempt = 0
                         reconnectJob?.cancel()
-                        if (!wasReconnect) startKeepAlive("已连接")
+                        if (!wasReconnect) startKeepAlive(appContext.getString(R.string.session_notification_status_connected))
                         _state.update {
                             it.copy(
                                 status = SessionConnectionStatus.Connected,
@@ -547,7 +565,20 @@ class SessionViewModel @Inject constructor(
                     // Open in the connection's preferred input mode (1 = 直接触屏 / native touch).
                     mode = if (entity.defaultInputMode == 1) InputMode.TOUCH else InputMode.TRACKPAD,
                     filesRedirectEnabled = entity.redirectFiles,
+                    allFilesAccessRequired = false,
                 )
+            }
+            if (entity.redirectFiles && !Environment.isExternalStorageManager()) {
+                PocketLogger.w(TAG, "folder redirection requested but MANAGE_EXTERNAL_STORAGE is not granted; waiting before connect")
+                _state.update {
+                    it.copy(
+                        status = SessionConnectionStatus.Idle,
+                        filesRedirectEnabled = true,
+                        allFilesAccessRequired = true,
+                        lastError = null,
+                    )
+                }
+                return@launch
             }
             val plain = runCatching { repository.decryptPassword(entity) }.getOrDefault("")
             // File redirection: export the WHOLE internal storage (/storage/emulated/0) as a "PocketRDP"
@@ -597,7 +628,7 @@ class SessionViewModel @Inject constructor(
             // Promote the process to a foreground service NOW, while we're still visible (Android
             // 31+ forbids starting an FGS from the background). This is what keeps the connection
             // alive when the user switches to another app — see RdpSessionService.
-            startKeepAlive("正在连接…")
+            startKeepAlive(appContext.getString(R.string.session_notification_status_connecting))
             rdpClient.connect(params)
             repository.touchLastUsed(entity.id)
         }

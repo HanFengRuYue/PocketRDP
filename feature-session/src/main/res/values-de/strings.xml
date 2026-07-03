@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_cd_back">Zurück</string>
+    <string name="session_cd_keyboard">Tastatur</string>
+    <string name="session_cd_switch_input_mode">Eingabemodus wechseln</string>
+    <string name="session_cd_fullscreen">Vollbild</string>
+    <string name="session_cd_disconnect">Trennen</string>
+    <string name="session_cd_exit_fullscreen">Vollbild verlassen</string>
+    <string name="session_cd_expand_status">Sitzungsinformationen anzeigen</string>
+    <string name="session_loading_remote_frame">Warte auf Remote-Bild…</string>
+    <string name="session_battery_title">Hintergrundbetrieb erlauben?</string>
+    <string name="session_battery_message">Damit diese Remotedesktop-Verbindung beim Wechseln der App oder beim Sperren des Bildschirms aktiv bleibt, füge PocketRDP zur Ausnahmeliste der Akkuoptimierung hinzu. Andernfalls kann das System die Hintergrundverbindung zum Stromsparen trennen.</string>
+    <string name="session_action_allow">Erlauben</string>
+    <string name="session_action_not_now">Nicht jetzt</string>
+    <string name="session_all_files_title">Zugriff auf alle Dateien erlauben?</string>
+    <string name="session_all_files_message">Die Ordnerumleitung stellt den gesamten Telefonspeicher auf dem Remote-Computer als PocketRDP-Laufwerk im Datei-Explorer bereit. PocketRDP benötigt dafür Zugriff auf alle Dateien. Stelle die Verbindung nach dem Erteilen der Berechtigung erneut her.</string>
+    <string name="session_action_grant">Gewähren</string>
+    <string name="session_zoom_cd">Zoom: nach oben wischen zum Vergrößern, nach unten zum Verkleinern, doppelt tippen zum Zurücksetzen, lange drücken und ziehen zum Verschieben dieser Taste</string>
+    <string name="session_pan_cd">Ziehen, um die vergrößerte Ansicht zu bewegen; lange drücken und ziehen, um diese Taste zu verschieben</string>
+
+    <string name="session_status_title_fallback">Sitzung #%1$d</string>
+    <string name="session_status_host">Host: %1$s</string>
+    <string name="session_status_resolution">Remote-Auflösung: %1$d×%2$d</string>
+    <string name="session_status_fps">Bildrate: %1$d fps</string>
+    <string name="session_status_total_latency">Gesamtlatenz: %1$s</string>
+    <string name="session_status_sticky_modifiers">Einrastende Modifikatoren: %1$s</string>
+    <string name="session_status_last_error">Letzter Fehler: %1$s</string>
+    <string name="session_status_measuring">Messung…</string>
+    <string name="session_status_idle">Nicht verbunden</string>
+    <string name="session_status_connecting">Verbinden…</string>
+    <string name="session_status_connected">Verbunden</string>
+    <string name="session_status_disconnected">Getrennt (%1$s)</string>
+    <string name="session_status_failed">Verbindung fehlgeschlagen</string>
+    <string name="session_status_unknown_reason">—</string>
+
+    <string name="session_notification_channel_name">Remote-Sitzung aktiv halten</string>
+    <string name="session_notification_channel_description">Dauerhafte Benachrichtigung, während eine Remotedesktop-Verbindung im Hintergrund aktiv gehalten wird</string>
+    <string name="session_notification_status_connecting">Verbinden…</string>
+    <string name="session_notification_status_connected">Verbunden</string>
+    <string name="session_notification_status_reconnecting">Verbindung unterbrochen, erneuter Verbindungsaufbau…</string>
+    <string name="session_notification_status_failed">Verbindung fehlgeschlagen</string>
+    <string name="session_notification_title">Remotedesktop-Sitzung</string>
+    <string name="session_notification_disconnect_action">Trennen</string>
+</resources>

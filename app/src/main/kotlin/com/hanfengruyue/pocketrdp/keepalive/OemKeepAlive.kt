@@ -9,6 +9,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.annotation.ArrayRes
+import androidx.annotation.StringRes
+import com.hanfengruyue.pocketrdp.R
 
 /**
  * OEM-specific background keep-alive helpers.
@@ -36,55 +39,29 @@ object OemKeepAlive {
         else -> Oem.OTHER
     }
 
-    fun displayName(oem: Oem): String = when (oem) {
-        Oem.XIAOMI -> "小米 / Redmi（MIUI / HyperOS）"
-        Oem.HUAWEI -> "华为（EMUI / HarmonyOS）"
-        Oem.HONOR -> "荣耀（MagicOS）"
-        Oem.OPPO -> "OPPO / realme（ColorOS）"
-        Oem.ONEPLUS -> "一加（ColorOS / OxygenOS）"
-        Oem.VIVO -> "vivo（OriginOS / Funtouch）"
-        Oem.SAMSUNG -> "三星（One UI）"
-        Oem.MEIZU -> "魅族（Flyme）"
-        Oem.OTHER -> "你的设备"
+    @StringRes
+    fun displayNameRes(oem: Oem): Int = when (oem) {
+        Oem.XIAOMI -> R.string.keepalive_oem_xiaomi
+        Oem.HUAWEI -> R.string.keepalive_oem_huawei
+        Oem.HONOR -> R.string.keepalive_oem_honor
+        Oem.OPPO -> R.string.keepalive_oem_oppo
+        Oem.ONEPLUS -> R.string.keepalive_oem_oneplus
+        Oem.VIVO -> R.string.keepalive_oem_vivo
+        Oem.SAMSUNG -> R.string.keepalive_oem_samsung
+        Oem.MEIZU -> R.string.keepalive_oem_meizu
+        Oem.OTHER -> R.string.keepalive_oem_other
     }
 
     /** Per-OEM manual steps. These vary by ROM version — treat them as guidance, not exact paths. */
-    fun steps(oem: Oem): List<String> = when (oem) {
-        Oem.XIAOMI -> listOf(
-            "设置 → 应用设置 → 应用管理 → PocketRDP → 自启动：开启",
-            "设置 → 省电与电池 → 应用智能省电 → PocketRDP → 选择「无限制」",
-            "在「最近任务」里下拉 PocketRDP 卡片并点锁图标，锁定后台",
-        )
-        Oem.HUAWEI, Oem.HONOR -> listOf(
-            "设置 → 电池 → 应用启动管理 → PocketRDP → 关闭「自动管理」",
-            "在弹出的手动管理里把「自启动 / 关联启动 / 后台活动」全部打开",
-            "在「最近任务」里下拉 PocketRDP 卡片并点锁图标，锁定后台",
-        )
-        Oem.OPPO, Oem.ONEPLUS -> listOf(
-            "设置 → 应用管理 → PocketRDP → 耗电管理 → 允许「后台运行 / 自启动」",
-            "设置 → 电池 → 更多设置 → 允许 PocketRDP 后台高耗电",
-            "在「最近任务」里下拉 PocketRDP 卡片并锁定后台",
-        )
-        Oem.VIVO -> listOf(
-            "i 管家 → 应用管理 → 自启动管理 → 允许 PocketRDP 自启动",
-            "设置 → 电池 → 后台高耗电 → 允许 PocketRDP",
-            "在「最近任务」里下拉 PocketRDP 卡片并锁定后台",
-        )
-        Oem.SAMSUNG -> listOf(
-            "设置 → 应用 → PocketRDP → 电池 → 选择「不受限制」",
-            "设置 → 电池 → 后台使用限制 → 从「休眠 / 深度休眠应用」中移除 PocketRDP",
-            "关闭「自动关闭未使用的应用」/ 自适应电池",
-        )
-        Oem.MEIZU -> listOf(
-            "手机管家 → 权限管理 → 后台管理 → 允许 PocketRDP 后台运行",
-            "设置 → 电量管理 → 待机耗电管理 → 允许 PocketRDP",
-            "在「最近任务」里锁定 PocketRDP",
-        )
-        Oem.OTHER -> listOf(
-            "设置 → 应用 → PocketRDP → 电池 → 允许后台活动 / 不受限制",
-            "如果系统有「自启动」或「后台运行」开关，请为 PocketRDP 打开",
-            "在「最近任务」里锁定 PocketRDP（如支持）以免被一键清理",
-        )
+    @ArrayRes
+    fun stepsRes(oem: Oem): Int = when (oem) {
+        Oem.XIAOMI -> R.array.keepalive_steps_xiaomi
+        Oem.HUAWEI, Oem.HONOR -> R.array.keepalive_steps_huawei_honor
+        Oem.OPPO, Oem.ONEPLUS -> R.array.keepalive_steps_oppo_oneplus
+        Oem.VIVO -> R.array.keepalive_steps_vivo
+        Oem.SAMSUNG -> R.array.keepalive_steps_samsung
+        Oem.MEIZU -> R.array.keepalive_steps_meizu
+        Oem.OTHER -> R.array.keepalive_steps_other
     }
 
     private fun cn(pkg: String, cls: String) = ComponentName(pkg, cls)
