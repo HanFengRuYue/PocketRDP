@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PocketRDP</string>
+    <string name="cd_back">뒤로</string>
+    <string name="settings_title">설정</string>
+    <string name="settings_keepalive_title">백그라운드 유지</string>
+    <string name="settings_keepalive_subtitle">배터리 최적화, 자동 시작, 백그라운드 제한</string>
+    <string name="settings_logs_title">로그</string>
+    <string name="settings_logs_subtitle">실행 로그 보기, 내보내기 또는 지우기</string>
+    <string name="settings_theme_title">테마 색상</string>
+    <string name="settings_language_title">언어</string>
+    <string name="settings_chrome_alpha_title">조작 UI 투명도</string>
+    <string name="settings_toolbar_alpha_title">상단 및 하단 도구 모음</string>
+    <string name="settings_controls_alpha_title">확대 버튼과 이동 조이스틱</string>
+    <string name="settings_alpha_percent">%1$s: %2$d%%</string>
+    <string name="settings_theme_system">시스템 따르기</string>
+    <string name="settings_theme_light">라이트</string>
+    <string name="settings_theme_dark">다크</string>
+    <string name="settings_language_system">시스템 따르기</string>
+    <string name="settings_language_zh_cn">중국어 간체</string>
+    <string name="settings_language_en">영어</string>
+    <string name="settings_language_es">스페인어</string>
+    <string name="settings_language_fr">프랑스어</string>
+    <string name="settings_language_de">독일어</string>
+    <string name="settings_language_ja">일본어</string>
+    <string name="settings_language_ko">한국어</string>
+    <string name="settings_language_pt_br">포르투갈어</string>
+    <string name="logs_title">로그</string>
+    <string name="logs_cd_export">내보내기</string>
+    <string name="logs_cd_clear">지우기</string>
+    <string name="logs_export_chooser">로그 내보내기</string>
+    <string name="logs_share_subject">PocketRDP 로그</string>
+    <string name="logs_empty">아직 로그가 없습니다</string>
+    <string name="logs_empty_filter">현재 필터와 일치하는 항목이 없습니다</string>
+    <string name="logs_filter_all">전체</string>
+    <string name="keepalive_title">백그라운드 유지</string>
+    <string name="keepalive_question_title">백그라운드에서 연결이 끊기는 이유</string>
+    <string name="keepalive_question_body">PocketRDP는 포그라운드 서비스를 사용해 백그라운드 연결을 유지합니다. 하지만 절전 정책, 특히 맞춤 Android 시스템은 앱 전환이나 화면 잠금 후 프로세스를 종료할 수 있습니다. PocketRDP를 허용 목록에 추가하면 안정성이 높아집니다.</string>
+    <string name="keepalive_step1_title">1단계 · 배터리 최적화 허용 목록</string>
+    <string name="keepalive_battery_allowed">✓ PocketRDP가 이미 배터리 최적화에서 제외되어 있습니다. 절전 중이나 화면이 꺼져도 네트워크와 백그라운드 동작이 제한되지 않아야 합니다.</string>
+    <string name="keepalive_battery_not_allowed">PocketRDP가 아직 허용되지 않았습니다. 아래 버튼을 누르고 시스템 대화상자에서 허용을 선택하세요.</string>
+    <string name="keepalive_battery_button">배터리 최적화 예외 허용</string>
+    <string name="keepalive_step2_title">2단계 · %1$s 자동 시작 / 백그라운드</string>
+    <string name="keepalive_step2_body">시스템 설정에서 PocketRDP의 자동 시작과 백그라운드 실행을 허용하세요. 권장 단계:</string>
+    <string name="keepalive_open_autostart">자동 시작 / 백그라운드 설정 열기</string>
+    <string name="keepalive_open_app_info">앱 정보 열기</string>
+    <string name="keepalive_tip">팁: 메뉴 위치는 시스템 버전에 따라 다릅니다. 버튼이 정확한 페이지로 이동하지 않으면 앱 정보를 열고 수동으로 설정하세요. 일부 시스템은 업데이트 후 이 스위치를 초기화합니다.</string>
+    <string name="keepalive_oem_xiaomi">Xiaomi / Redmi (MIUI / HyperOS)</string>
+    <string name="keepalive_oem_huawei">Huawei (EMUI / HarmonyOS)</string>
+    <string name="keepalive_oem_honor">Honor (MagicOS)</string>
+    <string name="keepalive_oem_oppo">OPPO / realme (ColorOS)</string>
+    <string name="keepalive_oem_oneplus">OnePlus (ColorOS / OxygenOS)</string>
+    <string name="keepalive_oem_vivo">vivo (OriginOS / Funtouch)</string>
+    <string name="keepalive_oem_samsung">Samsung (One UI)</string>
+    <string name="keepalive_oem_meizu">Meizu (Flyme)</string>
+    <string name="keepalive_oem_other">내 기기</string>
+    <string-array name="keepalive_steps_xiaomi">
+        <item>설정 → 앱 → 앱 관리 → PocketRDP → 자동 시작 켜기</item>
+        <item>설정 → 배터리 → 앱 배터리 절약 → PocketRDP → 제한 없음 선택</item>
+        <item>최근 앱에서 PocketRDP 카드를 아래로 내리고 잠금 아이콘을 누르기</item>
+    </string-array>
+    <string-array name="keepalive_steps_huawei_honor">
+        <item>설정 → 배터리 → 앱 실행 → PocketRDP → 자동 관리 끄기</item>
+        <item>수동 관리에서 자동 시작 / 보조 실행 / 백그라운드 실행을 모두 켜기</item>
+        <item>최근 앱에서 PocketRDP 카드를 아래로 내리고 잠금 아이콘을 누르기</item>
+    </string-array>
+    <string-array name="keepalive_steps_oppo_oneplus">
+        <item>설정 → 앱 관리 → PocketRDP → 배터리 → 백그라운드 실행 / 자동 시작 허용</item>
+        <item>설정 → 배터리 → 추가 설정 → PocketRDP의 백그라운드 고전력 사용 허용</item>
+        <item>최근 앱에서 PocketRDP 카드를 아래로 내려 잠그기</item>
+    </string-array>
+    <string-array name="keepalive_steps_vivo">
+        <item>i Manager → 앱 관리 → 자동 시작 관리 → PocketRDP 허용</item>
+        <item>설정 → 배터리 → 백그라운드 고전력 사용 → PocketRDP 허용</item>
+        <item>최근 앱에서 PocketRDP 카드를 아래로 내려 잠그기</item>
+    </string-array>
+    <string-array name="keepalive_steps_samsung">
+        <item>설정 → 앱 → PocketRDP → 배터리 → 제한 없음 선택</item>
+        <item>설정 → 배터리 → 백그라운드 사용 제한 → 절전 앱 목록에서 PocketRDP 제거</item>
+        <item>사용하지 않는 앱 자동 비활성화 / 적응형 배터리 끄기</item>
+    </string-array>
+    <string-array name="keepalive_steps_meizu">
+        <item>보안 → 권한 관리 → 백그라운드 관리 → PocketRDP 허용</item>
+        <item>설정 → 전원 관리 → 대기 전력 관리 → PocketRDP 허용</item>
+        <item>최근 앱에서 PocketRDP 잠그기</item>
+    </string-array>
+    <string-array name="keepalive_steps_other">
+        <item>설정 → 앱 → PocketRDP → 배터리 → 백그라운드 활동 허용 / 제한 없음</item>
+        <item>자동 시작 또는 백그라운드 실행 스위치가 있으면 PocketRDP에 대해 켜기</item>
+        <item>지원되는 경우 최근 앱에서 PocketRDP를 잠그기</item>
+    </string-array>
+</resources>

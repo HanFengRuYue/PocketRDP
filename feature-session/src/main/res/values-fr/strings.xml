@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_cd_back">Retour</string>
+    <string name="session_cd_keyboard">Clavier</string>
+    <string name="session_cd_switch_input_mode">Changer de mode de saisie</string>
+    <string name="session_cd_fullscreen">Plein écran</string>
+    <string name="session_cd_disconnect">Déconnecter</string>
+    <string name="session_cd_exit_fullscreen">Quitter le plein écran</string>
+    <string name="session_cd_expand_status">Afficher les informations de session</string>
+    <string name="session_loading_remote_frame">En attente de l’image distante…</string>
+    <string name="session_battery_title">Autoriser le maintien en arrière-plan ?</string>
+    <string name="session_battery_message">Pour garder cette connexion de bureau à distance active quand vous changez d’application ou verrouillez l’écran, ajoutez PocketRDP à la liste autorisée de l’optimisation de la batterie. Sinon, le système peut couper la connexion en arrière-plan pour économiser l’énergie.</string>
+    <string name="session_action_allow">Autoriser</string>
+    <string name="session_action_not_now">Pas maintenant</string>
+    <string name="session_all_files_title">Autoriser l’accès à tous les fichiers ?</string>
+    <string name="session_all_files_message">La redirection de dossiers monte tout le stockage du téléphone sur l’ordinateur distant comme lecteur PocketRDP dans l’Explorateur de fichiers. PocketRDP a besoin de l’accès à tous les fichiers. Reconnectez-vous après avoir accordé l’autorisation.</string>
+    <string name="session_action_grant">Accorder</string>
+    <string name="session_zoom_cd">Zoom : glissez vers le haut pour agrandir, vers le bas pour réduire, double touchez pour réinitialiser, appuyez longuement puis faites glisser pour déplacer ce bouton</string>
+    <string name="session_pan_cd">Faites glisser pour déplacer la vue agrandie ; appuyez longuement puis faites glisser pour déplacer ce bouton</string>
+
+    <string name="session_status_title_fallback">Session #%1$d</string>
+    <string name="session_status_host">Hôte : %1$s</string>
+    <string name="session_status_resolution">Résolution distante : %1$d×%2$d</string>
+    <string name="session_status_fps">Images : %1$d fps</string>
+    <string name="session_status_total_latency">Latence totale : %1$s</string>
+    <string name="session_status_sticky_modifiers">Modificateurs verrouillés : %1$s</string>
+    <string name="session_status_last_error">Dernière erreur : %1$s</string>
+    <string name="session_status_measuring">Mesure…</string>
+    <string name="session_status_idle">Non connecté</string>
+    <string name="session_status_connecting">Connexion…</string>
+    <string name="session_status_connected">Connecté</string>
+    <string name="session_status_disconnected">Déconnecté (%1$s)</string>
+    <string name="session_status_failed">Échec de connexion</string>
+    <string name="session_status_unknown_reason">—</string>
+
+    <string name="session_notification_channel_name">Maintien de session distante</string>
+    <string name="session_notification_channel_description">Notification permanente affichée pendant le maintien d’une connexion de bureau à distance en arrière-plan</string>
+    <string name="session_notification_status_connecting">Connexion…</string>
+    <string name="session_notification_status_connected">Connecté</string>
+    <string name="session_notification_status_reconnecting">Connexion interrompue, reconnexion…</string>
+    <string name="session_notification_status_failed">Échec de connexion</string>
+    <string name="session_notification_title">Session de bureau à distance</string>
+    <string name="session_notification_disconnect_action">Déconnecter</string>
+</resources>

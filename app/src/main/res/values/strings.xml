@@ -1,4 +1,96 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PocketRDP</string>
+    <string name="cd_back">返回</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_keepalive_title">后台保活设置</string>
+    <string name="settings_keepalive_subtitle">电池优化、自启动与后台限制</string>
+    <string name="settings_logs_title">日志</string>
+    <string name="settings_logs_subtitle">查看、导出或清空运行日志</string>
+    <string name="settings_theme_title">主题颜色</string>
+    <string name="settings_language_title">语言</string>
+    <string name="settings_chrome_alpha_title">操控界面透明度</string>
+    <string name="settings_toolbar_alpha_title">上下工具栏</string>
+    <string name="settings_controls_alpha_title">缩放按钮和移动摇杆</string>
+    <string name="settings_alpha_percent">%1$s：%2$d%%</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_language_system">跟随系统</string>
+    <string name="settings_language_zh_cn">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_language_es">Español</string>
+    <string name="settings_language_fr">Français</string>
+    <string name="settings_language_de">Deutsch</string>
+    <string name="settings_language_ja">日本語</string>
+    <string name="settings_language_ko">한국어</string>
+    <string name="settings_language_pt_br">Português</string>
+
+    <string name="logs_title">日志</string>
+    <string name="logs_cd_export">导出</string>
+    <string name="logs_cd_clear">清空</string>
+    <string name="logs_export_chooser">导出日志</string>
+    <string name="logs_share_subject">PocketRDP 日志</string>
+    <string name="logs_empty">尚无日志记录</string>
+    <string name="logs_empty_filter">当前筛选下无匹配条目</string>
+    <string name="logs_filter_all">全部</string>
+
+    <string name="keepalive_title">后台保活设置</string>
+    <string name="keepalive_question_title">为什么切到后台会断开？</string>
+    <string name="keepalive_question_body">PocketRDP 已经用前台服务在后台维持连接。但系统省电策略，尤其是国产定制系统，可能仍会在你切换应用或锁屏后清理后台进程，导致连接中断。按下面两步把它加入白名单，可大幅提升后台保活成功率。</string>
+    <string name="keepalive_step1_title">第 1 步 · 电池优化白名单</string>
+    <string name="keepalive_battery_allowed">✓ 已加入电池优化白名单。系统在省电 / 息屏时不会限制本应用的网络与后台运行。</string>
+    <string name="keepalive_battery_not_allowed">尚未加入白名单。点击下方按钮，在系统弹窗中选择“允许”，让本应用在息屏 / 深度省电（Doze）时也能保持网络连接。</string>
+    <string name="keepalive_battery_button">加入电池优化白名单</string>
+    <string name="keepalive_step2_title">第 2 步 · %1$s 自启动 / 后台</string>
+    <string name="keepalive_step2_body">在系统设置里为 PocketRDP 打开自启动并允许后台运行，建议步骤：</string>
+    <string name="keepalive_open_autostart">打开自启动 / 后台设置</string>
+    <string name="keepalive_open_app_info">打开应用信息页</string>
+    <string name="keepalive_tip">提示：不同系统版本的菜单位置可能略有差异；若上面的按钮没有直接跳到对应页面，请用“打开应用信息页”手动进入设置。部分系统在系统更新后会重置这些开关，断连后可回到此页重新检查。</string>
+    <string name="keepalive_oem_xiaomi">小米 / Redmi（MIUI / HyperOS）</string>
+    <string name="keepalive_oem_huawei">华为（EMUI / HarmonyOS）</string>
+    <string name="keepalive_oem_honor">荣耀（MagicOS）</string>
+    <string name="keepalive_oem_oppo">OPPO / realme（ColorOS）</string>
+    <string name="keepalive_oem_oneplus">一加（ColorOS / OxygenOS）</string>
+    <string name="keepalive_oem_vivo">vivo（OriginOS / Funtouch）</string>
+    <string name="keepalive_oem_samsung">三星（One UI）</string>
+    <string name="keepalive_oem_meizu">魅族（Flyme）</string>
+    <string name="keepalive_oem_other">你的设备</string>
+
+    <string-array name="keepalive_steps_xiaomi">
+        <item>设置 → 应用设置 → 应用管理 → PocketRDP → 自启动：开启</item>
+        <item>设置 → 省电与电池 → 应用智能省电 → PocketRDP → 选择“无限制”</item>
+        <item>在“最近任务”里下拉 PocketRDP 卡片并点锁图标，锁定后台</item>
+    </string-array>
+    <string-array name="keepalive_steps_huawei_honor">
+        <item>设置 → 电池 → 应用启动管理 → PocketRDP → 关闭“自动管理”</item>
+        <item>在弹出的手动管理里把“自启动 / 关联启动 / 后台活动”全部打开</item>
+        <item>在“最近任务”里下拉 PocketRDP 卡片并点锁图标，锁定后台</item>
+    </string-array>
+    <string-array name="keepalive_steps_oppo_oneplus">
+        <item>设置 → 应用管理 → PocketRDP → 耗电管理 → 允许“后台运行 / 自启动”</item>
+        <item>设置 → 电池 → 更多设置 → 允许 PocketRDP 后台高耗电</item>
+        <item>在“最近任务”里下拉 PocketRDP 卡片并锁定后台</item>
+    </string-array>
+    <string-array name="keepalive_steps_vivo">
+        <item>i 管家 → 应用管理 → 自启动管理 → 允许 PocketRDP 自启动</item>
+        <item>设置 → 电池 → 后台高耗电 → 允许 PocketRDP</item>
+        <item>在“最近任务”里下拉 PocketRDP 卡片并锁定后台</item>
+    </string-array>
+    <string-array name="keepalive_steps_samsung">
+        <item>设置 → 应用 → PocketRDP → 电池 → 选择“不受限制”</item>
+        <item>设置 → 电池 → 后台使用限制 → 从“休眠 / 深度休眠应用”中移除 PocketRDP</item>
+        <item>关闭“自动关闭未使用的应用”/ 自适应电池</item>
+    </string-array>
+    <string-array name="keepalive_steps_meizu">
+        <item>手机管家 → 权限管理 → 后台管理 → 允许 PocketRDP 后台运行</item>
+        <item>设置 → 电量管理 → 待机耗电管理 → 允许 PocketRDP</item>
+        <item>在“最近任务”里锁定 PocketRDP</item>
+    </string-array>
+    <string-array name="keepalive_steps_other">
+        <item>设置 → 应用 → PocketRDP → 电池 → 允许后台活动 / 不受限制</item>
+        <item>如果系统有“自启动”或“后台运行”开关，请为 PocketRDP 打开</item>
+        <item>在“最近任务”里锁定 PocketRDP（如支持）以免被一键清理</item>
+    </string-array>
 </resources>

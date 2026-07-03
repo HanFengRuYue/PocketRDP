@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PocketRDP</string>
+    <string name="cd_back">Voltar</string>
+    <string name="settings_title">Configurações</string>
+    <string name="settings_keepalive_title">Manter em segundo plano</string>
+    <string name="settings_keepalive_subtitle">Otimização de bateria, início automático e limites</string>
+    <string name="settings_logs_title">Logs</string>
+    <string name="settings_logs_subtitle">Ver, exportar ou limpar logs</string>
+    <string name="settings_theme_title">Cor do tema</string>
+    <string name="settings_language_title">Idioma</string>
+    <string name="settings_chrome_alpha_title">Opacidade da interface de controle</string>
+    <string name="settings_toolbar_alpha_title">Barras superior e inferior</string>
+    <string name="settings_controls_alpha_title">Botão de zoom e joystick de movimento</string>
+    <string name="settings_alpha_percent">%1$s: %2$d%%</string>
+    <string name="settings_theme_system">Seguir o sistema</string>
+    <string name="settings_theme_light">Claro</string>
+    <string name="settings_theme_dark">Escuro</string>
+    <string name="settings_language_system">Seguir o sistema</string>
+    <string name="settings_language_zh_cn">Chinês simplificado</string>
+    <string name="settings_language_en">Inglês</string>
+    <string name="settings_language_es">Espanhol</string>
+    <string name="settings_language_fr">Francês</string>
+    <string name="settings_language_de">Alemão</string>
+    <string name="settings_language_ja">Japonês</string>
+    <string name="settings_language_ko">Coreano</string>
+    <string name="settings_language_pt_br">Português</string>
+    <string name="logs_title">Logs</string>
+    <string name="logs_cd_export">Exportar</string>
+    <string name="logs_cd_clear">Limpar</string>
+    <string name="logs_export_chooser">Exportar logs</string>
+    <string name="logs_share_subject">Log do PocketRDP</string>
+    <string name="logs_empty">Ainda não há logs</string>
+    <string name="logs_empty_filter">Nenhuma entrada para o filtro atual</string>
+    <string name="logs_filter_all">Todos</string>
+    <string name="keepalive_title">Manter em segundo plano</string>
+    <string name="keepalive_question_title">Por que a conexão cai em segundo plano?</string>
+    <string name="keepalive_question_body">O PocketRDP usa um serviço em primeiro plano para manter a conexão ativa. Políticas de economia de energia, principalmente em sistemas Android personalizados, ainda podem encerrar o processo depois que você troca de app ou bloqueia a tela. Adicione o PocketRDP à lista permitida para melhorar a estabilidade.</string>
+    <string name="keepalive_step1_title">Etapa 1 · Lista permitida de bateria</string>
+    <string name="keepalive_battery_allowed">✓ O PocketRDP já está fora da otimização de bateria. O sistema não deve limitar rede nem atividade em segundo plano.</string>
+    <string name="keepalive_battery_not_allowed">O PocketRDP ainda não foi permitido. Toque no botão abaixo e escolha Permitir para manter a rede ativa com a tela apagada ou no modo Doze.</string>
+    <string name="keepalive_battery_button">Permitir exceção de bateria</string>
+    <string name="keepalive_step2_title">Etapa 2 · Início automático / segundo plano de %1$s</string>
+    <string name="keepalive_step2_body">Ative o início automático e a execução em segundo plano para o PocketRDP nas configurações do sistema. Etapas sugeridas:</string>
+    <string name="keepalive_open_autostart">Abrir início automático / segundo plano</string>
+    <string name="keepalive_open_app_info">Abrir informações do app</string>
+    <string name="keepalive_tip">Dica: a posição dos menus varia por versão do sistema. Se o botão não abrir a página exata, use Informações do app e ajuste manualmente. Alguns sistemas redefinem essas opções após atualizações.</string>
+    <string name="keepalive_oem_xiaomi">Xiaomi / Redmi (MIUI / HyperOS)</string>
+    <string name="keepalive_oem_huawei">Huawei (EMUI / HarmonyOS)</string>
+    <string name="keepalive_oem_honor">Honor (MagicOS)</string>
+    <string name="keepalive_oem_oppo">OPPO / realme (ColorOS)</string>
+    <string name="keepalive_oem_oneplus">OnePlus (ColorOS / OxygenOS)</string>
+    <string name="keepalive_oem_vivo">vivo (OriginOS / Funtouch)</string>
+    <string name="keepalive_oem_samsung">Samsung (One UI)</string>
+    <string name="keepalive_oem_meizu">Meizu (Flyme)</string>
+    <string name="keepalive_oem_other">Seu dispositivo</string>
+    <string-array name="keepalive_steps_xiaomi">
+        <item>Configurações → Apps → Gerenciar apps → PocketRDP → Início automático: ativado</item>
+        <item>Configurações → Bateria → Economia por app → PocketRDP → Sem restrições</item>
+        <item>Em Recentes, puxe o cartão do PocketRDP para baixo e toque no cadeado</item>
+    </string-array>
+    <string-array name="keepalive_steps_huawei_honor">
+        <item>Configurações → Bateria → Inicialização de apps → PocketRDP → Desativar gerenciamento automático</item>
+        <item>No gerenciamento manual, ative Início automático / Inicialização secundária / Segundo plano</item>
+        <item>Em Recentes, puxe o cartão do PocketRDP para baixo e toque no cadeado</item>
+    </string-array>
+    <string-array name="keepalive_steps_oppo_oneplus">
+        <item>Configurações → Gerenciamento de apps → PocketRDP → Bateria → Permitir segundo plano / início automático</item>
+        <item>Configurações → Bateria → Mais configurações → Permitir alto consumo em segundo plano para PocketRDP</item>
+        <item>Em Recentes, puxe e bloqueie o cartão do PocketRDP</item>
+    </string-array>
+    <string-array name="keepalive_steps_vivo">
+        <item>i Manager → Gerenciamento de apps → Início automático → Permitir PocketRDP</item>
+        <item>Configurações → Bateria → Alto consumo em segundo plano → Permitir PocketRDP</item>
+        <item>Em Recentes, puxe e bloqueie o cartão do PocketRDP</item>
+    </string-array>
+    <string-array name="keepalive_steps_samsung">
+        <item>Configurações → Apps → PocketRDP → Bateria → Sem restrições</item>
+        <item>Configurações → Bateria → Limites de uso em segundo plano → Remover PocketRDP de apps suspensos</item>
+        <item>Desative desabilitar apps não usados / bateria adaptável</item>
+    </string-array>
+    <string-array name="keepalive_steps_meizu">
+        <item>Segurança → Permissões → Gerenciamento em segundo plano → Permitir PocketRDP</item>
+        <item>Configurações → Energia → Consumo em espera → Permitir PocketRDP</item>
+        <item>Bloqueie o PocketRDP em Recentes</item>
+    </string-array>
+    <string-array name="keepalive_steps_other">
+        <item>Configurações → Apps → PocketRDP → Bateria → Permitir segundo plano / Sem restrições</item>
+        <item>Se houver Início automático ou Execução em segundo plano, ative para o PocketRDP</item>
+        <item>Bloqueie o PocketRDP em Recentes se o sistema permitir</item>
+    </string-array>
+</resources>

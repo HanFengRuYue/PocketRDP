@@ -19,6 +19,8 @@ import android.util.Log;
 
 import androidx.collection.LongSparseArray;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,6 +33,8 @@ public class LibFreeRDP {
     private static UIEventListener uiListener;
     private static boolean mHasH264 = false;
     private static final LongSparseArray<Boolean> mInstanceState = new LongSparseArray<>();
+    private static final Map<Long, EventListener> eventListeners = new HashMap<>();
+    private static final Map<Long, UIEventListener> uiEventListeners = new HashMap<>();
 
     public static final long VERIFY_CERT_FLAG_NONE = 0x00;
     public static final long VERIFY_CERT_FLAG_LEGACY = 0x02;
@@ -114,6 +118,30 @@ public class LibFreeRDP {
 
     public static void setEventListener(EventListener l) { listener = l; }
     public static void setUIEventListener(UIEventListener l) { uiListener = l; }
+    public static void registerEventListener(long inst, EventListener l) {
+        synchronized (eventListeners) { eventListeners.put(inst, l); }
+    }
+    public static void unregisterEventListener(long inst) {
+        synchronized (eventListeners) { eventListeners.remove(inst); }
+    }
+    public static void registerUIEventListener(long inst, UIEventListener l) {
+        synchronized (uiEventListeners) { uiEventListeners.put(inst, l); }
+    }
+    public static void unregisterUIEventListener(long inst) {
+        synchronized (uiEventListeners) { uiEventListeners.remove(inst); }
+    }
+    private static EventListener eventListenerFor(long inst) {
+        synchronized (eventListeners) {
+            EventListener l = eventListeners.get(inst);
+            return l != null ? l : listener;
+        }
+    }
+    private static UIEventListener uiEventListenerFor(long inst) {
+        synchronized (uiEventListeners) {
+            UIEventListener l = uiEventListeners.get(inst);
+            return l != null ? l : uiListener;
+        }
+    }
 
     public static long newInstance(Context context) { return freerdp_new(context); }
 
@@ -192,43 +220,54 @@ public class LibFreeRDP {
 
     public static void OnPreConnect(long inst) {
         synchronized (mInstanceState) { mInstanceState.put(inst, true); mInstanceState.notifyAll(); }
-        if (listener != null) listener.OnPreConnect(inst);
+        EventListener l = eventListenerFor(inst);
+        if (l != null) l.OnPreConnect(inst);
     }
     public static void OnConnectionSuccess(long inst) {
-        if (listener != null) listener.OnConnectionSuccess(inst);
+        EventListener l = eventListenerFor(inst);
+        if (l != null) l.OnConnectionSuccess(inst);
     }
     public static void OnConnectionFailure(long inst) {
         synchronized (mInstanceState) { mInstanceState.put(inst, false); mInstanceState.notifyAll(); }
-        if (listener != null) listener.OnConnectionFailure(inst);
+        EventListener l = eventListenerFor(inst);
+        if (l != null) l.OnConnectionFailure(inst);
     }
     public static void OnDisconnecting(long inst) {
-        if (listener != null) listener.OnDisconnecting(inst);
+        EventListener l = eventListenerFor(inst);
+        if (l != null) l.OnDisconnecting(inst);
     }
     public static void OnDisconnected(long inst) {
         synchronized (mInstanceState) { mInstanceState.put(inst, false); mInstanceState.notifyAll(); }
-        if (listener != null) listener.OnDisconnected(inst);
+        EventListener l = eventListenerFor(inst);
+        if (l != null) l.OnDisconnected(inst);
     }
 
     public static boolean OnAuthenticate(long inst, StringBuilder username, StringBuilder domain, StringBuilder password) {
-        return uiListener != null && uiListener.OnAuthenticate(inst, username, domain, password);
+        UIEventListener l = uiEventListenerFor(inst);
+        return l != null && l.OnAuthenticate(inst, username, domain, password);
     }
     public static boolean OnGatewayAuthenticate(long inst, StringBuilder username, StringBuilder domain, StringBuilder password) {
-        return uiListener != null && uiListener.OnGatewayAuthenticate(inst, username, domain, password);
+        UIEventListener l = uiEventListenerFor(inst);
+        return l != null && l.OnGatewayAuthenticate(inst, username, domain, password);
     }
     public static int OnVerifyCertificateEx(long inst, String host, long port, String commonName, String subject, String issuer, String fingerprint, long flags) {
-        if (uiListener == null) return 0;
-        return uiListener.OnVerifyCertificateEx(inst, host, port, commonName, subject, issuer, fingerprint, flags);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l == null) return 0;
+        return l.OnVerifyCertificateEx(inst, host, port, commonName, subject, issuer, fingerprint, flags);
     }
     public static int OnVerifyChangedCertificateEx(long inst, String host, long port, String commonName, String subject, String issuer, String fingerprint, String oldSubject, String oldIssuer, String oldFingerprint, long flags) {
-        if (uiListener == null) return 0;
-        return uiListener.OnVerifyChangedCertificateEx(inst, host, port, commonName, subject, issuer, fingerprint, oldSubject, oldIssuer, oldFingerprint, flags);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l == null) return 0;
+        return l.OnVerifyChangedCertificateEx(inst, host, port, commonName, subject, issuer, fingerprint, oldSubject, oldIssuer, oldFingerprint, flags);
     }
 
     public static void OnGraphicsUpdate(long inst, int x, int y, int w, int h) {
-        if (uiListener != null) uiListener.OnGraphicsUpdate(inst, x, y, w, h);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnGraphicsUpdate(inst, x, y, w, h);
     }
     public static void OnGraphicsResize(long inst, int width, int height, int bpp) {
-        if (uiListener != null) uiListener.OnGraphicsResize(inst, width, height, bpp);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnGraphicsResize(inst, width, height, bpp);
     }
     // android_post_connect() emits OnSettingsChanged right before OnConnectionSuccess.
     // If this method is missing the native java_callback_void leaves a pending
@@ -236,19 +275,24 @@ public class LibFreeRDP {
     // (OnConnectionSuccess) is rejected by ART's strict JNI check → SIGABRT on connect.
     // Route it through OnGraphicsResize so Kotlin allocates the framebuffer eagerly.
     public static void OnSettingsChanged(long inst, int width, int height, int bpp) {
-        if (uiListener != null) uiListener.OnGraphicsResize(inst, width, height, bpp);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnGraphicsResize(inst, width, height, bpp);
     }
     public static void OnRemoteClipboardChanged(long inst, String data) {
-        if (uiListener != null) uiListener.OnRemoteClipboardChanged(inst, data);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnRemoteClipboardChanged(inst, data);
     }
     public static void OnPointerSet(long inst, int[] pixels, int width, int height, int hotX, int hotY) {
-        if (uiListener != null) uiListener.OnPointerSet(inst, pixels, width, height, hotX, hotY);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnPointerSet(inst, pixels, width, height, hotX, hotY);
     }
     public static void OnPointerSetNull(long inst) {
-        if (uiListener != null) uiListener.OnPointerSetNull(inst);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnPointerSetNull(inst);
     }
     public static void OnPointerSetDefault(long inst) {
-        if (uiListener != null) uiListener.OnPointerSetDefault(inst);
+        UIEventListener l = uiEventListenerFor(inst);
+        if (l != null) l.OnPointerSetDefault(inst);
     }
 
     // ============================================================

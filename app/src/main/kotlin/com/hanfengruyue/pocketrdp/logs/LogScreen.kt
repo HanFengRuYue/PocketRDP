@@ -36,11 +36,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hanfengruyue.pocketrdp.R
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -54,6 +56,11 @@ fun LogScreen(onClose: () -> Unit) {
     val context = LocalContext.current
     val entries by PocketLogger.entries.collectAsStateWithLifecycle()
     var levelFilter by remember { mutableStateOf<PocketLogger.Level?>(null) }
+    val backDescription = stringResource(R.string.cd_back)
+    val exportDescription = stringResource(R.string.logs_cd_export)
+    val clearDescription = stringResource(R.string.logs_cd_clear)
+    val exportChooserTitle = stringResource(R.string.logs_export_chooser)
+    val exportSubject = stringResource(R.string.logs_share_subject)
 
     val filtered by remember(levelFilter) {
         derivedStateOf {
@@ -71,10 +78,10 @@ fun LogScreen(onClose: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("日志") },
+                title = { Text(stringResource(R.string.logs_title)) },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = backDescription)
                     }
                 },
                 actions = {
@@ -88,15 +95,15 @@ fun LogScreen(onClose: () -> Unit) {
                         val share = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             putExtra(Intent.EXTRA_STREAM, uri)
-                            putExtra(Intent.EXTRA_SUBJECT, "PocketRDP log")
+                            putExtra(Intent.EXTRA_SUBJECT, exportSubject)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        context.startActivity(Intent.createChooser(share, "导出日志"))
+                        context.startActivity(Intent.createChooser(share, exportChooserTitle))
                     }) {
-                        Icon(Icons.Default.Share, contentDescription = "导出")
+                        Icon(Icons.Default.Share, contentDescription = exportDescription)
                     }
                     IconButton(onClick = { PocketLogger.clear() }) {
-                        Icon(Icons.Default.Clear, contentDescription = "清空")
+                        Icon(Icons.Default.Clear, contentDescription = clearDescription)
                     }
                 },
             )
@@ -107,7 +114,11 @@ fun LogScreen(onClose: () -> Unit) {
             if (filtered.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (entries.isEmpty()) "尚无日志记录" else "当前筛选下无匹配条目",
+                        if (entries.isEmpty()) {
+                            stringResource(R.string.logs_empty)
+                        } else {
+                            stringResource(R.string.logs_empty_filter)
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -134,7 +145,7 @@ private fun LevelFilterRow(current: PocketLogger.Level?, onPick: (PocketLogger.L
         FilterChip(
             selected = current == null,
             onClick = { onPick(null) },
-            label = { Text("全部") },
+            label = { Text(stringResource(R.string.logs_filter_all)) },
         )
         PocketLogger.Level.entries.forEach { lvl ->
             FilterChip(

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -101,6 +103,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -111,6 +114,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
@@ -131,12 +137,29 @@ import kotlinx.coroutines.withTimeoutOrNull
 fun SessionScreen(
     connectionId: Long,
     onClose: () -> Unit,
+    onDisconnect: () -> Unit = onClose,
+    toolbarAlpha: Float = CHROME_ALPHA,
+    controlAlpha: Float = CHROME_ALPHA,
     viewModel: SessionViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rdpClient = viewModel.rdpClient
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val toolbarBg = Color.Black.copy(alpha = toolbarAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
+    val controlBg = Color.Black.copy(alpha = controlAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
+    BackHandler { onClose() }
+    LaunchedEffect(connectionId) { viewModel.ensureStarted(connectionId) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.retryAfterAllFilesAccess()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val controller = remember(rdpClient) {
         RdpInputController(
@@ -252,8 +275,8 @@ fun SessionScreen(
     // mid-session needs a reconnect — the dialog says so.
     var allFilesPromptShown by remember { mutableStateOf(false) }
     var showAllFilesDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(state.status, state.filesRedirectEnabled) {
-        if (state.status is SessionConnectionStatus.Connected &&
+    LaunchedEffect(state.status, state.filesRedirectEnabled, state.allFilesAccessRequired) {
+        if ((state.allFilesAccessRequired || state.status is SessionConnectionStatus.Connected) &&
             state.filesRedirectEnabled && !allFilesPromptShown &&
             !Environment.isExternalStorageManager()
         ) {
@@ -310,6 +333,8 @@ fun SessionScreen(
                             host = state.connectionHost,
                             stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
                             lastError = state.lastError,
+                            menuContainerColor = toolbarBg,
+                            menuContentColor = TOOLBAR_CONTENT,
                             onErrorClick = {
                                 val err = state.lastError ?: return@SessionStatusTitle
                                 scope.launch {
@@ -324,36 +349,36 @@ fun SessionScreen(
                     },
                     navigationIcon = {
                         IconButton(onClick = onClose) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.session_cd_back))
                         }
                     },
                     actions = {
                         IconButton(onClick = viewModel::toggleIme) {
                             Icon(
                                 imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
-                                contentDescription = "键盘",
+                                contentDescription = stringResource(R.string.session_cd_keyboard),
                             )
                         }
                         IconButton(onClick = viewModel::toggleMode) {
                             Icon(
                                 imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp,
-                                contentDescription = "切换输入模式",
+                                contentDescription = stringResource(R.string.session_cd_switch_input_mode),
                             )
                         }
                         IconButton(onClick = viewModel::toggleImmersive) {
                             Icon(
                                 imageVector = Icons.Default.Fullscreen,
-                                contentDescription = "全屏",
+                                contentDescription = stringResource(R.string.session_cd_fullscreen),
                             )
                         }
-                        IconButton(onClick = { viewModel.disconnect(); onClose() }) {
-                            Icon(Icons.Default.Close, contentDescription = "断开")
+                        IconButton(onClick = { viewModel.disconnect(); onDisconnect() }) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.session_cd_disconnect))
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         // Solid black bar, white content (用户需求: 工具栏改黑底白字，不要半透明灰玻璃).
-                        containerColor = TOOLBAR_BG,
-                        scrolledContainerColor = TOOLBAR_BG,
+                        containerColor = toolbarBg,
+                        scrolledContainerColor = toolbarBg,
                         titleContentColor = TOOLBAR_CONTENT,
                         navigationIconContentColor = TOOLBAR_CONTENT,
                         actionIconContentColor = TOOLBAR_CONTENT,
@@ -432,10 +457,10 @@ fun SessionScreen(
             ) {
                 SmallFloatingActionButton(
                     onClick = viewModel::toggleImmersive,
-                    containerColor = TOOLBAR_BG,
+                    containerColor = toolbarBg,
                     contentColor = TOOLBAR_CONTENT,
                 ) {
-                    Icon(Icons.Default.FullscreenExit, contentDescription = "退出全屏")
+                    Icon(Icons.Default.FullscreenExit, contentDescription = stringResource(R.string.session_cd_exit_fullscreen))
                 }
             }
 
@@ -459,6 +484,7 @@ fun SessionScreen(
                 ZoomControls(
                     controller = controller,
                     containerSize = overlaySize,
+                    containerColor = controlBg,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .windowInsetsPadding(WindowInsets.displayCutout)
@@ -478,6 +504,7 @@ fun SessionScreen(
                 if (state.mode == InputMode.TOUCH) {
                     PanHandle(
                         controller = controller,
+                        containerColor = controlBg,
                         modifier = Modifier.align(Alignment.Center),
                     )
                 }
@@ -503,6 +530,7 @@ fun SessionScreen(
                 SessionToolbar(
                     viewModel = viewModel,
                     state = state,
+                    containerColor = toolbarBg,
                     onBarHeightChanged = { functionToolbarHeightPx.intValue = it },
                 )
             }
@@ -530,15 +558,12 @@ fun SessionScreen(
 private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("允许后台保活？") },
+        title = { Text(stringResource(R.string.session_battery_title)) },
         text = {
-            Text(
-                "为了在你切到其他应用或锁屏时保持这个远程桌面连接不断开，建议把 PocketRDP 加入电池优化白名单。" +
-                    "否则系统在省电时可能会切断后台连接。",
-            )
+            Text(stringResource(R.string.session_battery_message))
         },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("去允许") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("暂不") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.session_action_allow)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.session_action_not_now)) } },
     )
 }
 
@@ -546,15 +571,12 @@ private fun BatteryOptimizationDialog(onConfirm: () -> Unit, onDismiss: () -> Un
 private fun AllFilesAccessDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("允许访问所有文件？") },
+        title = { Text(stringResource(R.string.session_all_files_title)) },
         text = {
-            Text(
-                "「文件夹重定向」会把你手机的整个存储挂载到被控电脑（资源管理器里的「PocketRDP」盘）。" +
-                    "这需要授予 PocketRDP「所有文件访问」权限。授权后请重新连接以挂载磁盘。",
-            )
+            Text(stringResource(R.string.session_all_files_message))
         },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("去授权") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("暂不") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.session_action_grant)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.session_action_not_now)) } },
     )
 }
 
@@ -596,6 +618,8 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
 // pills like dark glass, while the white content stays legible. Shared by the TopAppBar, the function-key
 // bar, the zoom pill, the move handle and the exit FAB. 0.7 keeps it clearly see-through yet readable.
 private const val CHROME_ALPHA = 0.7f
+private const val MIN_CHROME_ALPHA = 0.35f
+private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
 private val TOOLBAR_CONTENT = Color.White
 // Outline alpha for an inactive (un-pressed) key pill on the translucent black bar.
@@ -717,6 +741,7 @@ private fun SessionCanvas(
     onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
     val current by buffer.current.collectAsStateWithLifecycle(initialValue = null)
+    val hasPublishedFrame by buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
     var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
     var viewSize by remember { mutableStateOf(0 to 0) }
     // Keep these as State<...> (NOT `by`): read .value ONLY inside the graphicsLayer / Canvas draw
@@ -758,12 +783,13 @@ private fun SessionCanvas(
             .sessionGestures(controller = controller),
         contentAlignment = Alignment.Center,
     ) {
-        if (current == null) {
+        if (!hasPublishedFrame) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("等待远端帧…", color = Color.White)
+                CircularProgressIndicator(color = Color.White)
+                Text(stringResource(R.string.session_loading_remote_frame), color = Color.White)
             }
         }
 
@@ -791,7 +817,7 @@ private fun SessionCanvas(
         // Trackpad-mode cursor overlay. The native FreeRDP cursor pixels aren't currently
         // routed up to the UI (OnPointerSet is unused) so without this the user has no
         // visual reference for where a click will land in trackpad mode.
-        if (mode == InputMode.TRACKPAD && current != null && bmW > 0f && bmH > 0f) {
+        if (mode == InputMode.TRACKPAD && hasPublishedFrame && bmW > 0f && bmH > 0f) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -854,6 +880,7 @@ private val navKeyVks: List<Pair<String, Int>> = listOf(
 private fun SessionToolbar(
     viewModel: SessionViewModel,
     state: SessionUiState,
+    containerColor: Color,
     onBarHeightChanged: (Int) -> Unit,
 ) {
     Box(
@@ -864,7 +891,7 @@ private fun SessionToolbar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(TOOLBAR_BG)
+                .background(containerColor)
                 .onSizeChanged { onBarHeightChanged(it.height) }
                 // 边缘渐隐：哪一侧还有可滑到的键，那侧就淡出，提示"可左右滑动看更多键"（用户反馈：功能键
                 // 栏一排显示不全、看不出能滑）。纯绘制层、不拦截指针，滚动/点击/穿透兜底都不受影响。必须在
@@ -934,6 +961,7 @@ private const val ZOOM_RELOCATE_LONG_PRESS_MS = 350L
 private fun ZoomControls(
     controller: RdpInputController,
     containerSize: IntSize,
+    containerColor: Color,
     modifier: Modifier = Modifier,
 ) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
@@ -944,7 +972,6 @@ private fun ZoomControls(
     // The pill remembers where it was dragged (long-press-then-drag relocates it, like the move handle).
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
     var pillSize by remember { mutableStateOf(IntSize.Zero) }
-    val containerColor = TOOLBAR_BG
     // Re-clamp on container/pill reflow (soft keyboard, rotation) so the pill stays reachable.
     LaunchedEffect(containerSize, pillSize) {
         handleOffset = clampPillOffset(handleOffset, 0f, 0f, containerSize, pillSize)
@@ -974,7 +1001,7 @@ private fun ZoomControls(
         ) {
             Icon(
                 imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.ZoomIn,
-                contentDescription = "缩放：上滑放大、下滑缩小，双击复位；长按后拖动可移动此按钮",
+                contentDescription = stringResource(R.string.session_zoom_cd),
                 tint = TOOLBAR_CONTENT,
             )
             // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
@@ -1116,7 +1143,11 @@ private const val PAN_HANDLE_KEYBOARD_GAIN = 2.5f
  * its own pointer, so neither panning nor relocating leaks into the canvas gesture surface behind it.
  */
 @Composable
-private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modifier) {
+private fun PanHandle(
+    controller: RdpInputController,
+    containerColor: Color,
+    modifier: Modifier = Modifier,
+) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
     // remember is called unconditionally (before the early return) so the slot table stays stable;
     // the handle keeps its dragged-to position across hide/show.
@@ -1128,7 +1159,6 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
     val keyboardLifted = transform.offsetY < 0f
     if (!zoomed && !keyboardLifted) return
 
-    val containerColor = TOOLBAR_BG
     Surface(
         modifier = modifier
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
@@ -1189,7 +1219,7 @@ private fun PanHandle(controller: RdpInputController, modifier: Modifier = Modif
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
-                contentDescription = "拖动以移动放大后的画面；长按后拖动可移动此按钮",
+                contentDescription = stringResource(R.string.session_pan_cd),
                 tint = TOOLBAR_CONTENT,
             )
         }

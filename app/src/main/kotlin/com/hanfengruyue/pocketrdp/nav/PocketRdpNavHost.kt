@@ -16,20 +16,22 @@ import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.feature.connections.edit.ConnectionEditScreen
 import com.hanfengruyue.pocketrdp.feature.connections.list.ConnectionListScreen
 import com.hanfengruyue.pocketrdp.feature.connections.nav.ConnectionsRoutes
-import com.hanfengruyue.pocketrdp.feature.session.SessionScreen
 import com.hanfengruyue.pocketrdp.keepalive.KeepAliveGuideScreen
 import com.hanfengruyue.pocketrdp.keepalive.OemKeepAlive
 import com.hanfengruyue.pocketrdp.logs.LogScreen
+import com.hanfengruyue.pocketrdp.settings.SettingsScreen
 
 object AppRoutes {
-    const val SESSION_PATTERN = "session/{id}"
     const val LOGS = "logs"
+    const val SETTINGS = "settings"
     const val KEEPALIVE_GUIDE = "keepalive_guide"
-    fun session(id: Long): String = "session/$id"
 }
 
 @Composable
-fun PocketRdpNavHost() {
+fun PocketRdpNavHost(
+    activeSessionIds: Set<Long>,
+    onConnect: (Long) -> Unit,
+) {
     val navController = rememberNavController()
     NavHost(
         navController = navController,
@@ -48,10 +50,19 @@ fun PocketRdpNavHost() {
             ConnectionListScreen(
                 onAddNew = { navController.navigate(ConnectionsRoutes.edit()) },
                 onEdit = { id -> navController.navigate(ConnectionsRoutes.edit(id)) },
-                onConnect = { id -> navController.navigate(AppRoutes.session(id)) },
-                onOpenLogs = { navController.navigate(AppRoutes.LOGS) },
+                onConnect = onConnect,
+                onOpenSettings = { navController.navigate(AppRoutes.SETTINGS) },
                 onOpenKeepAliveGuide = { navController.navigate(AppRoutes.KEEPALIVE_GUIDE) },
                 showKeepAliveHint = showKeepAliveHint,
+                activeSessionIds = activeSessionIds,
+            )
+        }
+
+        composable(AppRoutes.SETTINGS) {
+            SettingsScreen(
+                onClose = { navController.popBackStack() },
+                onOpenKeepAlive = { navController.navigate(AppRoutes.KEEPALIVE_GUIDE) },
+                onOpenLogs = { navController.navigate(AppRoutes.LOGS) },
             )
         }
 
@@ -76,15 +87,5 @@ fun PocketRdpNavHost() {
             ConnectionEditScreen(onClose = { navController.popBackStack() })
         }
 
-        composable(
-            route = AppRoutes.SESSION_PATTERN,
-            arguments = listOf(navArgument("id") { type = NavType.LongType }),
-        ) { entry ->
-            val id = entry.arguments?.getLong("id") ?: 0L
-            SessionScreen(
-                connectionId = id,
-                onClose = { navController.popBackStack() },
-            )
-        }
     }
 }

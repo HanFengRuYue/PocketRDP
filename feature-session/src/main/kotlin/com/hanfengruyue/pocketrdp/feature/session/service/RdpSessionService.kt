@@ -88,7 +88,7 @@ class RdpSessionService : Service() {
 
     private var connectionName: String = ""
     private var connectionHost: String = ""
-    private var lastStatusText: String = "正在连接…"
+    private var lastStatusText: String? = null
 
     // Not a bound service — clients talk to it only via start()/stop() intents.
     override fun onBind(intent: Intent?): IBinder? = null
@@ -100,9 +100,11 @@ class RdpSessionService : Service() {
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 // IMPORTANCE_LOW: a silent, non-intrusive persistent status notification.
                 val channel = NotificationChannel(
-                    CHANNEL_ID, "远程会话保活", NotificationManager.IMPORTANCE_LOW,
+                    CHANNEL_ID,
+                    getString(R.string.session_notification_channel_name),
+                    NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "保持远程桌面连接在后台不断开时显示的常驻通知"
+                    description = getString(R.string.session_notification_channel_description)
                     setShowBadge(false)
                 }
                 nm.createNotificationChannel(channel)
@@ -115,7 +117,7 @@ class RdpSessionService : Service() {
             ACTION_DISCONNECT -> {
                 // The 断开 notification action: a deliberate user teardown. disconnect() emits
                 // Disconnected(reason="user"), which our own observer turns into stopSelf().
-                PocketLogger.i(TAG, "notification 断开 action → disconnect()")
+                PocketLogger.i(TAG, "notification disconnect action -> disconnect()")
                 rdpClient.disconnect()
             }
             else -> {
@@ -133,7 +135,12 @@ class RdpSessionService : Service() {
                 } else {
                     0
                 }
-                ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(lastStatusText), type)
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIF_ID,
+                    buildNotification(lastStatusText ?: getString(R.string.session_notification_status_connecting)),
+                    type,
+                )
                 observeEvents()
             }
         }
@@ -150,9 +157,9 @@ class RdpSessionService : Service() {
         rdpClient.events
             .onEach { event ->
                 when (event) {
-                    is RdpEvent.Connecting -> updateStatus("正在连接…")
+                    is RdpEvent.Connecting -> updateStatus(getString(R.string.session_notification_status_connecting))
                     is RdpEvent.Connected -> {
-                        updateStatus("已连接")
+                        updateStatus(getString(R.string.session_notification_status_connected))
                         acquireLocks()
                     }
                     is RdpEvent.Disconnected -> {
@@ -162,12 +169,12 @@ class RdpSessionService : Service() {
                             shutdown()
                         } else {
                             // Unexpected drop — the ViewModel is auto-reconnecting; stay alive.
-                            updateStatus("连接中断，正在重连…")
+                            updateStatus(getString(R.string.session_notification_status_reconnecting))
                         }
                     }
                     is RdpEvent.Failed -> {
                         releaseLocks()
-                        updateStatus("连接失败")
+                        updateStatus(getString(R.string.session_notification_status_failed))
                     }
                     else -> Unit
                 }
@@ -233,7 +240,8 @@ class RdpSessionService : Service() {
             Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val title = connectionName.takeIf { it.isNotBlank() } ?: "远程桌面会话"
+        val title = connectionName.takeIf { it.isNotBlank() }
+            ?: getString(R.string.session_notification_title)
         val text = connectionHost.takeIf { it.isNotBlank() }
             ?.let { "$statusText · $it" } ?: statusText
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -245,7 +253,7 @@ class RdpSessionService : Service() {
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(0, "断开", disconnectPi)
+            .addAction(0, getString(R.string.session_notification_disconnect_action), disconnectPi)
             .build()
     }
 

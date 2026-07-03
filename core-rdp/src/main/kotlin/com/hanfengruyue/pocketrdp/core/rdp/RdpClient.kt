@@ -14,7 +14,6 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import javax.inject.Inject
-import javax.inject.Singleton
 import kotlin.math.roundToInt
 
 /**
@@ -28,7 +27,6 @@ import kotlin.math.roundToInt
  * dirty region is via OnGraphicsUpdate, and we pull pixels into our own Bitmap by calling
  * LibFreeRDP.updateGraphics(inst, bitmap, x, y, w, h). See android_freerdp.c.
  */
-@Singleton
 class RdpClient @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
@@ -127,6 +125,8 @@ class RdpClient @Inject constructor(
             return
         }
         nativeInstance = inst
+        LibFreeRDP.registerEventListener(inst, eventListener)
+        LibFreeRDP.registerUIEventListener(inst, uiEventListener)
         keyEventLogCount = 0
         unicodeEventLogCount = 0
         pendingInputAtMs = 0L
@@ -145,6 +145,8 @@ class RdpClient @Inject constructor(
             val err = LibFreeRDP.freerdp_get_last_error_string(inst)
             PocketLogger.e(TAG, "freerdp_parse_arguments failed (last_error='$err')")
             emit(RdpEvent.Failed("freerdp_parse_arguments failed: $err"))
+            LibFreeRDP.unregisterEventListener(inst)
+            LibFreeRDP.unregisterUIEventListener(inst)
             LibFreeRDP.freeInstance(inst)
             nativeInstance = 0L
             return
@@ -158,6 +160,8 @@ class RdpClient @Inject constructor(
                 val err = LibFreeRDP.freerdp_get_last_error_string(inst)
                 PocketLogger.e(TAG, "freerdp_connect returned false (last_error='$err')")
                 emit(RdpEvent.Failed("freerdp_connect returned false: $err"))
+                LibFreeRDP.unregisterEventListener(inst)
+                LibFreeRDP.unregisterUIEventListener(inst)
             }
         }, "freerdp-connect-$inst").also { it.isDaemon = true; it.start() }
     }
@@ -166,6 +170,8 @@ class RdpClient @Inject constructor(
         val inst = nativeInstance
         if (inst == 0L) return
         PocketLogger.i(TAG, "disconnect() inst=$inst")
+        LibFreeRDP.unregisterEventListener(inst)
+        LibFreeRDP.unregisterUIEventListener(inst)
         Thread {
             LibFreeRDP.disconnect(inst)
             LibFreeRDP.freeInstance(inst)
@@ -513,8 +519,6 @@ class RdpClient @Inject constructor(
 
     init {
         if (LibFreeRDP.isNativeReady()) {
-            LibFreeRDP.setEventListener(eventListener)
-            LibFreeRDP.setUIEventListener(uiEventListener)
             PocketLogger.i(TAG, "FreeRDP native ready ver=${LibFreeRDP.freerdp_get_version()} h264=${LibFreeRDP.hasH264Support()}")
         } else {
             PocketLogger.w(TAG, "Native FreeRDP library not loaded; running in UI-stub mode")

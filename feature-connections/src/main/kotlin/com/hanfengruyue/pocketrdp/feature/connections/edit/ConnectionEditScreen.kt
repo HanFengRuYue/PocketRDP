@@ -1,6 +1,8 @@
 package com.hanfengruyue.pocketrdp.feature.connections.edit
 
+import android.os.Environment
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,18 +56,18 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
+import com.hanfengruyue.pocketrdp.feature.connections.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,6 +77,25 @@ fun ConnectionEditScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val inputModeOptions = listOf(
+        0 to stringResource(R.string.connection_input_mode_trackpad),
+        1 to stringResource(R.string.connection_input_mode_touch),
+    )
+    val dynamicResMaxOptions = listOf(
+        0 to stringResource(R.string.connection_follow_device),
+        720 to "720p",
+        1080 to "1080p",
+        1440 to "1440p",
+    )
+    val codecTierOptions = listOf(
+        false to stringResource(R.string.connection_quality_first),
+        true to stringResource(R.string.connection_smooth_first),
+    )
+    val soundModeOptions = listOf(
+        1 to stringResource(R.string.connection_audio_client),
+        2 to stringResource(R.string.connection_audio_server),
+        0 to stringResource(R.string.connection_audio_disabled),
+    )
 
     LaunchedEffect(state.saved) {
         if (state.saved) onClose()
@@ -83,10 +104,21 @@ fun ConnectionEditScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (state.id == null) "新建连接" else "编辑连接") },
+                title = {
+                    Text(
+                        if (state.id == null) {
+                            stringResource(R.string.connection_edit_title_new)
+                        } else {
+                            stringResource(R.string.connection_edit_title_edit)
+                        },
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.connection_action_back),
+                        )
                     }
                 },
             )
@@ -100,78 +132,22 @@ fun ConnectionEditScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SectionTitle("基础信息", Icons.Default.Badge)
-            OutlinedTextField(
-                value = state.name,
-                onValueChange = viewModel::updateName,
-                label = { Text("名称（仅本地显示）") },
-                leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = state.host,
-                    onValueChange = viewModel::updateHost,
-                    label = { Text("主机 IP 或域名") },
-                    leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = state.port,
-                    onValueChange = viewModel::updatePort,
-                    label = { Text("端口") },
-                    leadingIcon = { Icon(Icons.Default.Numbers, contentDescription = null) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.width(150.dp),
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = state.username,
-                    onValueChange = viewModel::updateUsername,
-                    label = { Text("用户名") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = state.domain,
-                    onValueChange = viewModel::updateDomain,
-                    label = { Text("域（可选）") },
-                    leadingIcon = { Icon(Icons.Default.Domain, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            OutlinedTextField(
-                value = state.password,
-                onValueChange = viewModel::updatePassword,
-                label = {
-                    Text(if (state.hasExistingPassword) "密码（留空保持不变）" else "密码")
-                },
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            SectionTitle(stringResource(R.string.connection_section_basic), Icons.Default.Badge)
+            BasicInfoFields(state = state, viewModel = viewModel)
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            SectionTitle("显示与画质", Icons.Default.Tune)
+            SectionTitle(stringResource(R.string.connection_section_display), Icons.Default.Tune)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RowLabel(Icons.Default.Palette, "色深", Modifier.weight(1f))
+                RowLabel(Icons.Default.Palette, stringResource(R.string.connection_color_depth), Modifier.weight(1f))
                 listOf(16, 24, 32).forEach { depth ->
                     AssistChip(
                         onClick = { viewModel.updateColorDepth(depth) },
-                        label = { Text("${depth}bit") },
+                        label = { Text(stringResource(R.string.connection_color_depth_bits, depth)) },
                         leadingIcon = null,
                         enabled = state.colorDepth != depth,
                     )
@@ -180,7 +156,7 @@ fun ConnectionEditScreen(
 
             Column {
                 Text(
-                    "远程桌面缩放：${state.desktopScaleFactor}%",
+                    stringResource(R.string.connection_desktop_scale, state.desktopScaleFactor),
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Slider(
@@ -190,7 +166,7 @@ fun ConnectionEditScreen(
                     steps = 7,
                 )
                 Text(
-                    "远端 Windows 界面/字体显示倍率，非本地画面放大。",
+                    stringResource(R.string.connection_desktop_scale_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -201,19 +177,18 @@ fun ConnectionEditScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RowLabel(Icons.Default.Speed, "固定帧率", Modifier.weight(1f))
+                RowLabel(Icons.Default.Speed, stringResource(R.string.connection_fixed_frame_rate), Modifier.weight(1f))
                 frameRateOptions.forEach { fps ->
                     AssistChip(
                         onClick = { viewModel.updateFrameRate(fps) },
-                        label = { Text(if (fps == 0) "自动" else "$fps") },
+                        label = { Text(if (fps == 0) stringResource(R.string.connection_auto) else "$fps") },
                         leadingIcon = null,
                         enabled = state.targetFrameRate != fps,
                     )
                 }
             }
             Text(
-                "画面刷新帧率上限，不超过本机屏幕刷新率；实际帧率取决于被控电脑。" +
-                    "内网/低延迟建议选「自动」或 60/120：固定 30 会给每帧额外加最多约 33ms 的显示等待。",
+                stringResource(R.string.connection_fixed_frame_rate_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -223,7 +198,7 @@ fun ConnectionEditScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RowLabel(Icons.Default.TouchApp, "默认输入模式", Modifier.weight(1f))
+                RowLabel(Icons.Default.TouchApp, stringResource(R.string.connection_default_input_mode), Modifier.weight(1f))
                 inputModeOptions.forEach { (value, label) ->
                     AssistChip(
                         onClick = { viewModel.updateDefaultInputMode(value) },
@@ -233,14 +208,14 @@ fun ConnectionEditScreen(
                 }
             }
             Text(
-                "模拟鼠标=虚拟光标；直接触屏=原生触摸点。会话内可随时切换。",
+                stringResource(R.string.connection_default_input_mode_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             SwitchRow(
-                title = "启用 H.264 视频加速",
-                subtitle = "H.264 压缩画面，降低视频卡顿；优先硬解、回退软解。关闭则用 RemoteFX，需主机支持。",
+                title = stringResource(R.string.connection_h264_title),
+                subtitle = stringResource(R.string.connection_h264_desc),
                 checked = state.useH264,
                 onChange = viewModel::toggleH264,
                 icon = Icons.Default.Videocam,
@@ -251,7 +226,7 @@ fun ConnectionEditScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RowLabel(Icons.Default.HighQuality, "H.264 画质档", Modifier.weight(1f))
+                    RowLabel(Icons.Default.HighQuality, stringResource(R.string.connection_h264_tier), Modifier.weight(1f))
                     codecTierOptions.forEach { (avc420, label) ->
                         AssistChip(
                             onClick = { viewModel.updatePreferAvc420(avc420) },
@@ -261,14 +236,14 @@ fun ConnectionEditScreen(
                     }
                 }
                 Text(
-                    "流畅优先=AVC420，解码轻、延迟低；画质优先=AVC444 全彩，文字更清晰但更重。",
+                    stringResource(R.string.connection_h264_tier_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             SwitchRow(
-                title = "启用 GFX 图形管道",
-                subtitle = "RemoteFX 渐进编码；开启 H.264 时强制启用。",
+                title = stringResource(R.string.connection_gfx_title),
+                subtitle = stringResource(R.string.connection_gfx_desc),
                 // When H.264 is on, the H264 branch in buildCommandLine always emits /gfx:AVC444 and
                 // this toggle is bypassed — so lock it ON+disabled to reflect reality instead of
                 // showing a switch that silently does nothing (field bug: 关掉 GFX 却仍生效).
@@ -278,22 +253,22 @@ fun ConnectionEditScreen(
                 icon = Icons.Default.AutoAwesome,
             )
             SwitchRow(
-                title = "低延迟视觉",
-                subtitle = "关闭远端墙纸和主题特效，减轻每帧编码/解码负担。内网建议开启；纯视觉变化。",
+                title = stringResource(R.string.connection_low_latency_visuals_title),
+                subtitle = stringResource(R.string.connection_low_latency_visuals_desc),
                 checked = (state.performanceFlags and ConnectionEntity.PERF_LOW_LATENCY_VISUALS) != 0,
                 onChange = viewModel::toggleLowLatencyVisuals,
                 icon = Icons.Default.Bolt,
             )
             SwitchRow(
-                title = "动态分辨率",
-                subtitle = "屏幕旋转/拉伸时远端跟随调整",
+                title = stringResource(R.string.connection_dynamic_resolution_title),
+                subtitle = stringResource(R.string.connection_dynamic_resolution_desc),
                 checked = state.dynamicResolution,
                 enabled = !state.useCustomResolution,
                 onChange = viewModel::toggleDynamicRes,
                 icon = Icons.Default.AspectRatio,
             )
             if (state.dynamicResolution && !state.useCustomResolution) {
-                RowLabel(Icons.Default.AspectRatio, "动态分辨率上限")
+                RowLabel(Icons.Default.AspectRatio, stringResource(R.string.connection_dynamic_resolution_max))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -309,14 +284,14 @@ fun ConnectionEditScreen(
                     }
                 }
                 Text(
-                    "限制远端最高分辨率，避免高分屏拖慢被控电脑。跟随设备=按视图实际尺寸。",
+                    stringResource(R.string.connection_dynamic_resolution_max_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             SwitchRow(
-                title = "固定自定义分辨率",
-                subtitle = "远端固定为指定宽高（将关闭动态分辨率）。",
+                title = stringResource(R.string.connection_custom_resolution_title),
+                subtitle = stringResource(R.string.connection_custom_resolution_desc),
                 checked = state.useCustomResolution,
                 onChange = viewModel::toggleCustomResolution,
                 icon = Icons.Default.FitScreen,
@@ -330,7 +305,7 @@ fun ConnectionEditScreen(
                     OutlinedTextField(
                         value = state.customWidth,
                         onValueChange = viewModel::updateCustomWidth,
-                        label = { Text("宽度") },
+                        label = { Text(stringResource(R.string.connection_width)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.weight(1f),
@@ -339,7 +314,7 @@ fun ConnectionEditScreen(
                     OutlinedTextField(
                         value = state.customHeight,
                         onValueChange = viewModel::updateCustomHeight,
-                        label = { Text("高度") },
+                        label = { Text(stringResource(R.string.connection_height)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.weight(1f),
@@ -363,26 +338,26 @@ fun ConnectionEditScreen(
                 }
             }
             SwitchRow(
-                title = "UDP 多路传输",
-                subtitle = "需 frp/服务器在同一公网地址和端口开放 UDP；不支持或被阻断时回退 TCP。",
+                title = stringResource(R.string.connection_multitransport_title),
+                subtitle = stringResource(R.string.connection_multitransport_desc),
                 checked = state.useMultitransport,
                 onChange = viewModel::toggleMultitransport,
                 icon = Icons.Default.Bolt,
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            SectionTitle("重定向", Icons.Default.Cable)
+            SectionTitle(stringResource(R.string.connection_section_redirection), Icons.Default.Cable)
 
             SwitchRow(
-                title = "剪贴板双向同步",
-                subtitle = "手机与电脑间双向同步复制的文字（暂不支持图片）。",
+                title = stringResource(R.string.connection_clipboard_title),
+                subtitle = stringResource(R.string.connection_clipboard_desc),
                 checked = state.redirectClipboard,
                 onChange = viewModel::toggleClipboard,
                 icon = Icons.Default.ContentPaste,
             )
             SwitchRow(
-                title = "文件夹重定向",
-                subtitle = "把手机存储挂载为电脑里的「PocketRDP」盘，需「所有文件访问」权限。",
+                title = stringResource(R.string.connection_files_title),
+                subtitle = stringResource(R.string.connection_files_desc),
                 checked = state.redirectFiles,
                 onChange = { on ->
                     viewModel.toggleFiles(on)
@@ -395,8 +370,18 @@ fun ConnectionEditScreen(
                 },
                 icon = Icons.Default.Folder,
             )
+            if (state.redirectFiles && !Environment.isExternalStorageManager()) {
+                Text(
+                    stringResource(R.string.connection_files_permission_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = { requestAllFilesAccess(context) }) {
+                    Text(stringResource(R.string.connection_files_permission_action))
+                }
+            }
 
-            RowLabel(Icons.AutoMirrored.Filled.VolumeUp, "远程音频")
+            RowLabel(Icons.AutoMirrored.Filled.VolumeUp, stringResource(R.string.connection_audio_title))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -412,7 +397,7 @@ fun ConnectionEditScreen(
                 }
             }
             Text(
-                "控制端播放=声音传到手机；被控端播放=留在电脑；停用=不传输。",
+                stringResource(R.string.connection_audio_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -425,7 +410,7 @@ fun ConnectionEditScreen(
                     Column(modifier = Modifier.padding(12.dp)) {
                         state.errors.forEach { msg ->
                             Text(
-                                "• $msg",
+                                stringResource(R.string.connection_error_bullet, connectionEditErrorText(msg)),
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
@@ -440,9 +425,113 @@ fun ConnectionEditScreen(
                 enabled = !state.saving,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (state.saving) "保存中…" else "保存")
+                Text(
+                    if (state.saving) {
+                        stringResource(R.string.connection_action_saving)
+                    } else {
+                        stringResource(R.string.connection_action_save)
+                    },
+                )
             }
             Spacer(Modifier.size(40.dp))
+        }
+    }
+}
+
+@Composable
+private fun BasicInfoFields(state: ConnectionEditUiState, viewModel: ConnectionEditViewModel) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 480.dp
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(
+                value = state.name,
+                onValueChange = viewModel::updateName,
+                label = { Text(stringResource(R.string.connection_field_name)) },
+                leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = state.host,
+                onValueChange = viewModel::updateHost,
+                label = { Text(stringResource(R.string.connection_field_host)) },
+                leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (compact) {
+                OutlinedTextField(
+                    value = state.port,
+                    onValueChange = viewModel::updatePort,
+                    label = { Text(stringResource(R.string.connection_field_port)) },
+                    leadingIcon = { Icon(Icons.Default.Numbers, contentDescription = null) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = state.username,
+                    onValueChange = viewModel::updateUsername,
+                    label = { Text(stringResource(R.string.connection_field_username)) },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = state.domain,
+                    onValueChange = viewModel::updateDomain,
+                    label = { Text(stringResource(R.string.connection_field_domain)) },
+                    leadingIcon = { Icon(Icons.Default.Domain, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = state.port,
+                        onValueChange = viewModel::updatePort,
+                        label = { Text(stringResource(R.string.connection_field_port)) },
+                        leadingIcon = { Icon(Icons.Default.Numbers, contentDescription = null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.width(150.dp),
+                    )
+                    OutlinedTextField(
+                        value = state.username,
+                        onValueChange = viewModel::updateUsername,
+                        label = { Text(stringResource(R.string.connection_field_username)) },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                OutlinedTextField(
+                    value = state.domain,
+                    onValueChange = viewModel::updateDomain,
+                    label = { Text(stringResource(R.string.connection_field_domain)) },
+                    leadingIcon = { Icon(Icons.Default.Domain, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            OutlinedTextField(
+                value = state.password,
+                onValueChange = viewModel::updatePassword,
+                label = {
+                    Text(
+                        if (state.hasExistingPassword) {
+                            stringResource(R.string.connection_field_password_keep)
+                        } else {
+                            stringResource(R.string.connection_field_password)
+                        },
+                    )
+                },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -537,20 +626,18 @@ private fun SwitchRow(
     }
 }
 
+@Composable
+private fun connectionEditErrorText(error: ConnectionEditError): String = stringResource(
+    when (error) {
+        ConnectionEditError.NAME_REQUIRED -> R.string.connection_error_name_required
+        ConnectionEditError.HOST_REQUIRED -> R.string.connection_error_host_required
+        ConnectionEditError.PORT_INVALID -> R.string.connection_error_port_invalid
+        ConnectionEditError.USERNAME_REQUIRED -> R.string.connection_error_username_required
+        ConnectionEditError.PASSWORD_REQUIRED -> R.string.connection_error_password_required
+        ConnectionEditError.CUSTOM_WIDTH_INVALID -> R.string.connection_error_custom_width_invalid
+        ConnectionEditError.CUSTOM_HEIGHT_INVALID -> R.string.connection_error_custom_height_invalid
+    },
+)
+
 /** Fixed frame-rate presets shown as chips; 0 = 自动 (follow the device screen refresh rate). */
 private val frameRateOptions = listOf(0, 30, 60, 120)
-
-/** Default input-mode chips: value (entity.defaultInputMode) → label. 0 = TRACKPAD, 1 = TOUCH. */
-private val inputModeOptions = listOf(0 to "模拟鼠标", 1 to "直接触屏")
-
-/** Dynamic-resolution max-cap chips: short-edge px cap (entity.dynamicResMax) → label. 0 = 跟随设备. */
-private val dynamicResMaxOptions = listOf(0 to "跟随设备", 720 to "720p", 1080 to "1080p", 1440 to "1440p")
-
-/** H.264 codec-tier chips: preferAvc420 flag → label. false = 画质优先 (AVC444), true = 流畅优先 (AVC420). */
-private val codecTierOptions = listOf(false to "画质优先", true to "流畅优先")
-
-/**
- * 远程音频路由 chips: value (entity.soundMode) → label。
- * 1 = 控制端播放 (/audio-mode:redirect), 2 = 被控端播放 (/audio-mode:server), 0 = 停用 (/audio-mode:none)。
- */
-private val soundModeOptions = listOf(1 to "控制端播放", 2 to "被控端播放", 0 to "停用音频")

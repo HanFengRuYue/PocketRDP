@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_cd_back">Voltar</string>
+    <string name="session_cd_keyboard">Teclado</string>
+    <string name="session_cd_switch_input_mode">Alternar modo de entrada</string>
+    <string name="session_cd_fullscreen">Tela cheia</string>
+    <string name="session_cd_disconnect">Desconectar</string>
+    <string name="session_cd_exit_fullscreen">Sair da tela cheia</string>
+    <string name="session_cd_expand_status">Expandir informações da sessão</string>
+    <string name="session_loading_remote_frame">Aguardando imagem remota…</string>
+    <string name="session_battery_title">Permitir atividade em segundo plano?</string>
+    <string name="session_battery_message">Para manter esta conexão de área de trabalho remota ativa ao trocar de app ou bloquear a tela, adicione o PocketRDP à lista permitida da otimização de bateria. Caso contrário, o sistema pode cortar a conexão em segundo plano para economizar energia.</string>
+    <string name="session_action_allow">Permitir</string>
+    <string name="session_action_not_now">Agora não</string>
+    <string name="session_all_files_title">Permitir acesso a todos os arquivos?</string>
+    <string name="session_all_files_message">O redirecionamento de pastas monta todo o armazenamento do telefone no computador remoto como a unidade PocketRDP no Explorador de Arquivos. O PocketRDP precisa de acesso a todos os arquivos. Reconecte depois de conceder a permissão para montar a unidade.</string>
+    <string name="session_action_grant">Conceder</string>
+    <string name="session_zoom_cd">Zoom: deslize para cima para ampliar, para baixo para reduzir, toque duas vezes para redefinir, mantenha pressionado e arraste para mover este botão</string>
+    <string name="session_pan_cd">Arraste para mover a visualização ampliada; mantenha pressionado e arraste para mover este botão</string>
+
+    <string name="session_status_title_fallback">Sessão #%1$d</string>
+    <string name="session_status_host">Host: %1$s</string>
+    <string name="session_status_resolution">Resolução remota: %1$d×%2$d</string>
+    <string name="session_status_fps">Taxa de quadros: %1$d fps</string>
+    <string name="session_status_total_latency">Latência total: %1$s</string>
+    <string name="session_status_sticky_modifiers">Modificadores fixos: %1$s</string>
+    <string name="session_status_last_error">Erro mais recente: %1$s</string>
+    <string name="session_status_measuring">Medindo…</string>
+    <string name="session_status_idle">Não conectado</string>
+    <string name="session_status_connecting">Conectando…</string>
+    <string name="session_status_connected">Conectado</string>
+    <string name="session_status_disconnected">Desconectado (%1$s)</string>
+    <string name="session_status_failed">Falha na conexão</string>
+    <string name="session_status_unknown_reason">—</string>
+
+    <string name="session_notification_channel_name">Manter sessão remota ativa</string>
+    <string name="session_notification_channel_description">Notificação persistente exibida enquanto uma conexão de área de trabalho remota é mantida ativa em segundo plano</string>
+    <string name="session_notification_status_connecting">Conectando…</string>
+    <string name="session_notification_status_connected">Conectado</string>
+    <string name="session_notification_status_reconnecting">Conexão interrompida, reconectando…</string>
+    <string name="session_notification_status_failed">Falha na conexão</string>
+    <string name="session_notification_title">Sessão de área de trabalho remota</string>
+    <string name="session_notification_disconnect_action">Desconectar</string>
+</resources>
