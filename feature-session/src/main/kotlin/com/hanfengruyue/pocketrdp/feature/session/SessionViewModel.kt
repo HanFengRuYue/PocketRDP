@@ -7,6 +7,8 @@ import android.os.Environment
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferencesRepository
+import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
 import com.hanfengruyue.pocketrdp.core.data.thumbnail.ConnectionThumbnailStore
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
@@ -91,6 +93,7 @@ data class SessionUiState(
      */
     val filesRedirectEnabled: Boolean = false,
     val allFilesAccessRequired: Boolean = false,
+    val functionToolbarQuickIds: List<String> = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS,
     val lastError: String? = null,
 )
 
@@ -105,6 +108,7 @@ private val toolbarModifierOrder = listOf(
 class SessionViewModel @Inject constructor(
     val rdpClient: RdpClient,
     private val repository: ConnectionRepository,
+    private val preferencesRepository: AppPreferencesRepository,
     private val thumbnailStore: ConnectionThumbnailStore,
     @ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
@@ -223,11 +227,20 @@ class SessionViewModel @Inject constructor(
         val id = savedStateHandle.get<Long>("id") ?: 0L
         _state.update { it.copy(connectionId = id) }
         observeEvents()
+        observePreferences()
         startMetricsTicker()
         startLatencyProbe()
         startThumbnailCapture()
         startTypeConsumer()
         if (id > 0L) launchConnect(id)
+    }
+
+    private fun observePreferences() {
+        viewModelScope.launch {
+            preferencesRepository.preferences.collect { prefs ->
+                _state.update { it.copy(functionToolbarQuickIds = prefs.functionToolbarQuickIds) }
+            }
+        }
     }
 
     fun ensureStarted(connectionId: Long) {
@@ -756,6 +769,12 @@ class SessionViewModel @Inject constructor(
         rdpClient.sendKeyEvent(del, false)
         rdpClient.sendKeyEvent(alt, false)
         rdpClient.sendKeyEvent(ctrl, false)
+    }
+
+    fun setFunctionToolbarQuickIds(ids: List<String>) {
+        viewModelScope.launch {
+            preferencesRepository.setFunctionToolbarQuickIds(ids)
+        }
     }
 
     fun typeText(rawText: String) {

@@ -31,6 +31,7 @@ data class AppPreferences(
     val languageTag: String = LANGUAGE_SYSTEM,
     val toolbarAlpha: Float = DEFAULT_CHROME_ALPHA,
     val controlAlpha: Float = DEFAULT_CHROME_ALPHA,
+    val functionToolbarQuickIds: List<String> = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS,
 )
 
 @Singleton
@@ -52,6 +53,11 @@ class AppPreferencesRepository @Inject constructor(
                 languageTag = sanitizeLanguageTag(prefs[KEY_LANGUAGE_TAG]),
                 toolbarAlpha = (prefs[KEY_TOOLBAR_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
                 controlAlpha = (prefs[KEY_CONTROL_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
+                functionToolbarQuickIds = sanitizeFunctionToolbarQuickIds(
+                    prefs[KEY_FUNCTION_TOOLBAR_QUICK_IDS]
+                        ?.split(TOOLBAR_ID_SEPARATOR)
+                        .orEmpty(),
+                ),
             )
         }
 
@@ -78,11 +84,23 @@ class AppPreferencesRepository @Inject constructor(
         context.appPreferencesDataStore.edit { it[KEY_CONTROL_ALPHA] = alpha.coerceIn(MIN_ALPHA, MAX_ALPHA) }
     }
 
+    suspend fun setFunctionToolbarQuickIds(ids: List<String>) {
+        val sanitized = sanitizeFunctionToolbarQuickIds(ids)
+        context.appPreferencesDataStore.edit {
+            if (sanitized == DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS) {
+                it.remove(KEY_FUNCTION_TOOLBAR_QUICK_IDS)
+            } else {
+                it[KEY_FUNCTION_TOOLBAR_QUICK_IDS] = sanitized.joinToString(TOOLBAR_ID_SEPARATOR)
+            }
+        }
+    }
+
     private companion object {
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_LANGUAGE_TAG = stringPreferencesKey("language_tag")
         private val KEY_TOOLBAR_ALPHA = floatPreferencesKey("toolbar_alpha")
         private val KEY_CONTROL_ALPHA = floatPreferencesKey("control_alpha")
+        private val KEY_FUNCTION_TOOLBAR_QUICK_IDS = stringPreferencesKey("function_toolbar_quick_ids")
     }
 }
 
@@ -101,6 +119,28 @@ val SUPPORTED_LANGUAGE_TAGS = setOf(
 
 fun sanitizeLanguageTag(tag: String?): String =
     tag?.trim()?.takeIf { it in SUPPORTED_LANGUAGE_TAGS } ?: LANGUAGE_SYSTEM
+
+const val MAX_FUNCTION_TOOLBAR_QUICK_IDS = 32
+const val TOOLBAR_ID_SEPARATOR = ","
+val DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS = listOf(
+    "mod_ctrl",
+    "mod_alt",
+    "key_esc",
+    "key_tab",
+    "key_back",
+    "key_enter",
+)
+
+fun sanitizeFunctionToolbarQuickIds(ids: List<String>): List<String> {
+    val cleaned = ids
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && TOOLBAR_ID_SEPARATOR !in it }
+        .distinct()
+        .take(MAX_FUNCTION_TOOLBAR_QUICK_IDS)
+        .toList()
+    return cleaned.ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
+}
 
 const val DEFAULT_CHROME_ALPHA = 0.7f
 private const val MIN_ALPHA = 0.35f

@@ -1,6 +1,7 @@
 # Hilt
 -keep class dagger.hilt.** { *; }
 -keep class * extends dagger.hilt.android.lifecycle.HiltViewModel { *; }
+-dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
 
 # Room
 -keep class androidx.room.** { *; }

@@ -32,6 +32,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,12 +52,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
@@ -108,6 +113,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -121,6 +128,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
@@ -872,42 +881,45 @@ private fun SessionCanvas(
 
 /** F1–F12 keys for the function-key bar (label → Windows VK). */
 private val functionKeyRows: List<List<ToolbarKeySpec>> = listOf(
-    listOf("F1", "F2", "F3", "F4", "F5", "F6").mapIndexed { index, label ->
-        ToolbarKeySpec(label, ScancodeMap.VK.F1 + index)
+    listOf("F1", "F2", "F3", "F4").mapIndexed { index, label ->
+        ToolbarKeySpec("key_${label.lowercase()}", label, ScancodeMap.VK.F1 + index)
     },
-    listOf("F7", "F8", "F9", "F10", "F11", "F12").mapIndexed { index, label ->
-        ToolbarKeySpec(label, ScancodeMap.VK.F7 + index)
+    listOf("F5", "F6", "F7", "F8").mapIndexed { index, label ->
+        ToolbarKeySpec("key_${label.lowercase()}", label, ScancodeMap.VK.F5 + index)
+    },
+    listOf("F9", "F10", "F11", "F12").mapIndexed { index, label ->
+        ToolbarKeySpec("key_${label.lowercase()}", label, ScancodeMap.VK.F9 + index)
     },
 )
 
 /** Navigation / editing keys for the function-key bar (label → Windows VK). Arrows etc. carry KBDEXT. */
 private val navigationKeyRows: List<List<ToolbarKeySpec>> = listOf(
     listOf(
-        ToolbarKeySpec("↑", ScancodeMap.VK.UP),
-        ToolbarKeySpec("↓", ScancodeMap.VK.DOWN),
-        ToolbarKeySpec("←", ScancodeMap.VK.LEFT),
-        ToolbarKeySpec("→", ScancodeMap.VK.RIGHT),
+        ToolbarKeySpec("key_up", "↑", ScancodeMap.VK.UP),
+        ToolbarKeySpec("key_down", "↓", ScancodeMap.VK.DOWN),
+        ToolbarKeySpec("key_left", "←", ScancodeMap.VK.LEFT),
+        ToolbarKeySpec("key_right", "→", ScancodeMap.VK.RIGHT),
     ),
     listOf(
-        ToolbarKeySpec("Home", ScancodeMap.VK.HOME),
-        ToolbarKeySpec("End", ScancodeMap.VK.END),
-        ToolbarKeySpec("PgUp", ScancodeMap.VK.PAGE_UP),
-        ToolbarKeySpec("PgDn", ScancodeMap.VK.PAGE_DOWN),
+        ToolbarKeySpec("key_home", "Home", ScancodeMap.VK.HOME),
+        ToolbarKeySpec("key_end", "End", ScancodeMap.VK.END),
+        ToolbarKeySpec("key_pgup", "PgUp", ScancodeMap.VK.PAGE_UP),
+        ToolbarKeySpec("key_pgdn", "PgDn", ScancodeMap.VK.PAGE_DOWN),
     ),
     listOf(
-        ToolbarKeySpec("Ins", ScancodeMap.VK.INSERT),
-        ToolbarKeySpec("Del", ScancodeMap.VK.DELETE),
-        ToolbarKeySpec("Back", ScancodeMap.VK.BACK),
-        ToolbarKeySpec("Enter", ScancodeMap.VK.RETURN),
+        ToolbarKeySpec("key_ins", "Ins", ScancodeMap.VK.INSERT),
+        ToolbarKeySpec("key_del", "Del", ScancodeMap.VK.DELETE),
+        ToolbarKeySpec("key_back", "Back", ScancodeMap.VK.BACK),
+        ToolbarKeySpec("key_enter", "Enter", ScancodeMap.VK.RETURN),
     ),
 )
 
 private val quickKeyRows: List<List<ToolbarKeySpec>> = listOf(
     listOf(
-        ToolbarKeySpec("Esc", ScancodeMap.VK.ESCAPE),
-        ToolbarKeySpec("Tab", ScancodeMap.VK.TAB),
-        ToolbarKeySpec("Back", ScancodeMap.VK.BACK),
-        ToolbarKeySpec("Enter", ScancodeMap.VK.RETURN),
+        ToolbarKeySpec("key_esc", "Esc", ScancodeMap.VK.ESCAPE),
+        ToolbarKeySpec("key_tab", "Tab", ScancodeMap.VK.TAB),
+        ToolbarKeySpec("key_back", "Back", ScancodeMap.VK.BACK),
+        ToolbarKeySpec("key_enter", "Enter", ScancodeMap.VK.RETURN),
     ),
 )
 
@@ -923,32 +935,37 @@ private const val VK_Z = 0x5A
 
 private val quickComboRows: List<List<ToolbarComboSpec>> = listOf(
     listOf(
-        ToolbarComboSpec("Ctrl+C", VK_C, ScancodeMap.Modifier.CTRL),
-        ToolbarComboSpec("Ctrl+V", VK_V, ScancodeMap.Modifier.CTRL),
-        ToolbarComboSpec("Ctrl+X", VK_X, ScancodeMap.Modifier.CTRL),
-        ToolbarComboSpec("Ctrl+A", VK_A, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_ctrl_c", "Ctrl+C", VK_C, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_ctrl_v", "Ctrl+V", VK_V, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_ctrl_x", "Ctrl+X", VK_X, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_ctrl_a", "Ctrl+A", VK_A, ScancodeMap.Modifier.CTRL),
     ),
     listOf(
-        ToolbarComboSpec("Ctrl+Z", VK_Z, ScancodeMap.Modifier.CTRL),
-        ToolbarComboSpec("Ctrl+S", VK_S, ScancodeMap.Modifier.CTRL),
-        ToolbarComboSpec("Alt+Tab", ScancodeMap.VK.TAB, ScancodeMap.Modifier.ALT),
-        ToolbarComboSpec("Win+D", VK_D, ScancodeMap.Modifier.WIN),
+        ToolbarComboSpec("combo_ctrl_z", "Ctrl+Z", VK_Z, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_ctrl_s", "Ctrl+S", VK_S, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_alt_tab", "Alt+Tab", ScancodeMap.VK.TAB, ScancodeMap.Modifier.ALT),
+        ToolbarComboSpec("combo_win_d", "Win+D", VK_D, ScancodeMap.Modifier.WIN),
     ),
     listOf(
-        ToolbarComboSpec("Win+R", VK_R, ScancodeMap.Modifier.WIN),
-        ToolbarComboSpec("Ctrl+F", VK_F, ScancodeMap.Modifier.CTRL),
+        ToolbarComboSpec("combo_win_r", "Win+R", VK_R, ScancodeMap.Modifier.WIN),
+        ToolbarComboSpec("combo_ctrl_f", "Ctrl+F", VK_F, ScancodeMap.Modifier.CTRL),
     ),
     listOf(
-        ToolbarComboSpec("Ctrl+Shift+Esc", ScancodeMap.VK.ESCAPE, ScancodeMap.Modifier.CTRL or ScancodeMap.Modifier.SHIFT),
-        ToolbarComboSpec("CAD", null, 0, isCtrlAltDel = true),
+        ToolbarComboSpec(
+            "combo_ctrl_shift_esc",
+            "Ctrl+Shift+Esc",
+            ScancodeMap.VK.ESCAPE,
+            ScancodeMap.Modifier.CTRL or ScancodeMap.Modifier.SHIFT,
+        ),
+        ToolbarComboSpec("combo_cad", "CAD", null, 0, isCtrlAltDel = true),
     ),
 )
 
 private val toolbarModifierSpecs: List<ToolbarModifierSpec> = listOf(
-    ToolbarModifierSpec("Ctrl", ScancodeMap.Modifier.CTRL),
-    ToolbarModifierSpec("Alt", ScancodeMap.Modifier.ALT),
-    ToolbarModifierSpec("Shift", ScancodeMap.Modifier.SHIFT),
-    ToolbarModifierSpec("Win", ScancodeMap.Modifier.WIN),
+    ToolbarModifierSpec("mod_ctrl", "Ctrl", ScancodeMap.Modifier.CTRL),
+    ToolbarModifierSpec("mod_alt", "Alt", ScancodeMap.Modifier.ALT),
+    ToolbarModifierSpec("mod_shift", "Shift", ScancodeMap.Modifier.SHIFT),
+    ToolbarModifierSpec("mod_win", "Win", ScancodeMap.Modifier.WIN),
 )
 
 private enum class ToolbarPage(@StringRes val labelRes: Int) {
@@ -957,16 +974,84 @@ private enum class ToolbarPage(@StringRes val labelRes: Int) {
     FUNCTION(R.string.session_toolbar_page_function),
 }
 
-private data class ToolbarKeySpec(val label: String, val vk: Int)
+private data class ToolbarKeySpec(val id: String, val label: String, val vk: Int)
 
 private data class ToolbarComboSpec(
+    val id: String,
     val label: String,
     val keyVk: Int?,
     val modifiers: Int,
     val isCtrlAltDel: Boolean = false,
 )
 
-private data class ToolbarModifierSpec(val label: String, val flag: Int)
+private data class ToolbarModifierSpec(val id: String, val label: String, val flag: Int)
+
+private data class ToolbarActionSpec(
+    val id: String,
+    val label: String,
+    val vk: Int? = null,
+    val modifiers: Int = 0,
+    val modifierFlag: Int = 0,
+    val isCtrlAltDel: Boolean = false,
+)
+
+private val allToolbarActions: List<ToolbarActionSpec> = buildList {
+    toolbarModifierSpecs.forEach { spec ->
+        add(ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag))
+    }
+    (quickKeyRows + navigationKeyRows + functionKeyRows).flatten().forEach { key ->
+        add(ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk))
+    }
+    quickComboRows.flatten().forEach { combo ->
+        add(
+            ToolbarActionSpec(
+                id = combo.id,
+                label = combo.label,
+                vk = combo.keyVk,
+                modifiers = combo.modifiers,
+                isCtrlAltDel = combo.isCtrlAltDel,
+            ),
+        )
+    }
+}.distinctBy { it.id }
+
+private val toolbarActionsById: Map<String, ToolbarActionSpec> = allToolbarActions.associateBy { it.id }
+private val chordKeyActions: List<ToolbarActionSpec> = (quickKeyRows + navigationKeyRows + functionKeyRows)
+    .flatten()
+    .distinctBy { it.id }
+    .map { key -> ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk) }
+
+private fun sanitizeQuickToolbarActionIds(ids: List<String>): List<String> {
+    val valid = ids
+        .filter { resolveToolbarAction(it) != null }
+        .distinct()
+        .take(MAX_FUNCTION_TOOLBAR_QUICK_IDS)
+    return valid.ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
+}
+
+private fun resolveToolbarAction(id: String): ToolbarActionSpec? =
+    toolbarActionsById[id] ?: parseToolbarChordAction(id)
+
+private fun encodeToolbarChordId(modifierMask: Int, keyId: String): String =
+    "chord_${modifierMask}_$keyId"
+
+private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
+    if (!id.startsWith("chord_")) return null
+    val payload = id.removePrefix("chord_")
+    val separator = payload.indexOf('_')
+    if (separator <= 0 || separator == payload.lastIndex) return null
+    val mask = payload.substring(0, separator).toIntOrNull() ?: return null
+    if (mask == 0) return null
+    val keyId = payload.substring(separator + 1)
+    val key = chordKeyActions.firstOrNull { it.id == keyId } ?: return null
+    val vk = key.vk ?: return null
+    return ToolbarActionSpec(
+        id = id,
+        label = buildChordLabel(mask, key.label),
+        vk = vk,
+        modifiers = mask,
+    )
+}
 
 /**
  * Function-key toolbar shown while the soft keyboard is up. It deliberately avoids horizontal scrolling:
@@ -985,12 +1070,18 @@ private fun SessionToolbar(
         contentAlignment = Alignment.BottomCenter,
     ) {
         var page by remember { mutableStateOf(ToolbarPage.QUICK) }
+        var expanded by remember { mutableStateOf(false) }
+        var editingQuickRow by remember { mutableStateOf(false) }
         var comboTarget by remember { mutableStateOf<ToolbarKeySpec?>(null) }
         var comboMask by remember { mutableIntStateOf(ScancodeMap.Modifier.CTRL) }
         val openCombo: (ToolbarKeySpec) -> Unit = { target ->
+            expanded = true
+            editingQuickRow = false
             comboTarget = target
             comboMask = state.stickyModifiers.takeIf { it != 0 } ?: ScancodeMap.Modifier.CTRL
         }
+        val quickActions = sanitizeQuickToolbarActionIds(state.functionToolbarQuickIds)
+            .mapNotNull { resolveToolbarAction(it) }
 
         Box(
             modifier = Modifier
@@ -1006,50 +1097,478 @@ private fun SessionToolbar(
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ToolbarPageTabs(selected = page, onSelect = { selected ->
-                page = selected
-                comboTarget = null
-            })
-            ToolbarModifierRow(
-                stickyMask = state.stickyModifiers,
-                onToggle = viewModel::toggleStickyModifier,
-            )
-            val target = comboTarget
-            if (target != null) {
-                ToolbarComboBuilder(
-                    target = target,
-                    selectedMask = comboMask,
-                    onToggleModifier = { flag -> comboMask = comboMask xor flag },
-                    onSend = {
-                        viewModel.sendKeyWithModifiers(target.vk, comboMask)
-                        comboTarget = null
-                    },
-                    onCancel = { comboTarget = null },
-                )
-            } else {
-                when (page) {
-                    ToolbarPage.QUICK -> {
-                        ToolbarKeyRows(rows = quickKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
-                        ToolbarComboRows(
-                            rows = quickComboRows,
-                            onCombo = { combo ->
-                                if (combo.isCtrlAltDel) {
-                                    viewModel.sendCtrlAltDel()
-                                } else {
-                                    combo.keyVk?.let { viewModel.sendKeyWithModifiers(it, combo.modifiers) }
-                                }
+            if (expanded) {
+                val target = comboTarget
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (editingQuickRow) {
+                        QuickToolbarEditor(
+                            selectedIds = quickActions.map { it.id },
+                            onApply = { ids ->
+                                viewModel.setFunctionToolbarQuickIds(ids)
+                                editingQuickRow = false
                             },
+                            onDone = { editingQuickRow = false },
                         )
-                    }
-                    ToolbarPage.NAVIGATION -> {
-                        ToolbarKeyRows(rows = navigationKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
-                    }
-                    ToolbarPage.FUNCTION -> {
-                        ToolbarKeyRows(rows = functionKeyRows, onKey = viewModel::sendKey, onLongKey = openCombo)
+                    } else if (target != null) {
+                        ToolbarComboBuilder(
+                            target = target,
+                            selectedMask = comboMask,
+                            onToggleModifier = { flag -> comboMask = comboMask xor flag },
+                            onSend = {
+                                viewModel.sendKeyWithModifiers(target.vk, comboMask)
+                                comboTarget = null
+                                expanded = false
+                            },
+                            onCancel = { comboTarget = null },
+                        )
+                    } else {
+                        ToolbarExpandedPanel(
+                            page = page,
+                            onPage = { selected -> page = selected },
+                            state = state,
+                            viewModel = viewModel,
+                            onLongKey = openCombo,
+                            onEditQuickRow = { editingQuickRow = true },
+                            onMomentaryAction = { expanded = false },
+                        )
                     }
                 }
             }
+            CompactToolbarRow(
+                actions = quickActions,
+                state = state,
+                viewModel = viewModel,
+                expanded = expanded,
+                onLongKey = openCombo,
+                onMomentaryAction = { },
+                onToggleExpanded = {
+                    expanded = !expanded
+                    comboTarget = null
+                    editingQuickRow = false
+                },
+            )
         }
+    }
+}
+
+@Composable
+private fun CompactToolbarRow(
+    actions: List<ToolbarActionSpec>,
+    state: SessionUiState,
+    viewModel: SessionViewModel,
+    expanded: Boolean,
+    onLongKey: (ToolbarKeySpec) -> Unit,
+    onMomentaryAction: () -> Unit,
+    onToggleExpanded: () -> Unit,
+) {
+    val quickScroll = rememberScrollState()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(quickScroll),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            actions.forEach { action ->
+                ToolbarActionButton(
+                    action = action,
+                    state = state,
+                    viewModel = viewModel,
+                    onLongKey = onLongKey,
+                    onMomentaryAction = onMomentaryAction,
+                    modifier = Modifier.widthIn(min = compactCellWidth(action.label)),
+                )
+            }
+        }
+        IconButton(
+            onClick = onToggleExpanded,
+            modifier = Modifier.size(42.dp),
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                contentDescription = null,
+                tint = TOOLBAR_CONTENT,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolbarExpandedPanel(
+    page: ToolbarPage,
+    onPage: (ToolbarPage) -> Unit,
+    state: SessionUiState,
+    viewModel: SessionViewModel,
+    onLongKey: (ToolbarKeySpec) -> Unit,
+    onEditQuickRow: () -> Unit,
+    onMomentaryAction: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ToolbarPage.entries.forEach { item ->
+            ToolbarToggleChip(
+                label = stringResource(item.labelRes),
+                active = page == item,
+                onClick = { onPage(item) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        ToolbarKey(
+            label = "编辑",
+            onClick = onEditQuickRow,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    ToolbarModifierRow(
+        stickyMask = state.stickyModifiers,
+        onToggle = viewModel::toggleStickyModifier,
+    )
+    when (page) {
+        ToolbarPage.QUICK -> {
+            ToolbarKeyRows(
+                rows = quickKeyRows,
+                onKey = {
+                    viewModel.sendKey(it)
+                    onMomentaryAction()
+                },
+                onLongKey = onLongKey,
+            )
+            ToolbarComboRows(
+                rows = quickComboRows,
+                onCombo = { combo ->
+                    dispatchToolbarCombo(combo, viewModel)
+                    onMomentaryAction()
+                },
+            )
+        }
+        ToolbarPage.NAVIGATION -> {
+            ToolbarKeyRows(
+                rows = navigationKeyRows,
+                onKey = {
+                    viewModel.sendKey(it)
+                    onMomentaryAction()
+                },
+                onLongKey = onLongKey,
+            )
+        }
+        ToolbarPage.FUNCTION -> {
+            ToolbarKeyRows(
+                rows = functionKeyRows,
+                onKey = {
+                    viewModel.sendKey(it)
+                    onMomentaryAction()
+                },
+                onLongKey = onLongKey,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickToolbarEditor(
+    selectedIds: List<String>,
+    onApply: (List<String>) -> Unit,
+    onDone: () -> Unit,
+) {
+    var draftIds by remember(selectedIds) { mutableStateOf(selectedIds) }
+    var showComboBuilder by remember { mutableStateOf(false) }
+    val selectedScroll = rememberScrollState()
+    ToolbarPreviewChip(label = "编辑常用", modifier = Modifier.fillMaxWidth())
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ToolbarKey(
+            label = if (showComboBuilder) "添加" else "组合",
+            onClick = { showComboBuilder = !showComboBuilder },
+            modifier = Modifier.weight(1f),
+        )
+        ToolbarKey(
+            label = "重置",
+            onClick = {
+                draftIds = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+                showComboBuilder = false
+            },
+            modifier = Modifier.weight(1f),
+        )
+        ToolbarKey(
+            label = "完成",
+            onClick = { onApply(sanitizeQuickToolbarActionIds(draftIds)) },
+            modifier = Modifier.weight(1f),
+        )
+        ToolbarKey(label = "取消", onClick = onDone, modifier = Modifier.weight(1f))
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(selectedScroll),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        draftIds.forEachIndexed { index, id ->
+            val action = resolveToolbarAction(id) ?: return@forEachIndexed
+            EditableQuickChip(
+                action = action,
+                index = index,
+                totalCount = draftIds.size,
+                onMove = { from, to ->
+                    draftIds = draftIds.toMutableList().also { list ->
+                        val moved = list.removeAt(from)
+                        list.add(to, moved)
+                    }
+                },
+                onDelete = {
+                    draftIds = draftIds.toMutableList().also { it.removeAt(index) }
+                        .ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
+                },
+            )
+        }
+    }
+
+    if (showComboBuilder) {
+        ToolbarChordBuilder(
+            existingIds = draftIds,
+            onAdd = { id ->
+                if (draftIds.size < MAX_FUNCTION_TOOLBAR_QUICK_IDS && id !in draftIds) {
+                    draftIds = draftIds + id
+                }
+            },
+        )
+    } else {
+        ToolbarPreviewChip(label = "添加到常用", modifier = Modifier.fillMaxWidth())
+        ToolbarActionGrid(
+            actions = allToolbarActions.filterNot { it.id in draftIds },
+            onAction = { action ->
+                if (draftIds.size < MAX_FUNCTION_TOOLBAR_QUICK_IDS) {
+                    draftIds = draftIds + action.id
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun EditableQuickChip(
+    action: ToolbarActionSpec,
+    index: Int,
+    totalCount: Int,
+    onMove: (Int, Int) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .quickChipReorderGesture(index = index, totalCount = totalCount, onMove = onMove),
+    ) {
+        ToolbarPreviewChip(label = action.label, modifier = Modifier.widthIn(min = compactCellWidth(action.label)))
+        Surface(
+            onClick = onDelete,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset(x = 5.dp, y = (-5).dp)
+                .size(20.dp),
+            shape = CircleShape,
+            color = TOOLBAR_CONTENT,
+            contentColor = TOOLBAR_BG,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolbarChordBuilder(
+    existingIds: List<String>,
+    onAdd: (String) -> Unit,
+) {
+    var modifierMask by remember { mutableIntStateOf(ScancodeMap.Modifier.CTRL) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        toolbarModifierSpecs.forEach { spec ->
+            ToolbarToggleChip(
+                label = spec.label,
+                active = modifierMask and spec.flag != 0,
+                onClick = {
+                    val next = modifierMask xor spec.flag
+                    modifierMask = next.takeIf { it != 0 } ?: spec.flag
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    ToolbarPreviewChip(label = "选择组合键目标", modifier = Modifier.fillMaxWidth())
+    ToolbarActionGrid(
+        actions = chordKeyActions,
+        isSelected = { action -> encodeToolbarChordId(modifierMask, action.id) in existingIds },
+        onAction = { action -> onAdd(encodeToolbarChordId(modifierMask, action.id)) },
+    )
+}
+
+@Composable
+private fun ToolbarActionGrid(
+    actions: List<ToolbarActionSpec>,
+    onAction: (ToolbarActionSpec) -> Unit,
+    isSelected: (ToolbarActionSpec) -> Boolean = { false },
+) {
+    actions.chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            row.forEach { action ->
+                if (isSelected(action)) {
+                    ToolbarPreviewChip(label = action.label, modifier = Modifier.weight(1f))
+                } else {
+                    ToolbarKey(
+                        label = action.label,
+                        onClick = { onAction(action) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            repeat(TOOLBAR_GRID_COLUMNS - row.size) {
+                Box(modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+private fun Modifier.quickChipReorderGesture(
+    index: Int,
+    totalCount: Int,
+    onMove: (Int, Int) -> Unit,
+): Modifier = pointerInput(index, totalCount) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val startMs = System.currentTimeMillis()
+        var totalDx = 0f
+        var totalDy = 0f
+        var dragging = false
+        var currentIndex = index
+        var tracking = true
+        while (tracking) {
+            val armLongPress = !dragging && abs(totalDx) + abs(totalDy) <= TOOLBAR_REORDER_SLOP_PX
+            val event = if (armLongPress) {
+                val remaining = (TOOLBAR_REORDER_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                    .coerceAtLeast(1L)
+                withTimeoutOrNull(remaining) { awaitPointerEvent() }
+            } else {
+                awaitPointerEvent()
+            }
+            if (event == null) {
+                dragging = true
+                down.consume()
+                continue
+            }
+            val change = event.changes.firstOrNull { it.id == down.id }
+            if (change == null || !change.pressed) {
+                change?.consume()
+                tracking = false
+            } else {
+                val delta = change.positionChange()
+                totalDx += delta.x
+                totalDy += delta.y
+                if (!dragging && abs(totalDx) + abs(totalDy) > TOOLBAR_REORDER_SLOP_PX) {
+                    tracking = false
+                } else if (dragging) {
+                    when {
+                        totalDx > TOOLBAR_REORDER_STEP_PX && currentIndex < totalCount - 1 -> {
+                            onMove(currentIndex, currentIndex + 1)
+                            currentIndex++
+                            totalDx = 0f
+                        }
+                        totalDx < -TOOLBAR_REORDER_STEP_PX && currentIndex > 0 -> {
+                            onMove(currentIndex, currentIndex - 1)
+                            currentIndex--
+                            totalDx = 0f
+                        }
+                    }
+                }
+                change.consume()
+            }
+        }
+    }
+}
+
+private fun compactCellWidth(label: String): Dp = when {
+    label.length >= 12 -> 112.dp
+    label.length >= 8 -> 96.dp
+    label.length >= 5 -> 78.dp
+    else -> 64.dp
+}
+
+private const val TOOLBAR_REORDER_LONG_PRESS_MS = 350L
+private const val TOOLBAR_REORDER_SLOP_PX = 8f
+private const val TOOLBAR_REORDER_STEP_PX = 56f
+private const val TOOLBAR_GRID_COLUMNS = 4
+
+@Composable
+private fun ToolbarActionButton(
+    action: ToolbarActionSpec,
+    state: SessionUiState,
+    viewModel: SessionViewModel,
+    onLongKey: (ToolbarKeySpec) -> Unit,
+    onMomentaryAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val modifierFlag = action.modifierFlag
+    if (modifierFlag != 0) {
+        ToolbarToggleChip(
+            label = action.label,
+            active = state.stickyModifiers and modifierFlag != 0,
+            onClick = { viewModel.toggleStickyModifier(modifierFlag) },
+            modifier = modifier,
+        )
+    } else {
+        val keySpec = action.vk
+            ?.takeIf { action.modifiers == 0 && !action.isCtrlAltDel }
+            ?.let { ToolbarKeySpec(action.id, action.label, it) }
+        ToolbarKey(
+            label = action.label,
+            onClick = {
+                dispatchToolbarAction(action, viewModel)
+                onMomentaryAction()
+            },
+            onLongClick = keySpec?.let { { onLongKey(it) } },
+            modifier = modifier,
+        )
+    }
+}
+
+private fun dispatchToolbarAction(action: ToolbarActionSpec, viewModel: SessionViewModel) {
+    when {
+        action.modifierFlag != 0 -> viewModel.toggleStickyModifier(action.modifierFlag)
+        action.isCtrlAltDel -> viewModel.sendCtrlAltDel()
+        action.modifiers != 0 -> action.vk?.let { viewModel.sendKeyWithModifiers(it, action.modifiers) }
+        action.vk != null -> viewModel.sendKey(action.vk)
+    }
+}
+
+private fun dispatchToolbarCombo(combo: ToolbarComboSpec, viewModel: SessionViewModel) {
+    if (combo.isCtrlAltDel) {
+        viewModel.sendCtrlAltDel()
+    } else {
+        combo.keyVk?.let { viewModel.sendKeyWithModifiers(it, combo.modifiers) }
     }
 }
 
@@ -1397,7 +1916,7 @@ private fun ToolbarKeyRows(
     onKey: (Int) -> Unit,
     onLongKey: (ToolbarKeySpec) -> Unit,
 ) {
-    rows.forEach { row ->
+    rows.flatten().chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1410,13 +1929,16 @@ private fun ToolbarKeyRows(
                     modifier = Modifier.weight(1f),
                 )
             }
+            repeat(TOOLBAR_GRID_COLUMNS - row.size) {
+                Box(modifier = Modifier.weight(1f))
+            }
         }
     }
 }
 
 @Composable
 private fun ToolbarComboRows(rows: List<List<ToolbarComboSpec>>, onCombo: (ToolbarComboSpec) -> Unit) {
-    rows.forEach { row ->
+    rows.flatten().chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1427,6 +1949,9 @@ private fun ToolbarComboRows(rows: List<List<ToolbarComboSpec>>, onCombo: (Toolb
                     onClick = { onCombo(combo) },
                     modifier = Modifier.weight(1f),
                 )
+            }
+            repeat(TOOLBAR_GRID_COLUMNS - row.size) {
+                Box(modifier = Modifier.weight(1f))
             }
         }
     }
