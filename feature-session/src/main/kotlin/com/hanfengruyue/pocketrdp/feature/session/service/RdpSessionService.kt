@@ -15,8 +15,8 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
-import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
-import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
+import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistry
+import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.feature.session.R
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -33,13 +33,9 @@ import kotlinx.coroutines.flow.onEach
  * Keep-alive foreground service for an active RDP session — the M7 "切到后台不断开" fix.
  *
  * ## What it does (and what it deliberately does NOT do)
- * It does **not** own the FreeRDP connection. The connection object, the native worker thread and
- * the [com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer] all live in the `@Singleton` [RdpClient]
- * at **process** scope, exactly as before. This service's only job is to pin the *process* to the
- * "foreground service" importance bucket so the OS / OEM low-memory killer stops reclaiming it the
- * moment the user switches apps — which is the actual cause of the background disconnect (a
- * single-Activity Compose app's `SessionViewModel.onCleared()` does **not** fire on plain
- * backgrounding, so nothing in our code tears the socket down; the process just gets killed).
+ * It does **not** own any FreeRDP connection. Each retained SessionViewModel owns its own RdpClient,
+ * native worker thread and BitmapBuffer. This service observes [RdpSessionRegistry] and pins the
+ * *process* to the foreground-service importance bucket while at least one session is active.
  *
  * It additionally holds a [PowerManager.PARTIAL_WAKE_LOCK] + a [WifiManager.WifiLock] while the
  * session is connected so a screen-off / backgrounded socket isn't starved by CPU suspend or Wi-Fi
@@ -51,15 +47,13 @@ import kotlinx.coroutines.flow.onEach
  * session. specialUse is exempt from that timeout.
  *
  * ## Lifecycle ownership
- * The [SessionViewModel][com.hanfengruyue.pocketrdp.feature.session.SessionViewModel] is the single
- * brain: it [start]s this service when a connection begins and [stop]s it when it gives up
- * reconnecting. This service self-stops only on a **user-initiated** disconnect
- * ([RdpEvent.Disconnected] with `reason == "user"` — emitted by both [RdpClient.disconnect] and the
- * notification's 断开 action), so an *unexpected* drop (reason == null) leaves the service running
- * while the ViewModel auto-reconnects.
+ * The [SessionViewModel][com.hanfengruyue.pocketrdp.feature.session.SessionViewModel] starts this
+ * service when its RdpClient registers as active. This service self-stops only when the registry has
+ * no active sessions left, so disconnecting one computer does not drop foreground keep-alive for the
+ * others.
  */
 /**
- * Hilt entry point to reach the `@Singleton` [RdpClient] from this service. We deliberately use
+ * Hilt entry point to reach the singleton [RdpSessionRegistry] from this service. We deliberately use
  * [EntryPointAccessors] instead of `@AndroidEntryPoint` + `@Inject`: Hilt 2.55's member-injection
  * processor reads the injected class's Kotlin metadata with a kotlinx-metadata that caps at version
  * 2.1.0, and our classes compile to metadata 2.2.0 (Kotlin 2.2.21) — field injection into the
@@ -69,15 +63,15 @@ import kotlinx.coroutines.flow.onEach
  */
 @EntryPoint
 @InstallIn(SingletonComponent::class)
-interface RdpClientEntryPoint {
-    fun rdpClient(): RdpClient
+interface RdpSessionRegistryEntryPoint {
+    fun rdpSessionRegistry(): RdpSessionRegistry
 }
 
 class RdpSessionService : Service() {
 
-    private val rdpClient: RdpClient by lazy {
-        EntryPointAccessors.fromApplication(applicationContext, RdpClientEntryPoint::class.java)
-            .rdpClient()
+    private val sessionRegistry: RdpSessionRegistry by lazy {
+        EntryPointAccessors.fromApplication(applicationContext, RdpSessionRegistryEntryPoint::class.java)
+            .rdpSessionRegistry()
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -115,10 +109,9 @@ class RdpSessionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
-                // The 断开 notification action: a deliberate user teardown. disconnect() emits
-                // Disconnected(reason="user"), which our own observer turns into stopSelf().
-                PocketLogger.i(TAG, "notification disconnect action -> disconnect()")
-                rdpClient.disconnect()
+                // The notification action is process-wide: disconnect every active session.
+                PocketLogger.i(TAG, "notification disconnect action -> disconnect all sessions")
+                sessionRegistry.disconnectAll()
             }
             else -> {
                 connectionName = intent?.getStringExtra(EXTRA_NAME)?.takeIf { it.isNotBlank() }
@@ -141,7 +134,7 @@ class RdpSessionService : Service() {
                     buildNotification(lastStatusText ?: getString(R.string.session_notification_status_connecting)),
                     type,
                 )
-                observeEvents()
+                observeSessions()
             }
         }
         // NOT sticky: if the OS/OEM kills us anyway (despite the FGS), there is no live connection
@@ -151,33 +144,25 @@ class RdpSessionService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun observeEvents() {
+    private fun observeSessions() {
         if (observing) return
         observing = true
-        rdpClient.events
-            .onEach { event ->
-                when (event) {
-                    is RdpEvent.Connecting -> updateStatus(getString(R.string.session_notification_status_connecting))
-                    is RdpEvent.Connected -> {
-                        updateStatus(getString(R.string.session_notification_status_connected))
-                        acquireLocks()
-                    }
-                    is RdpEvent.Disconnected -> {
-                        releaseLocks()
-                        if (event.reason == "user") {
-                            // User tore the session down (disconnect button / left the screen).
-                            shutdown()
-                        } else {
-                            // Unexpected drop — the ViewModel is auto-reconnecting; stay alive.
-                            updateStatus(getString(R.string.session_notification_status_reconnecting))
-                        }
-                    }
-                    is RdpEvent.Failed -> {
-                        releaseLocks()
-                        updateStatus(getString(R.string.session_notification_status_failed))
-                    }
-                    else -> Unit
+        sessionRegistry.snapshot
+            .onEach { snapshot ->
+                if (!snapshot.hasActiveSessions) {
+                    shutdown()
+                    return@onEach
                 }
+                if (snapshot.connectedCount > 0) acquireLocks() else releaseLocks()
+                updateStatus(
+                    when {
+                        snapshot.connectedCount > 0 -> getString(R.string.session_notification_status_connected)
+                        snapshot.connectingCount > 0 -> getString(R.string.session_notification_status_connecting)
+                        snapshot.reconnectingCount > 0 ->
+                            getString(R.string.session_notification_status_reconnecting)
+                        else -> getString(R.string.session_notification_status_failed)
+                    },
+                )
             }
             .launchIn(scope)
     }
@@ -216,6 +201,7 @@ class RdpSessionService : Service() {
 
     private fun shutdown() {
         releaseLocks()
+        SessionKeepAliveFlag.setActive(this, false)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

@@ -14,7 +14,6 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import javax.inject.Inject
-import javax.inject.Singleton
 import kotlin.math.roundToInt
 
 /**
@@ -28,9 +27,9 @@ import kotlin.math.roundToInt
  * dirty region is via OnGraphicsUpdate, and we pull pixels into our own Bitmap by calling
  * LibFreeRDP.updateGraphics(inst, bitmap, x, y, w, h). See android_freerdp.c.
  */
-@Singleton
 class RdpClient @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val sessionRegistry: RdpSessionRegistry,
 ) {
 
     val buffer: BitmapBuffer = BitmapBuffer()
@@ -112,8 +111,9 @@ class RdpClient @Inject constructor(
             return
         }
         if (nativeInstance != 0L) {
-            PocketLogger.w(TAG, "connect() called while previous session still alive — disconnecting first")
-            disconnect()
+            PocketLogger.w(TAG, "connect() called while previous native instance still alive — closing it first")
+            closeNativeInstance(nativeInstance)
+            buffer.release()
         }
 
         emit(RdpEvent.Connecting)
@@ -127,6 +127,7 @@ class RdpClient @Inject constructor(
             return
         }
         nativeInstance = inst
+        sessionRegistry.markConnecting(this)
         LibFreeRDP.registerEventListener(inst, eventListener)
         LibFreeRDP.registerUIEventListener(inst, uiEventListener)
         keyEventLogCount = 0
@@ -147,6 +148,7 @@ class RdpClient @Inject constructor(
             val err = LibFreeRDP.freerdp_get_last_error_string(inst)
             PocketLogger.e(TAG, "freerdp_parse_arguments failed (last_error='$err')")
             emit(RdpEvent.Failed("freerdp_parse_arguments failed: $err"))
+            sessionRegistry.markReconnecting(this)
             LibFreeRDP.unregisterEventListener(inst)
             LibFreeRDP.unregisterUIEventListener(inst)
             LibFreeRDP.freeInstance(inst)
@@ -162,6 +164,7 @@ class RdpClient @Inject constructor(
                 val err = LibFreeRDP.freerdp_get_last_error_string(inst)
                 if (isCurrentInstance(inst)) {
                     PocketLogger.e(TAG, "freerdp_connect returned false (last_error='$err')")
+                    sessionRegistry.markReconnecting(this)
                     emit(RdpEvent.Failed("freerdp_connect returned false: $err"))
                     LibFreeRDP.unregisterEventListener(inst)
                     LibFreeRDP.unregisterUIEventListener(inst)
@@ -174,17 +177,33 @@ class RdpClient @Inject constructor(
 
     fun disconnect() {
         val inst = nativeInstance
-        if (inst == 0L) return
+        if (inst == 0L) {
+            if (sessionRegistry.contains(this)) {
+                sessionRegistry.unregister(this)
+                buffer.release()
+                emit(RdpEvent.Disconnected(reason = "user"))
+            }
+            return
+        }
         PocketLogger.i(TAG, "disconnect() inst=$inst")
+        closeNativeInstance(inst)
+        sessionRegistry.unregister(this)
+        buffer.release()
+        emit(RdpEvent.Disconnected(reason = "user"))
+    }
+
+    fun hasActiveSession(): Boolean = sessionRegistry.contains(this)
+
+    fun activeSessionCount(): Int = sessionRegistry.activeCount()
+
+    private fun closeNativeInstance(inst: Long) {
         LibFreeRDP.unregisterEventListener(inst)
         LibFreeRDP.unregisterUIEventListener(inst)
         Thread {
             LibFreeRDP.disconnect(inst)
             LibFreeRDP.freeInstance(inst)
         }.apply { isDaemon = true }.start()
-        nativeInstance = 0L
-        buffer.release()
-        emit(RdpEvent.Disconnected(reason = "user"))
+        if (nativeInstance == inst) nativeInstance = 0L
     }
 
     fun sendKeyEvent(scanCode: Int, down: Boolean) {
@@ -379,14 +398,14 @@ class RdpClient @Inject constructor(
         if (inst == 0L) return RdpTransportStats()
         val raw = LibFreeRDP.getTransportStats(inst) ?: return RdpTransportStats()
         return RdpTransportStats(
-            inBytes = raw.getOrElse(0) { 0L },
-            outBytes = raw.getOrElse(1) { 0L },
-            inPackets = raw.getOrElse(2) { 0L },
-            outPackets = raw.getOrElse(3) { 0L },
-            retransmits = raw.getOrElse(4) { 0L },
-            failureStage = raw.getOrElse(5) { 0L },
-            tunnelHr = raw.getOrElse(6) { 0L },
-            socketError = raw.getOrElse(7) { 0L },
+            inBytes = raw.getOrElse(TRANSPORT_STATS_IN_BYTES) { 0L },
+            outBytes = raw.getOrElse(TRANSPORT_STATS_OUT_BYTES) { 0L },
+            inPackets = raw.getOrElse(TRANSPORT_STATS_IN_PACKETS) { 0L },
+            outPackets = raw.getOrElse(TRANSPORT_STATS_OUT_PACKETS) { 0L },
+            retransmits = raw.getOrElse(TRANSPORT_STATS_RETRANSMITS) { 0L },
+            failureStage = raw.getOrElse(TRANSPORT_STATS_FAILURE_STAGE) { 0L },
+            tunnelHr = raw.getOrElse(TRANSPORT_STATS_TUNNEL_HR) { 0L },
+            socketError = raw.getOrElse(TRANSPORT_STATS_SOCKET_ERROR) { 0L },
         )
     }
 
@@ -445,11 +464,13 @@ class RdpClient @Inject constructor(
         override fun OnConnectionSuccess(inst: Long) {
             if (!isCurrentInstance(inst)) return
             PocketLogger.i(TAG, "OnConnectionSuccess inst=$inst")
+            sessionRegistry.markConnected(this@RdpClient)
             emit(RdpEvent.Connected)
         }
         override fun OnConnectionFailure(inst: Long) {
             if (!isCurrentInstance(inst)) return
             PocketLogger.e(TAG, "OnConnectionFailure inst=$inst")
+            sessionRegistry.markReconnecting(this@RdpClient)
             emit(RdpEvent.Failed("connection failure"))
         }
         override fun OnDisconnecting(inst: Long) {
@@ -459,6 +480,7 @@ class RdpClient @Inject constructor(
         override fun OnDisconnected(inst: Long) {
             if (!isCurrentInstance(inst)) return
             PocketLogger.i(TAG, "OnDisconnected inst=$inst")
+            sessionRegistry.markReconnecting(this@RdpClient)
             emit(RdpEvent.Disconnected(reason = null))
         }
     }
@@ -549,110 +571,8 @@ class RdpClient @Inject constructor(
         }
     }
 
-    private fun buildCommandLine(p: RdpConnectionParams): Array<String> {
-        val args = mutableListOf(
-            "freerdp",
-            "/gdi:sw",
-            "/v:${p.host}",
-            "/port:${p.port}",
-            "/u:${p.username}",
-            "/cert:ignore",
-            "/size:${p.initialWidth}x${p.initialHeight}",
-            "/bpp:${p.colorDepth}",
-        )
-        if (p.password.isNotEmpty()) args += "/p:${p.password}"
-        if (p.domain.isNotEmpty()) args += "/d:${p.domain}"
-        // Graphics pipeline selection. H.264 is the decisive fix for the video "画面卡顿": the Windows
-        // host runs AVC444ModePreferred=1, so once the client can decode H.264 the server uses a
-        // hardware-encoded path (tiny bandwidth + cheap decode) instead of software RemoteFX
-        // full-screen blits.
-        //
-        // We request AVC444 (full 4:4:4 chroma — crisp coloured text/edges). This is sound ONLY
-        // because the H.264 decoder is FFmpeg (the native build is WITH_OPENH264=OFF + WITH_FFMPEG=ON,
-        // FFmpeg static-linked into libfreerdp3). AVC444 is a dual H.264 stream that FreeRDP recombines
-        // into YUV444 via its own prim_YUV; with the OLD OpenH264 backend that combine produced a
-        // diagonal magenta/green chroma grid (the plane strides OpenH264 emitted didn't line up),
-        // field-confirmed. FFmpeg's decoder output strides feed the combine correctly → clean AVC444.
-        // If the decoder ever reverts to OpenH264, drop this back to /gfx:AVC420 (single YUV420 stream,
-        // no auxiliary-chroma combine, the only H.264 mode that's clean on OpenH264). When H.264 isn't
-        // available at all we use GFX RemoteFX progressive (/gfx:RFX) — mutually exclusive with AVC.
-        // 画质优先 → AVC444 (full 4:4:4, crisp text). 流畅优先 → AVC420 (single YUV420 stream: ~half
-        // the FFmpeg software-decode cost + no prim_YUV444 recombine → lower control latency, at the
-        // cost of 4:2:0 chroma). AVC420 is also clean with the FFmpeg backend (the magenta/green grid
-        // was an OpenH264-only recombine-stride bug, and AVC420 has no recombine at all). Mutually
-        // exclusive with RFX — never both.
-        when {
-            p.useH264 && LibFreeRDP.hasH264Support() ->
-                args += if (p.preferAvc420) "/gfx:AVC420" else "/gfx:AVC444"
-            p.useGfx -> args += "/gfx:RFX"
-        }
-        // Enable the rdpei dynamic channel so InputMode.TOUCH can forward native Windows multi-touch
-        // contacts. Harmless when unused (TRACKPAD mode never sends touch) and auto-skipped by the
-        // server if it doesn't support RDPEI.
-        args += "/multitouch"
-        if (p.dynamicResolution) args += "/dynamic-resolution"
-        // RDP-UDP multitransport capability (UDP-R/UDP-L/UDP2). Real UDP traffic requires the
-        // native tunnel implementation to establish an RDP-UDP/RDPEMT channel AND the public endpoint
-        // (frp/server/firewall) to expose UDP on the same host:port; otherwise the session stays on TCP.
-        // CRITICAL — emit the explicit DISABLE form when the user turns it off: FreeRDP defaults
-        // SupportMultitransport=TRUE (+ non-zero MultitransportFlags) in settings.c, so simply
-        // NOT adding "/multitransport" is a no-op — UDP would still be negotiated (field bug:
-        // 关闭 UDP 仍走 UDP). The disable form MUST be "-multitransport" (the '-' sigil sets
-        // SupportMultitransport=FALSE and zeroes MultitransportFlags). "/multitransport:off" would
-        // FAIL freerdp_parse_arguments with COMMAND_LINE_ERROR_UNEXPECTED_VALUE — a BOOL option in
-        // the slash/colon syntax rejects a trailing value (same class as the /scale trap above).
-        args += if (p.useMultitransport) "/multitransport" else "-multitransport"
-        // Auto-reconnect on an UNEXPECTED drop (not a user disconnect): FreeRDP transparently
-        // re-establishes the session using the server's auto-reconnect cookie. Mitigates flaky links
-        // — e.g. a mobile NAT / public-IP port-forward (host:port) silently dropping an idle TCP
-        // connection after ~18 s, observed as "连上几秒就断开". Harmless when the link is stable.
-        args += "/auto-reconnect"
-        // 低延迟视觉 (performanceFlags bit PERF_LOW_LATENCY_VISUALS): force-disable the remote desktop's
-        // wallpaper + themes so each frame the server encodes (and the client decodes) carries less
-        // high-frequency detail. MUST use the '-' sigil (BOOL-option disable form): "-wallpaper" sets
-        // FreeRDP_DisableWallpaper=TRUE via the enable=FALSE path. "/wallpaper:off" would FAIL
-        // freerdp_parse_arguments with COMMAND_LINE_ERROR_UNEXPECTED_VALUE (a BOOL option rejects a
-        // trailing value — same trap as /multitransport). Modest on a LAN under H.264/GFX (the whole
-        // desktop is video-encoded regardless), so it's opt-in per connection, default off.
-        if (p.performanceFlags and PERF_LOW_LATENCY_VISUALS != 0) {
-            args += "-wallpaper"
-            args += "-themes"
-        }
-        // Remote desktop DPI scaling. Use /scale-desktop (FreeRDP_DesktopScaleFactor, accepts any
-        // 100..500) — NOT /scale, which parse_scale_options() hard-limits to {100,140,180}: every
-        // value >180 silently collapsed to 180, so the 100–300 % slider's 200/250/300 were
-        // indistinguishable (field bug: 缩放滑块只有三档真正生效). /scale-desktop honours the exact
-        // value, giving the slider real continuous effect. Clamp to the accepted range so an
-        // out-of-range value can never fail freerdp_parse_arguments.
-        val scale = p.desktopScaleFactor.coerceIn(MIN_DESKTOP_SCALE, MAX_DESKTOP_SCALE)
-        args += "/scale-desktop:$scale"
-
-        val clipDir = if (p.redirectClipboard) "all" else "off"
-        args += "/clipboard:use-selection:primary,direction-to:$clipDir"
-
-        // File redirection (rdpdr DRIVE device). Export an app-owned POSIX folder so the remote sees a
-        // "PocketRDP" drive in Explorer. Only emit when enabled AND a real path is supplied (the caller
-        // mkdirs() it before connect — FreeRDP's freerdp_path_valid silently SKIPS a non-existent drive
-        // path, non-fatally). The drive NAME must contain no space/colon. Disabling is just omission:
-        // FreeRDP_DeviceRedirection defaults FALSE, so there's no BOOL-disable trap here (unlike
-        // /multitransport). A SAF content:// URI can NOT be used — WinPR opens the path with native
-        // open()/stat(), so the path must be a true filesystem path.
-        if (p.redirectFiles && !p.drivePath.isNullOrBlank()) {
-            args += "/drive:PocketRDP,${p.drivePath}"
-        }
-
-        // 远程音频路由（等价 mstsc 的「播放位置」三选项）。rdpsnd + OpenSL ES 播放后端已静态编译进
-        // libfreerdp-client3.so（DT_NEEDED libOpenSLES.so + CLIENT_RDPSND_SUBSYSTEM_TABLE，已二进制验证），
-        // AudioPlayback=TRUE 时 rdpsnd 作为静态通道由 freerdp_client_load_addins 自动加载（cmdline.c
-        // staticChannels 表），从 C 层 OpenSL ES 直接出声，无需 JNI 回调。/audio-mode 是枚举值选项
-        // （必须带值；非 BOOL，不踩 /opt:off 陷阱）；0 用显式 none 强制 AudioPlayback+RemoteConsoleAudio 皆 FALSE。
-        when (p.soundMode) {
-            1 -> args += "/audio-mode:redirect" // 控制端（手机）播放：重定向到客户端，opensles 出声
-            2 -> args += "/audio-mode:server"   // 被控端（远端机）播放：RemoteConsoleAudio，声音留在被控电脑
-            else -> args += "/audio-mode:none"  // 0 = 停用音频
-        }
-        return args.toTypedArray()
-    }
+    private fun buildCommandLine(p: RdpConnectionParams): Array<String> =
+        buildRdpCommandLine(p, LibFreeRDP.hasH264Support())
 
     private fun redact(args: Array<String>): List<String> =
         args.map { if (it.startsWith("/p:")) "/p:****" else it }
@@ -666,11 +586,15 @@ class RdpClient @Inject constructor(
         // pattern (which is what we need to investigate "input → disconnect" timing) without
         // flooding logs when the user holds a key or pastes long text.
         private const val KEY_LOG_LIMIT = 50
+        private const val TRANSPORT_STATS_IN_BYTES = 0
+        private const val TRANSPORT_STATS_OUT_BYTES = 1
+        private const val TRANSPORT_STATS_IN_PACKETS = 2
+        private const val TRANSPORT_STATS_OUT_PACKETS = 3
+        private const val TRANSPORT_STATS_RETRANSMITS = 4
+        private const val TRANSPORT_STATS_FAILURE_STAGE = 5
+        private const val TRANSPORT_STATS_TUNNEL_HR = 6
+        private const val TRANSPORT_STATS_SOCKET_ERROR = 7
         private const val DEFAULT_RDP_PORT = 3389
-        // Remote desktop DPI scale (/scale-desktop) bounds. FreeRDP accepts 100..500; we cap at the
-        // edit screen's slider range so the UI value maps 1:1 to what the remote receives.
-        private const val MIN_DESKTOP_SCALE = 100
-        private const val MAX_DESKTOP_SCALE = 300
         private const val LATENCY_PROBE_TIMEOUT_MS = 2000
         private const val NANOS_PER_MILLI = 1_000_000L
         private const val MAX_LATENCY_MS = 9999
