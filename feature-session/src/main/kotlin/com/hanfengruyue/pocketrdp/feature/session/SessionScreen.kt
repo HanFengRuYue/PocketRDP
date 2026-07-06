@@ -1102,7 +1102,7 @@ private fun SessionToolbar(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 220.dp)
+                        .heightIn(max = TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -1521,6 +1521,8 @@ private const val TOOLBAR_REORDER_LONG_PRESS_MS = 350L
 private const val TOOLBAR_REORDER_SLOP_PX = 8f
 private const val TOOLBAR_REORDER_STEP_PX = 56f
 private const val TOOLBAR_GRID_COLUMNS = 4
+private val TOOLBAR_KEY_MIN_HEIGHT = 36.dp
+private val TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT = 244.dp
 
 @Composable
 private fun ToolbarActionButton(
@@ -2027,7 +2029,7 @@ private fun ToolbarKey(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 36.dp)
+                .heightIn(min = TOOLBAR_KEY_MIN_HEIGHT)
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -2045,11 +2047,11 @@ private fun ToolbarKey(
  * A latching modifier key (Ctrl/Alt/Shift) on the black bar. Inactive = white-outline pill with white
  * text; active = SOLID white fill with black text, so the latched state reads clearly (用户需求: 黑底白字).
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ToolbarToggleChip(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
-        onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.combinedClickable(onClick = onClick),
         shape = RoundedCornerShape(8.dp),
         color = if (active) TOOLBAR_CONTENT else Color.Transparent,
         contentColor = if (active) TOOLBAR_BG else TOOLBAR_CONTENT,
@@ -2058,7 +2060,7 @@ private fun ToolbarToggleChip(label: String, active: Boolean, onClick: () -> Uni
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 34.dp)
+                .heightIn(min = TOOLBAR_KEY_MIN_HEIGHT)
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -2084,7 +2086,7 @@ private fun ToolbarPreviewChip(label: String, modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 36.dp)
+                .heightIn(min = TOOLBAR_KEY_MIN_HEIGHT)
                 .padding(horizontal = 8.dp),
             contentAlignment = Alignment.Center,
         ) {
