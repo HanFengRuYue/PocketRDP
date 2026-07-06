@@ -15,10 +15,12 @@ import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
 import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
+import com.hanfengruyue.pocketrdp.core.rdp.RdpDriveRedirectionPlan
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportStats
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
+import com.hanfengruyue.pocketrdp.core.rdp.planRdpDriveRedirection
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
 import com.hanfengruyue.pocketrdp.feature.session.service.RdpSessionService
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
@@ -208,9 +211,9 @@ class SessionViewModel @Inject constructor(
     private var monitorLayoutDebounceJob: Job? = null
 
     // --- Background keep-alive + auto-reconnect (M7) ---
-    // The keep-alive RdpSessionService keeps the PROCESS alive while backgrounded (the connection
-    // itself lives in the @Singleton RdpClient). We start it when a connection begins and stop it
-    // when the user tears the session down or we exhaust reconnect attempts.
+    // The keep-alive RdpSessionService keeps the PROCESS alive while backgrounded. Each
+    // SessionViewModel owns its own RdpClient; the service observes the shared RdpSessionRegistry so
+    // one session ending does not stop keep-alive for other active sessions.
     //
     // Reconnect distinguishes intent via the Disconnected event's reason: RdpClient.disconnect()
     // emits reason="user" (deliberate — don't reconnect), while a native/network drop emits
@@ -295,7 +298,9 @@ class SessionViewModel @Inject constructor(
                         val wasReconnect = reconnectAttempt > 0
                         reconnectAttempt = 0
                         reconnectJob?.cancel()
-                        if (!wasReconnect) startKeepAlive(appContext.getString(R.string.session_notification_status_connected))
+                        if (!wasReconnect) {
+                            startKeepAlive(appContext.getString(R.string.session_notification_status_connected))
+                        }
                         _state.update {
                             it.copy(
                                 status = SessionConnectionStatus.Connected,
@@ -586,30 +591,57 @@ class SessionViewModel @Inject constructor(
                     allFilesAccessRequired = false,
                 )
             }
-            if (entity.redirectFiles && !Environment.isExternalStorageManager()) {
-                PocketLogger.w(TAG, "folder redirection requested but MANAGE_EXTERNAL_STORAGE is not granted; waiting before connect")
-                _state.update {
-                    it.copy(
-                        status = SessionConnectionStatus.Idle,
-                        filesRedirectEnabled = true,
-                        allFilesAccessRequired = true,
-                        lastError = null,
-                    )
-                }
-                return@launch
-            }
             val plain = runCatching { repository.decryptPassword(entity) }.getOrDefault("")
-            // File redirection: export the WHOLE internal storage (/storage/emulated/0) as a "PocketRDP"
-            // drive so the remote PC sees ALL phone files (用户需求: 默认共享整个安卓存储). This is a real
-            // POSIX path WinPR can open()/stat() (a SAF content:// URI can NOT be used). Reading the whole
-            // tree on API 30+ scoped storage needs the MANAGE_EXTERNAL_STORAGE (所有文件访问) permission —
-            // prompted contextually in SessionScreen. Until it's granted the path is unreadable and
-            // freerdp_path_valid silently SKIPS it (non-fatal, the drive just doesn't appear), so we still
-            // pass it and the drive lights up the moment the user grants access.
-            val driveDir = if (entity.redirectFiles) {
-                runCatching { Environment.getExternalStorageDirectory()?.absolutePath }.getOrNull()
-            } else {
-                null
+            // File redirection: export the whole shared storage (/storage/emulated/0) as a real
+            // filesystem path. FreeRDP validates /drive during argument parsing and only logs a native
+            // warning when the path does not exist, so preflight here keeps the remote "no drive"
+            // symptom from becoming silent.
+            val drivePlan = planRdpDriveRedirection(
+                redirectFiles = entity.redirectFiles,
+                allFilesAccessGranted = Environment.isExternalStorageManager(),
+                storageMounted = runCatching { Environment.getExternalStorageState() }
+                    .map { it == Environment.MEDIA_MOUNTED || it == Environment.MEDIA_MOUNTED_READ_ONLY }
+                    .getOrDefault(false),
+                externalStoragePath = runCatching {
+                    Environment.getExternalStorageDirectory()?.absolutePath
+                }.getOrNull(),
+                pathExists = { path -> File(path).exists() },
+                pathIsDirectory = { path -> File(path).isDirectory },
+                pathCanRead = { path -> File(path).canRead() },
+            )
+            val driveDir = when (drivePlan) {
+                RdpDriveRedirectionPlan.Disabled -> null
+                RdpDriveRedirectionPlan.NeedsAllFilesAccess -> {
+                    PocketLogger.w(
+                        TAG,
+                        "folder redirection requested but MANAGE_EXTERNAL_STORAGE is not granted; waiting before connect",
+                    )
+                    _state.update {
+                        it.copy(
+                            status = SessionConnectionStatus.Idle,
+                            filesRedirectEnabled = true,
+                            allFilesAccessRequired = true,
+                            lastError = null,
+                        )
+                    }
+                    return@launch
+                }
+                is RdpDriveRedirectionPlan.Unavailable -> {
+                    PocketLogger.e(TAG, drivePlan.reason)
+                    _state.update {
+                        it.copy(
+                            status = SessionConnectionStatus.Failed(drivePlan.reason),
+                            filesRedirectEnabled = true,
+                            allFilesAccessRequired = false,
+                            lastError = drivePlan.reason,
+                        )
+                    }
+                    return@launch
+                }
+                is RdpDriveRedirectionPlan.Ready -> {
+                    PocketLogger.i(TAG, "folder redirection drive path ready: ${drivePlan.path}")
+                    drivePlan.path
+                }
             }
             val params = RdpConnectionParams(
                 connectionId = entity.id,
@@ -643,11 +675,13 @@ class SessionViewModel @Inject constructor(
             userInitiatedDisconnect = false
             reconnectAttempt = 0
             reconnectJob?.cancel()
-            // Promote the process to a foreground service NOW, while we're still visible (Android
-            // 31+ forbids starting an FGS from the background). This is what keeps the connection
-            // alive when the user switches to another app — see RdpSessionService.
-            startKeepAlive(appContext.getString(R.string.session_notification_status_connecting))
             rdpClient.connect(params)
+            // Promote the process to a foreground service NOW, while we're still visible (Android
+            // 31+ forbids starting an FGS from the background). Start it after rdpClient.connect()
+            // registers this client so the service's first registry snapshot is not empty.
+            if (rdpClient.hasActiveSession()) {
+                startKeepAlive(appContext.getString(R.string.session_notification_status_connecting))
+            }
             repository.touchLastUsed(entity.id)
         }
     }
@@ -660,12 +694,14 @@ class SessionViewModel @Inject constructor(
             .onFailure { PocketLogger.w(TAG, "startForegroundService failed: ${it.message}") }
     }
 
-    /** Stop the keep-alive service (idempotent). Called on user teardown / give-up. */
+    /** Stop the keep-alive service only when this was the last active session. */
     private fun stopKeepAlive() {
-        // Clean teardown — clear the flag so we DON'T later mistake this for a background kill.
-        SessionKeepAliveFlag.setActive(appContext, false)
         reconnectJob?.cancel()
-        RdpSessionService.stop(appContext)
+        if (rdpClient.activeSessionCount() == 0) {
+            // Clean teardown — clear the flag so we DON'T later mistake this for a background kill.
+            SessionKeepAliveFlag.setActive(appContext, false)
+            RdpSessionService.stop(appContext)
+        }
     }
 
     /**
@@ -679,6 +715,7 @@ class SessionViewModel @Inject constructor(
         reconnectJob?.cancel()
         if (reconnectAttempt >= RECONNECT_BACKOFF_MS.size) {
             PocketLogger.w(TAG, "auto-reconnect exhausted after $reconnectAttempt tries — giving up")
+            rdpClient.disconnect()
             stopKeepAlive()
             return
         }
@@ -910,30 +947,30 @@ class SessionViewModel @Inject constructor(
     }
 
     fun disconnect() {
-        // Explicit user teardown (disconnect button): stop reconnecting + stop the keep-alive
-        // service. rdpClient.disconnect() emits Disconnected(reason="user").
+        // Explicit user teardown (disconnect button): stop reconnecting and tear down only this
+        // session. The keep-alive service stops only if no other RdpClient remains active.
         userInitiatedDisconnect = true
-        stopKeepAlive()
         // Grab a final desktop thumbnail BEFORE rdpClient.disconnect() releases the buffer — the
         // snapshot is an independent copy, so the subsequent release is harmless to it.
         captureThumbnail()
         rdpClient.disconnect()
+        stopKeepAlive()
     }
 
     override fun onCleared() {
         // M7 keep-alive: a *backgrounded* session does NOT reach here — single-Activity Compose nav
         // keeps the ViewModel across onStop, and the RdpSessionService keeps the process alive. This
         // fires only when the user actually LEAVES the session screen (pops the back stack), which
-        // IS a deliberate teardown — so disconnect and stop the keep-alive service.
+        // IS a deliberate teardown for this session. Other active sessions stay alive.
         PocketLogger.i(TAG, "SessionViewModel.onCleared — disconnecting + stopping keep-alive")
         userInitiatedDisconnect = true
-        stopKeepAlive()
         // Last chance to refresh the list thumbnail (still Connected here); the store encodes on its
         // own scope, so it survives this ViewModel's scope being cancelled right after onCleared.
         captureThumbnail()
         unregisterClipboardListener()
         typeChannel.close()
         rdpClient.disconnect()
+        stopKeepAlive()
         super.onCleared()
     }
 

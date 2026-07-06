@@ -116,4 +116,6 @@ dependencies {
     api(libs.hilt.android)
     ksp(libs.hilt.compiler)
     api(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
 }
