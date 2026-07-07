@@ -81,12 +81,6 @@ fun ConnectionEditScreen(
         0 to stringResource(R.string.connection_input_mode_trackpad),
         1 to stringResource(R.string.connection_input_mode_touch),
     )
-    val dynamicResMaxOptions = listOf(
-        0 to stringResource(R.string.connection_follow_device),
-        720 to "720p",
-        1080 to "1080p",
-        1440 to "1440p",
-    )
     val codecTierOptions = listOf(
         false to stringResource(R.string.connection_quality_first),
         true to stringResource(R.string.connection_smooth_first),
@@ -275,10 +269,18 @@ fun ConnectionEditScreen(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    dynamicResMaxOptions.forEach { (value, label) ->
+                    dynamicResMaxOptions.forEach { value ->
                         AssistChip(
                             onClick = { viewModel.updateDynamicResMax(value) },
-                            label = { Text(label) },
+                            label = {
+                                Text(
+                                    if (value == 0) {
+                                        stringResource(R.string.connection_follow_device)
+                                    } else {
+                                        "${value}p"
+                                    },
+                                )
+                            },
                             enabled = state.dynamicResMax != value,
                         )
                     }
@@ -641,3 +643,6 @@ private fun connectionEditErrorText(error: ConnectionEditError): String = string
 
 /** Fixed frame-rate presets shown as chips; 0 = 自动 (follow the device screen refresh rate). */
 private val frameRateOptions = listOf(0, 30, 60, 120)
+
+/** Dynamic-resolution short-edge cap presets; 0 = 跟随设备 / uncapped. */
+private val dynamicResMaxOptions = listOf(0, 720, 900, 1080, 1200, 1440, 1600, 2160)

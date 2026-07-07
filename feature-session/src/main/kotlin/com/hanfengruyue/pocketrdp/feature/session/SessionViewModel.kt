@@ -40,7 +40,6 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
-import kotlin.math.roundToInt
 
 sealed interface SessionConnectionStatus {
     data object Idle : SessionConnectionStatus
@@ -546,22 +545,12 @@ class SessionViewModel @Inject constructor(
     }
 
     /**
-     * Scale a requested dynamic-resolution size down so NEITHER edge exceeds the connection's cap
-     * (issue: 动态分辨率直接套用手机全分辨率导致被控端渲染压力过大). [dynamicResMaxShortEdge] is the SHORT-edge
-     * cap in px (720 / 1080 / 1440); the long edge is bounded to 16:9 of it. 0 = 跟随设备 (no cap) → the
-     * size is returned unchanged. Aspect ratio is preserved, the result is NEVER upscaled, and both
-     * edges are rounded DOWN to even numbers (RDP servers commonly clamp resolutions to multiples of 2).
+     * Cap the requested dynamic-resolution size. [dynamicResMaxShortEdge] is the SHORT-edge cap in px
+     * selected by the connection; 0 = 跟随设备 (no cap). Aspect ratio is preserved, the result is NEVER
+     * upscaled, and both edges are rounded DOWN to even numbers.
      */
     private fun capToDynamicMax(width: Int, height: Int): Pair<Int, Int> {
-        val capShort = dynamicResMaxShortEdge
-        if (capShort <= 0 || width <= 0 || height <= 0) return width to height
-        val capLong = capShort * DYNAMIC_RES_ASPECT_LONG / DYNAMIC_RES_ASPECT_SHORT
-        val shortEdge = minOf(width, height)
-        val longEdge = maxOf(width, height)
-        val scale = minOf(1f, capShort.toFloat() / shortEdge, capLong.toFloat() / longEdge)
-        if (scale >= 1f) return width to height
-        fun toEven(v: Float): Int = v.roundToInt().let { it - (it and 1) }.coerceAtLeast(2)
-        return toEven(width * scale) to toEven(height * scale)
+        return capDynamicResolutionToMax(width, height, dynamicResMaxShortEdge)
     }
 
     private fun launchConnect(id: Long) {
@@ -660,6 +649,7 @@ class SessionViewModel @Inject constructor(
             }
             val params = RdpConnectionParams(
                 connectionId = entity.id,
+                displayName = entity.name,
                 host = entity.host,
                 port = entity.port,
                 username = entity.username,
@@ -1030,12 +1020,9 @@ class SessionViewModel @Inject constructor(
         private const val TRANSPORT_STATE_UDP_L = 0x03
         private const val TRANSPORT_STATE_UDP2 = 0x04
         private const val TRANSPORT_FLAG_UDP_FALLBACK = 0x100
-        // Dynamic-resolution default initial size (issue: 1920×1080 fallback) and the 16:9 bounding box
-        // used by capToDynamicMax to derive the long-edge cap from the chosen short-edge cap.
+        // Dynamic-resolution default initial size (issue: 1920×1080 fallback).
         private const val DEFAULT_DYNAMIC_WIDTH = 1920
         private const val DEFAULT_DYNAMIC_HEIGHT = 1080
-        private const val DYNAMIC_RES_ASPECT_LONG = 16
-        private const val DYNAMIC_RES_ASPECT_SHORT = 9
         // Auto-reconnect backoff after an unexpected drop / failed attempt (ms). The array length
         // also caps the number of tries — after the last one we give up and stop the keep-alive
         // service. Resets to attempt 0 on every successful Connected.

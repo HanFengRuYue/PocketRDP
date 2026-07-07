@@ -100,7 +100,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
@@ -332,91 +334,97 @@ fun SessionScreen(
                 enter = slideInVertically { -it } + fadeIn(),
                 exit = slideOutVertically { -it } + fadeOut(),
             ) {
-                TopAppBar(
-                    title = {
-                        // Title slot doubles as the status-info opener. SessionStatusTitle renders
-                        // [● connectionName ⏷] and shows the dropdown with the session metrics
-                        // (resolution, FPS, control latency, transport, sticky mods, last error).
-                        // Keeping the chip wall out of TopAppBar.actions prevents the title from
-                        // being pushed off-screen in portrait orientation.
-                        SessionStatusTitle(
-                            status = state.status,
-                            connectionName = state.connectionName,
-                            connectionId = connectionId,
-                            remoteWidth = state.remoteWidth,
-                            remoteHeight = state.remoteHeight,
-                            fps = state.fps,
-                            controlLatencyMs = state.controlLatencyMs,
-                            presentLagMs = state.presentLagMs,
-                            networkRttMs = state.latencyMs,
-                            latencyAccepted = state.latencyAccepted,
-                            latencyDiscarded = state.latencyDiscarded,
-                            transport = state.transport,
-                            transportStats = state.transportStats,
-                            host = state.connectionHost,
-                            stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
-                            lastError = state.lastError,
-                            menuContainerColor = toolbarBg,
-                            menuContentColor = TOOLBAR_CONTENT,
-                            onErrorClick = {
-                                val err = state.lastError ?: return@SessionStatusTitle
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        message = err,
-                                        duration = SnackbarDuration.Long,
-                                        withDismissAction = true,
-                                    )
-                                }
-                            },
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onClose) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.session_cd_back))
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = viewModel::toggleIme) {
-                            Icon(
-                                imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
-                                contentDescription = stringResource(R.string.session_cd_keyboard),
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .glassChromeBackground(toolbarBg, GlassChromeEdge.Bottom),
+                    )
+                    TopAppBar(
+                        title = {
+                            // Title slot doubles as the status-info opener. SessionStatusTitle renders
+                            // [● connectionName ⏷] and shows the dropdown with the session metrics
+                            // (resolution, FPS, control latency, transport, sticky mods, last error).
+                            // Keeping the chip wall out of TopAppBar.actions prevents the title from
+                            // being pushed off-screen in portrait orientation.
+                            SessionStatusTitle(
+                                status = state.status,
+                                connectionName = state.connectionName,
+                                connectionId = connectionId,
+                                remoteWidth = state.remoteWidth,
+                                remoteHeight = state.remoteHeight,
+                                fps = state.fps,
+                                controlLatencyMs = state.controlLatencyMs,
+                                presentLagMs = state.presentLagMs,
+                                networkRttMs = state.latencyMs,
+                                latencyAccepted = state.latencyAccepted,
+                                latencyDiscarded = state.latencyDiscarded,
+                                transport = state.transport,
+                                transportStats = state.transportStats,
+                                host = state.connectionHost,
+                                stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
+                                lastError = state.lastError,
+                                menuContainerColor = toolbarBg,
+                                menuContentColor = TOOLBAR_CONTENT,
+                                onErrorClick = {
+                                    val err = state.lastError ?: return@SessionStatusTitle
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = err,
+                                            duration = SnackbarDuration.Long,
+                                            withDismissAction = true,
+                                        )
+                                    }
+                                },
                             )
-                        }
-                        IconButton(onClick = viewModel::toggleMode) {
-                            Icon(
-                                imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp,
-                                contentDescription = stringResource(R.string.session_cd_switch_input_mode),
-                            )
-                        }
-                        IconButton(onClick = viewModel::toggleImmersive) {
-                            Icon(
-                                imageVector = Icons.Default.Fullscreen,
-                                contentDescription = stringResource(R.string.session_cd_fullscreen),
-                            )
-                        }
-                        IconButton(onClick = { viewModel.disconnect(); onDisconnect() }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.session_cd_disconnect))
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        // Solid black bar, white content (用户需求: 工具栏改黑底白字，不要半透明灰玻璃).
-                        containerColor = toolbarBg,
-                        scrolledContainerColor = toolbarBg,
-                        titleContentColor = TOOLBAR_CONTENT,
-                        navigationIconContentColor = TOOLBAR_CONTENT,
-                        actionIconContentColor = TOOLBAR_CONTENT,
-                    ),
-                    // Deliberately DROP the top inset so the bar draws right up into the camera /
-                    // notch row at the very top of the screen, reclaiming that strip for the toolbar
-                    // and pushing the remote picture (which sits below the bar) higher — bigger
-                    // picture (用户需求: 工具栏显示在全面屏顶部摄像头位置，加大画面空间). The bar is 64dp
-                    // tall and its title/icons are start-/end-aligned, so a top-centre hole-punch
-                    // sits in the bar's empty middle and never covers them. We KEEP the horizontal
-                    // displayCutout inset so a landscape (shortEdges) side-notch still can't clip the
-                    // title or action icons.
-                    windowInsets = WindowInsets.displayCutout
-                        .only(WindowInsetsSides.Horizontal),
-                )
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = onClose) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.session_cd_back))
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = viewModel::toggleIme) {
+                                Icon(
+                                    imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
+                                    contentDescription = stringResource(R.string.session_cd_keyboard),
+                                )
+                            }
+                            IconButton(onClick = viewModel::toggleMode) {
+                                Icon(
+                                    imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp,
+                                    contentDescription = stringResource(R.string.session_cd_switch_input_mode),
+                                )
+                            }
+                            IconButton(onClick = viewModel::toggleImmersive) {
+                                Icon(
+                                    imageVector = Icons.Default.Fullscreen,
+                                    contentDescription = stringResource(R.string.session_cd_fullscreen),
+                                )
+                            }
+                            IconButton(onClick = { viewModel.disconnect(); onDisconnect() }) {
+                                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.session_cd_disconnect))
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = Color.Transparent,
+                            scrolledContainerColor = Color.Transparent,
+                            titleContentColor = TOOLBAR_CONTENT,
+                            navigationIconContentColor = TOOLBAR_CONTENT,
+                            actionIconContentColor = TOOLBAR_CONTENT,
+                        ),
+                        // Deliberately DROP the top inset so the bar draws right up into the camera /
+                        // notch row at the very top of the screen, reclaiming that strip for the toolbar
+                        // and pushing the remote picture (which sits below the bar) higher — bigger
+                        // picture (用户需求: 工具栏显示在全面屏顶部摄像头位置，加大画面空间). The bar is 64dp
+                        // tall and its title/icons are start-/end-aligned, so a top-centre hole-punch
+                        // sits in the bar's empty middle and never covers them. We KEEP the horizontal
+                        // displayCutout inset so a landscape (shortEdges) side-notch still can't clip the
+                        // title or action icons.
+                        windowInsets = WindowInsets.displayCutout
+                            .only(WindowInsetsSides.Horizontal),
+                    )
+                }
             }
         },
     ) { padding ->
@@ -711,6 +719,9 @@ private const val MIN_CHROME_ALPHA = 0.35f
 private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
 private val TOOLBAR_CONTENT = Color.White
+private const val GLASS_EDGE_ALPHA = 0.22f
+private const val GLASS_HIGHLIGHT_ALPHA = 0.10f
+private const val GLASS_SHADOW_ALPHA = 0.18f
 private const val DEFAULT_CURSOR_HEIGHT = 26f
 private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
 private const val DEFAULT_CURSOR_TAIL_Y = 15f
@@ -724,6 +735,45 @@ private const val DEFAULT_CURSOR_RIGHT_X = 19f
 private const val DEFAULT_CURSOR_OUTLINE_WIDTH = 2f
 // Outline alpha for an inactive (un-pressed) key pill on the translucent black bar.
 private const val KEY_BORDER_ALPHA = 0.55f
+
+private enum class GlassChromeEdge { Top, Bottom }
+
+private fun Modifier.glassChromeBackground(containerColor: Color, edge: GlassChromeEdge): Modifier =
+    this
+        .background(containerColor)
+        .background(
+            Brush.verticalGradient(
+                colors = when (edge) {
+                    GlassChromeEdge.Top -> listOf(
+                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.55f),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA),
+                    )
+                    GlassChromeEdge.Bottom -> listOf(
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.45f),
+                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
+                    )
+                },
+            ),
+        )
+        .drawBehind {
+            val stroke = 1.dp.toPx()
+            val edgeY = if (edge == GlassChromeEdge.Top) stroke / 2f else size.height - stroke / 2f
+            val shadowY = if (edge == GlassChromeEdge.Top) stroke * 1.5f else size.height - stroke * 1.5f
+            drawLine(
+                color = Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
+                start = Offset(0f, shadowY),
+                end = Offset(size.width, shadowY),
+                strokeWidth = stroke * 2f,
+            )
+            drawLine(
+                color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA),
+                start = Offset(0f, edgeY),
+                end = Offset(size.width, edgeY),
+                strokeWidth = stroke,
+            )
+        }
 
 /**
  * Drives the keyboard-lift (issue: 呼出键盘后画面被下方键盘挡住看不见). Reads the live soft-keyboard height
@@ -1163,13 +1213,12 @@ private fun SessionToolbar(
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .background(containerColor)
+                .glassChromeBackground(containerColor, GlassChromeEdge.Top)
                 .consumeAllPointerInput(),
         )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(containerColor)
                 .onSizeChanged { onBarHeightChanged(it.height) }
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),

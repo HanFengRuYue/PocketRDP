@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.core.rdp
 
 data class RdpConnectionParams(
     val connectionId: Long,
+    val displayName: String = "",
     val host: String,
     val port: Int,
     val username: String,

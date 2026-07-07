@@ -78,10 +78,13 @@ private fun AppRoot(appViewModel: AppViewModel = hiltViewModel()) {
             LocalResources provides localizedResources,
         ) {
             val activeSessionIds = remember { mutableStateListOf<Long>() }
+            val sessionSnapshot by appViewModel.sessionSnapshot.collectAsStateWithLifecycle()
+            val livePreviews by appViewModel.livePreviews.collectAsStateWithLifecycle()
             var foregroundSessionId by remember { mutableStateOf<Long?>(null) }
             Surface(modifier = Modifier.fillMaxSize()) {
                 PocketRdpNavHost(
-                    activeSessionIds = activeSessionIds.toSet(),
+                    activeSessionIds = sessionSnapshot.activeConnectionIds,
+                    liveThumbnails = livePreviews,
                     onConnect = { id ->
                         if (!activeSessionIds.contains(id)) activeSessionIds.add(id)
                         foregroundSessionId = id

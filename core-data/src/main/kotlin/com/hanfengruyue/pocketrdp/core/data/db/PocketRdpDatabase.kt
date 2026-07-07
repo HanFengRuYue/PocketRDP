@@ -80,7 +80,7 @@ abstract class PocketRdpDatabase : RoomDatabase() {
 
         /**
          * v6 → v7: adds dynamic_res_max — the max remote-resolution cap (short-edge px) applied while
-         * dynamic-resolution is on (0 = 跟随设备 / no cap; 720 / 1080 / 1440 otherwise). Default 0 keeps
+         * dynamic-resolution is on (0 = 跟随设备 / no cap; positive values are short-edge caps). Default 0 keeps
          * every existing connection's uncapped behaviour (it still follows the full local view size).
          */
         val MIGRATION_6_7 = object : Migration(6, 7) {
