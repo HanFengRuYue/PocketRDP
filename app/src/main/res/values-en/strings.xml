@@ -16,6 +16,11 @@
     <string name="settings_chrome_alpha_title">Control UI opacity</string>
     <string name="settings_toolbar_alpha_title">Top and bottom toolbars</string>
     <string name="settings_controls_alpha_title">Zoom button and move joystick</string>
+    <string name="settings_cursor_group_title">Simulated mouse cursor</string>
+    <string name="settings_cursor_size_title">Cursor size</string>
+    <string name="settings_cursor_size_value">%1$d%%</string>
+    <string name="settings_cursor_size_min">75%</string>
+    <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
     <string name="settings_alpha_min">35%</string>

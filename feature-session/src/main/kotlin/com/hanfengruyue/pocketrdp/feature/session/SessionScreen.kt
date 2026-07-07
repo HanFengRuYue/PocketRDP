@@ -132,8 +132,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
+import com.hanfengruyue.pocketrdp.core.data.preferences.MIN_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
@@ -157,6 +160,7 @@ fun SessionScreen(
     onDisconnect: () -> Unit = onClose,
     toolbarAlpha: Float = CHROME_ALPHA,
     controlAlpha: Float = CHROME_ALPHA,
+    cursorScale: Float = DEFAULT_SIMULATED_CURSOR_SCALE,
     viewModel: SessionViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -165,6 +169,7 @@ fun SessionScreen(
     val scope = rememberCoroutineScope()
     val toolbarBg = Color.Black.copy(alpha = toolbarAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
     val controlBg = Color.Black.copy(alpha = controlAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
+    val simulatedCursorScale = cursorScale.coerceIn(MIN_SIMULATED_CURSOR_SCALE, MAX_SIMULATED_CURSOR_SCALE)
     BackHandler { onClose() }
     LaunchedEffect(connectionId) { viewModel.ensureStarted(connectionId) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -454,6 +459,7 @@ fun SessionScreen(
                 mode = state.mode,
                 onViewSizeChanged = viewModel::onSurfaceResized,
                 targetFrameRate = state.targetFrameRate,
+                cursorScale = simulatedCursorScale,
                 // Decode→present latency feedback: RdpSurface reports each drawn frame's commit→draw
                 // wait so the status panel can show the display-pipeline lag the input→decode metric
                 // can't see (METRIC-1). Passive — see RdpSurface.onFramePresented / recordPresentLag.
@@ -795,6 +801,7 @@ private fun SessionCanvas(
     mode: InputMode,
     onViewSizeChanged: (width: Int, height: Int) -> Unit,
     targetFrameRate: Int,
+    cursorScale: Float,
     onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
     val hasPublishedFrame by buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
@@ -877,6 +884,7 @@ private fun SessionCanvas(
                 scale = scale,
                 dx = dx,
                 dy = dy,
+                cursorScale = cursorScale,
                 modifier = Modifier
                     .fillMaxSize()
                     // Cursor sits on the same transformed layer as the framebuffer so it
@@ -899,6 +907,7 @@ private fun RemoteCursorOverlay(
     scale: Float,
     dx: Float,
     dy: Float,
+    cursorScale: Float,
     modifier: Modifier = Modifier,
 ) {
     if (cursor == RdpCursor.Hidden) return
@@ -909,33 +918,42 @@ private fun RemoteCursorOverlay(
 
     Canvas(modifier = modifier) {
         val virtualPosition = virtualPositionState.value
-        val hotX = if (cursor is RdpCursor.Image) cursor.hotX.toFloat() else 0f
-        val hotY = if (cursor is RdpCursor.Image) cursor.hotY.toFloat() else 0f
+        val hotX = if (cursor is RdpCursor.Image) cursor.hotX.toFloat() * cursorScale else 0f
+        val hotY = if (cursor is RdpCursor.Image) cursor.hotY.toFloat() * cursorScale else 0f
         val left = virtualPosition.first * scale + dx - hotX
         val top = virtualPosition.second * scale + dy - hotY
 
         if (cursorImage != null) {
-            drawImage(cursorImage, topLeft = Offset(left, top))
+            drawImage(
+                image = cursorImage,
+                srcOffset = IntOffset.Zero,
+                srcSize = IntSize(cursorImage.width, cursorImage.height),
+                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                dstSize = IntSize(
+                    width = (cursorImage.width * cursorScale).roundToInt().coerceAtLeast(1),
+                    height = (cursorImage.height * cursorScale).roundToInt().coerceAtLeast(1),
+                ),
+            )
         } else {
-            drawDefaultWindowsCursor(left, top)
+            drawDefaultWindowsCursor(left, top, cursorScale)
         }
     }
 }
 
-private fun DrawScope.drawDefaultWindowsCursor(left: Float, top: Float) {
+private fun DrawScope.drawDefaultWindowsCursor(left: Float, top: Float, cursorScale: Float) {
     val arrow = Path().apply {
         moveTo(left, top)
-        lineTo(left, top + DEFAULT_CURSOR_BOTTOM_Y)
-        lineTo(left + DEFAULT_CURSOR_TAIL_LEFT_X, top + DEFAULT_CURSOR_TAIL_Y)
-        lineTo(left + DEFAULT_CURSOR_SHAFT_LEFT_X, top + DEFAULT_CURSOR_TAIL_Y)
-        lineTo(left + DEFAULT_CURSOR_TAIL_RIGHT_X, top + DEFAULT_CURSOR_HEIGHT)
-        lineTo(left + DEFAULT_CURSOR_TAIL_OUTER_X, top + DEFAULT_CURSOR_TAIL_OUTER_Y)
-        lineTo(left + DEFAULT_CURSOR_SHAFT_RIGHT_X, top + DEFAULT_CURSOR_TAIL_Y)
-        lineTo(left + DEFAULT_CURSOR_RIGHT_X, top + DEFAULT_CURSOR_TAIL_Y)
+        lineTo(left, top + DEFAULT_CURSOR_BOTTOM_Y * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_TAIL_LEFT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_SHAFT_LEFT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_TAIL_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_HEIGHT * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_TAIL_OUTER_X * cursorScale, top + DEFAULT_CURSOR_TAIL_OUTER_Y * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_SHAFT_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
+        lineTo(left + DEFAULT_CURSOR_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
         close()
     }
     drawPath(arrow, color = Color.White)
-    drawPath(arrow, color = Color.Black, style = Stroke(width = DEFAULT_CURSOR_OUTLINE_WIDTH))
+    drawPath(arrow, color = Color.Black, style = Stroke(width = DEFAULT_CURSOR_OUTLINE_WIDTH * cursorScale))
 }
 
 /** F1–F12 keys for the function-key bar (label → Windows VK). */

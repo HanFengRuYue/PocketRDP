@@ -97,6 +97,7 @@ private fun AppRoot(appViewModel: AppViewModel = hiltViewModel()) {
                         },
                         toolbarAlpha = prefs.toolbarAlpha,
                         controlAlpha = prefs.controlAlpha,
+                        cursorScale = prefs.simulatedCursorScale,
                         viewModel = hiltViewModel(key = "rdp-session-$id"),
                     )
                 }

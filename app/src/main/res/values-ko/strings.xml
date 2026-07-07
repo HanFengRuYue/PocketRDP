@@ -15,6 +15,11 @@
     <string name="settings_chrome_alpha_title">조작 UI 투명도</string>
     <string name="settings_toolbar_alpha_title">상단 및 하단 도구 모음</string>
     <string name="settings_controls_alpha_title">확대 버튼과 이동 조이스틱</string>
+    <string name="settings_cursor_group_title">시뮬레이션 마우스 커서</string>
+    <string name="settings_cursor_size_title">커서 크기</string>
+    <string name="settings_cursor_size_value">%1$d%%</string>
+    <string name="settings_cursor_size_min">75%</string>
+    <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
     <string name="settings_alpha_min">35%</string>

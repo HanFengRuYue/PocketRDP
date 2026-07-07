@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Palette
@@ -69,7 +70,10 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.R
 import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
+import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCALE
+import com.hanfengruyue.pocketrdp.core.data.preferences.MIN_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.data.preferences.ThemeMode
+import kotlin.math.roundToInt
 
 private val SectionShape = RoundedCornerShape(8.dp)
 
@@ -112,8 +116,6 @@ fun SettingsScreen(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            AppHeader(appVersion = appVersion)
-
             SettingsGroup(
                 title = stringResource(R.string.settings_quick_actions_title),
                 icon = Icons.Default.TouchApp,
@@ -192,14 +194,20 @@ fun SettingsScreen(
             }
 
             SettingsGroup(
+                title = stringResource(R.string.settings_cursor_group_title),
+                icon = Icons.Default.Mouse,
+            ) {
+                CursorSizeSlider(
+                    value = prefs.simulatedCursorScale,
+                    onChange = viewModel::setSimulatedCursorScale,
+                )
+            }
+
+            SettingsGroup(
                 title = stringResource(R.string.settings_about_title),
                 icon = Icons.Default.Info,
             ) {
-                InfoRow(
-                    icon = Icons.Default.DesktopWindows,
-                    title = stringResource(R.string.settings_about_version_label),
-                    value = appVersion,
-                )
+                AppInfoHeader(appVersion = appVersion)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                 LinkRow(
                     icon = Icons.Default.Code,
@@ -220,7 +228,7 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun AppHeader(appVersion: String) {
+private fun AppInfoHeader(appVersion: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = SectionShape,
@@ -229,7 +237,7 @@ private fun AppHeader(appVersion: String) {
     ) {
         Row(
             modifier = Modifier.padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(
@@ -260,8 +268,8 @@ private fun AppHeader(appVersion: String) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                 )
+                VersionPill(version = appVersion)
             }
-            VersionPill(version = appVersion)
         }
     }
 }
@@ -401,6 +409,58 @@ private fun SelectableSettingChip(selected: Boolean, label: String, onClick: () 
 }
 
 @Composable
+private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
+    val percent = (value * 100).roundToInt()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.settings_cursor_size_title),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_cursor_size_value, percent),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = MIN_SIMULATED_CURSOR_SCALE..MAX_SIMULATED_CURSOR_SCALE,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.settings_cursor_size_min),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = stringResource(R.string.settings_cursor_size_max),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
 private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) {
     val percent = (value * 100).toInt()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -443,31 +503,6 @@ private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) 
                 text = stringResource(R.string.settings_alpha_max),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun InfoRow(icon: ImageVector, title: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        RowIcon(icon = icon)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
             )
         }
     }
