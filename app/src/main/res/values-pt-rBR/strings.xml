@@ -15,6 +15,11 @@
     <string name="settings_chrome_alpha_title">Opacidade da interface de controle</string>
     <string name="settings_toolbar_alpha_title">Barras superior e inferior</string>
     <string name="settings_controls_alpha_title">Botão de zoom e joystick de movimento</string>
+    <string name="settings_cursor_group_title">Cursor de mouse simulado</string>
+    <string name="settings_cursor_size_title">Tamanho do cursor</string>
+    <string name="settings_cursor_size_value">%1$d%%</string>
+    <string name="settings_cursor_size_min">75%</string>
+    <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
     <string name="settings_alpha_min">35%</string>

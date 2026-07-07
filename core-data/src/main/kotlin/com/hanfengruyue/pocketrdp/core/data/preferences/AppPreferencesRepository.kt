@@ -31,6 +31,7 @@ data class AppPreferences(
     val languageTag: String = LANGUAGE_SYSTEM,
     val toolbarAlpha: Float = DEFAULT_CHROME_ALPHA,
     val controlAlpha: Float = DEFAULT_CHROME_ALPHA,
+    val simulatedCursorScale: Float = DEFAULT_SIMULATED_CURSOR_SCALE,
     val functionToolbarQuickIds: List<String> = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS,
 )
 
@@ -53,6 +54,8 @@ class AppPreferencesRepository @Inject constructor(
                 languageTag = sanitizeLanguageTag(prefs[KEY_LANGUAGE_TAG]),
                 toolbarAlpha = (prefs[KEY_TOOLBAR_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
                 controlAlpha = (prefs[KEY_CONTROL_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
+                simulatedCursorScale = (prefs[KEY_SIMULATED_CURSOR_SCALE] ?: DEFAULT_SIMULATED_CURSOR_SCALE)
+                    .coerceIn(MIN_SIMULATED_CURSOR_SCALE, MAX_SIMULATED_CURSOR_SCALE),
                 functionToolbarQuickIds = sanitizeFunctionToolbarQuickIds(
                     prefs[KEY_FUNCTION_TOOLBAR_QUICK_IDS]
                         ?.split(TOOLBAR_ID_SEPARATOR)
@@ -84,6 +87,15 @@ class AppPreferencesRepository @Inject constructor(
         context.appPreferencesDataStore.edit { it[KEY_CONTROL_ALPHA] = alpha.coerceIn(MIN_ALPHA, MAX_ALPHA) }
     }
 
+    suspend fun setSimulatedCursorScale(scale: Float) {
+        context.appPreferencesDataStore.edit {
+            it[KEY_SIMULATED_CURSOR_SCALE] = scale.coerceIn(
+                MIN_SIMULATED_CURSOR_SCALE,
+                MAX_SIMULATED_CURSOR_SCALE,
+            )
+        }
+    }
+
     suspend fun setFunctionToolbarQuickIds(ids: List<String>) {
         val sanitized = sanitizeFunctionToolbarQuickIds(ids)
         context.appPreferencesDataStore.edit {
@@ -100,6 +112,7 @@ class AppPreferencesRepository @Inject constructor(
         private val KEY_LANGUAGE_TAG = stringPreferencesKey("language_tag")
         private val KEY_TOOLBAR_ALPHA = floatPreferencesKey("toolbar_alpha")
         private val KEY_CONTROL_ALPHA = floatPreferencesKey("control_alpha")
+        private val KEY_SIMULATED_CURSOR_SCALE = floatPreferencesKey("simulated_cursor_scale")
         private val KEY_FUNCTION_TOOLBAR_QUICK_IDS = stringPreferencesKey("function_toolbar_quick_ids")
     }
 }
@@ -145,3 +158,7 @@ fun sanitizeFunctionToolbarQuickIds(ids: List<String>): List<String> {
 const val DEFAULT_CHROME_ALPHA = 0.7f
 private const val MIN_ALPHA = 0.35f
 private const val MAX_ALPHA = 1f
+
+const val DEFAULT_SIMULATED_CURSOR_SCALE = 1f
+const val MIN_SIMULATED_CURSOR_SCALE = 0.75f
+const val MAX_SIMULATED_CURSOR_SCALE = 2f

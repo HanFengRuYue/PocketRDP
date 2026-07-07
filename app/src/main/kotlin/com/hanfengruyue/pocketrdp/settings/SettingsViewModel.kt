@@ -37,4 +37,8 @@ class SettingsViewModel @Inject constructor(
     fun setControlAlpha(alpha: Float) {
         viewModelScope.launch { repository.setControlAlpha(alpha) }
     }
+
+    fun setSimulatedCursorScale(scale: Float) {
+        viewModelScope.launch { repository.setSimulatedCursorScale(scale) }
+    }
 }
