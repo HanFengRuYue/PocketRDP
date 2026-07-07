@@ -1,5 +1,6 @@
 package com.hanfengruyue.pocketrdp.core.rdp
 
+import android.graphics.Bitmap
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
@@ -557,9 +558,31 @@ class RdpClient @Inject constructor(
             emit(RdpEvent.ClipboardReceived(data))
         }
 
-        override fun OnPointerSet(inst: Long, pixels: IntArray, width: Int, height: Int, hotX: Int, hotY: Int) {}
-        override fun OnPointerSetNull(inst: Long) {}
-        override fun OnPointerSetDefault(inst: Long) {}
+        override fun OnPointerSet(inst: Long, pixels: IntArray, width: Int, height: Int, hotX: Int, hotY: Int) {
+            if (!isCurrentInstance(inst)) return
+            if (width <= 0 || height <= 0 || pixels.size < width * height) return
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+            emit(
+                RdpEvent.PointerChanged(
+                    RdpCursor.Image(
+                        bitmap = bitmap,
+                        hotX = hotX.coerceIn(0, width - 1),
+                        hotY = hotY.coerceIn(0, height - 1),
+                    ),
+                ),
+            )
+        }
+
+        override fun OnPointerSetNull(inst: Long) {
+            if (!isCurrentInstance(inst)) return
+            emit(RdpEvent.PointerChanged(RdpCursor.Hidden))
+        }
+
+        override fun OnPointerSetDefault(inst: Long) {
+            if (!isCurrentInstance(inst)) return
+            emit(RdpEvent.PointerChanged(RdpCursor.Default))
+        }
     }
 
     init {

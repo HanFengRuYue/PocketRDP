@@ -15,6 +15,7 @@ import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
 import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
+import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.core.rdp.RdpDriveRedirectionPlan
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
@@ -56,6 +57,7 @@ data class SessionUiState(
     val status: SessionConnectionStatus = SessionConnectionStatus.Idle,
     val remoteWidth: Int = 0,
     val remoteHeight: Int = 0,
+    val remoteCursor: RdpCursor = RdpCursor.Default,
     val mode: InputMode = InputMode.TRACKPAD,
     /**
      * Whether the app's own top bar (chrome) is shown. This NO LONGER controls the Android system
@@ -230,6 +232,7 @@ class SessionViewModel @Inject constructor(
         val id = savedStateHandle.get<Long>("id") ?: 0L
         _state.update { it.copy(connectionId = id) }
         observeEvents()
+        observePointerEvents()
         observePreferences()
         startMetricsTicker()
         startLatencyProbe()
@@ -340,6 +343,7 @@ class SessionViewModel @Inject constructor(
                                 connectedAtMs = 0L,
                                 durationSec = 0L,
                                 fps = 0,
+                                remoteCursor = RdpCursor.Default,
                             )
                         }
                         // reason=="user" → deliberate teardown (disconnect button / left screen):
@@ -362,6 +366,7 @@ class SessionViewModel @Inject constructor(
                                 connectedAtMs = 0L,
                                 durationSec = 0L,
                                 fps = 0,
+                                remoteCursor = RdpCursor.Default,
                                 lastError = event.error,
                             )
                         }
@@ -395,6 +400,16 @@ class SessionViewModel @Inject constructor(
                         fpsCounter.tick()
                     }
                     else -> Unit
+                }
+            }
+        }
+    }
+
+    private fun observePointerEvents() {
+        viewModelScope.launch {
+            rdpClient.events.collect { event ->
+                if (event is RdpEvent.PointerChanged) {
+                    _state.update { it.copy(remoteCursor = event.cursor) }
                 }
             }
         }

@@ -1,6 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
+import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.core.rdp.RdpPointerFlags
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTouchAction
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,10 @@ class RdpInputController(
     /** Current trackpad cursor in REMOTE coordinates. Used by the overlay to draw a pointer. */
     val virtualPosition: StateFlow<Pair<Float, Float>> = _virtualPosition.asStateFlow()
 
+    private val _remoteCursor = MutableStateFlow<RdpCursor>(RdpCursor.Default)
+    /** Current remote pointer shape sent by FreeRDP pointer callbacks. */
+    val remoteCursor: StateFlow<RdpCursor> = _remoteCursor.asStateFlow()
+
     private val _userTransform = MutableStateFlow(UserTransform())
     /** Local pinch/zoom-button transform, published on EVERY change so the graphicsLayer tracks it. */
     val userTransform: StateFlow<UserTransform> = _userTransform.asStateFlow()
@@ -94,6 +99,10 @@ class RdpInputController(
         virtualX = virtualX.coerceIn(0f, remoteWidth - 1f)
         virtualY = virtualY.coerceIn(0f, remoteHeight - 1f)
         publishVirtual()
+    }
+
+    fun setRemoteCursor(cursor: RdpCursor) {
+        _remoteCursor.value = cursor
     }
 
     /** Update the fit-to-view transform. dx/dy are letterbox offsets in view pixels. */
