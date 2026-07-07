@@ -102,7 +102,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -131,6 +135,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
+import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.SessionImeBridge
@@ -183,6 +188,7 @@ fun SessionScreen(
         )
     }
     LaunchedEffect(state.mode) { controller.setMode(state.mode) }
+    LaunchedEffect(state.remoteCursor) { controller.setRemoteCursor(state.remoteCursor) }
     LaunchedEffect(state.remoteWidth, state.remoteHeight) {
         controller.setRemoteSize(state.remoteWidth, state.remoteHeight)
         // Resetting local zoom on resize keeps the picture inside the visible area when the
@@ -699,6 +705,17 @@ private const val MIN_CHROME_ALPHA = 0.35f
 private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
 private val TOOLBAR_CONTENT = Color.White
+private const val DEFAULT_CURSOR_HEIGHT = 26f
+private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
+private const val DEFAULT_CURSOR_TAIL_Y = 15f
+private const val DEFAULT_CURSOR_TAIL_LEFT_X = 5f
+private const val DEFAULT_CURSOR_SHAFT_LEFT_X = 8f
+private const val DEFAULT_CURSOR_TAIL_RIGHT_X = 13f
+private const val DEFAULT_CURSOR_TAIL_OUTER_X = 16f
+private const val DEFAULT_CURSOR_TAIL_OUTER_Y = 24f
+private const val DEFAULT_CURSOR_SHAFT_RIGHT_X = 12f
+private const val DEFAULT_CURSOR_RIGHT_X = 19f
+private const val DEFAULT_CURSOR_OUTLINE_WIDTH = 2f
 // Outline alpha for an inactive (un-pressed) key pill on the translucent black bar.
 private const val KEY_BORDER_ALPHA = 0.55f
 
@@ -788,6 +805,7 @@ private fun SessionCanvas(
     // SessionCanvas (which would re-run the AndroidView update lambda every frame).
     val transformState = controller.userTransform.collectAsStateWithLifecycle()
     val virtualPosState = controller.virtualPosition.collectAsStateWithLifecycle()
+    val remoteCursorState = controller.remoteCursor.collectAsStateWithLifecycle()
 
     // Same fit-to-view math RdpSurface.onDraw uses. Kept in sync so touch coordinates and
     // the on-screen cursor overlay all share one transform.
@@ -847,29 +865,24 @@ private fun SessionCanvas(
             ConnectingFrameOverlay()
         }
 
-        // Trackpad-mode cursor overlay. The native FreeRDP cursor pixels aren't currently
-        // routed up to the UI (OnPointerSet is unused) so without this the user has no
-        // visual reference for where a click will land in trackpad mode.
-        if (mode == InputMode.TRACKPAD && hasPublishedFrame && bmW > 0f && bmH > 0f) {
-            Canvas(
+        // Trackpad-mode cursor overlay. FreeRDP routes remote pointer shape changes here
+        // (I-beam, resize handles, hand cursor, etc.); until the server sends one, draw
+        // a Windows-style default arrow.
+        val hasRemoteFrameSize = bmW > 0f && bmH > 0f
+        val shouldShowRemoteCursor = mode == InputMode.TRACKPAD && hasPublishedFrame && hasRemoteFrameSize
+        if (shouldShowRemoteCursor) {
+            RemoteCursorOverlay(
+                cursor = remoteCursorState.value,
+                virtualPositionState = virtualPosState,
+                scale = scale,
+                dx = dx,
+                dy = dy,
                 modifier = Modifier
                     .fillMaxSize()
-                    // Crosshair sits on the same transformed layer as the framebuffer so it
-                    // tracks pinch-zoom/pan correctly.
+                    // Cursor sits on the same transformed layer as the framebuffer so it
+                    // tracks zoom/pan/keyboard-lift correctly.
                     .userTransformLayer(transformState),
-            ) {
-                val vp = virtualPosState.value
-                val cx = vp.first * scale + dx
-                val cy = vp.second * scale + dy
-                val arm = 12f
-                val stroke = 2f
-                // Outline (black) — visible against light backgrounds.
-                drawLine(Color.Black, Offset(cx - arm - 1f, cy), Offset(cx + arm + 1f, cy), strokeWidth = stroke + 2f)
-                drawLine(Color.Black, Offset(cx, cy - arm - 1f), Offset(cx, cy + arm + 1f), strokeWidth = stroke + 2f)
-                // Inner (white) — visible against dark backgrounds.
-                drawLine(Color.White, Offset(cx - arm, cy), Offset(cx + arm, cy), strokeWidth = stroke)
-                drawLine(Color.White, Offset(cx, cy - arm), Offset(cx, cy + arm), strokeWidth = stroke)
-            }
+            )
         }
     }
 
@@ -877,6 +890,52 @@ private fun SessionCanvas(
         val surface = surfaceRef ?: return@LaunchedEffect
         buffer.dirty.collect { rect -> surface.markDirty(rect) }
     }
+}
+
+@Composable
+private fun RemoteCursorOverlay(
+    cursor: RdpCursor,
+    virtualPositionState: State<Pair<Float, Float>>,
+    scale: Float,
+    dx: Float,
+    dy: Float,
+    modifier: Modifier = Modifier,
+) {
+    if (cursor == RdpCursor.Hidden) return
+    val cursorImage = when (cursor) {
+        is RdpCursor.Image -> remember(cursor.bitmap) { cursor.bitmap.asImageBitmap() }
+        else -> null
+    }
+
+    Canvas(modifier = modifier) {
+        val virtualPosition = virtualPositionState.value
+        val hotX = if (cursor is RdpCursor.Image) cursor.hotX.toFloat() else 0f
+        val hotY = if (cursor is RdpCursor.Image) cursor.hotY.toFloat() else 0f
+        val left = virtualPosition.first * scale + dx - hotX
+        val top = virtualPosition.second * scale + dy - hotY
+
+        if (cursorImage != null) {
+            drawImage(cursorImage, topLeft = Offset(left, top))
+        } else {
+            drawDefaultWindowsCursor(left, top)
+        }
+    }
+}
+
+private fun DrawScope.drawDefaultWindowsCursor(left: Float, top: Float) {
+    val arrow = Path().apply {
+        moveTo(left, top)
+        lineTo(left, top + DEFAULT_CURSOR_BOTTOM_Y)
+        lineTo(left + DEFAULT_CURSOR_TAIL_LEFT_X, top + DEFAULT_CURSOR_TAIL_Y)
+        lineTo(left + DEFAULT_CURSOR_SHAFT_LEFT_X, top + DEFAULT_CURSOR_TAIL_Y)
+        lineTo(left + DEFAULT_CURSOR_TAIL_RIGHT_X, top + DEFAULT_CURSOR_HEIGHT)
+        lineTo(left + DEFAULT_CURSOR_TAIL_OUTER_X, top + DEFAULT_CURSOR_TAIL_OUTER_Y)
+        lineTo(left + DEFAULT_CURSOR_SHAFT_RIGHT_X, top + DEFAULT_CURSOR_TAIL_Y)
+        lineTo(left + DEFAULT_CURSOR_RIGHT_X, top + DEFAULT_CURSOR_TAIL_Y)
+        close()
+    }
+    drawPath(arrow, color = Color.White)
+    drawPath(arrow, color = Color.Black, style = Stroke(width = DEFAULT_CURSOR_OUTLINE_WIDTH))
 }
 
 /** F1–F12 keys for the function-key bar (label → Windows VK). */

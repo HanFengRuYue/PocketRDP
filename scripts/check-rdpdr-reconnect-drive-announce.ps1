@@ -17,16 +17,16 @@ if (-not $tryAdvance.Success) {
 
 $body = $tryAdvance.Groups["body"].Value
 
-if ($body -match "rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*FALSE\s*\)") {
-    throw "Reconnect drive announce guard is still false: filesystem devices can be skipped until USER_LOGGEDON."
+if ($body -notmatch "rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*FALSE\s*\)") {
+    throw "Initial ready announce must not mark userLoggedOn. Sending filesystem devices before USER_LOGGEDON can make Windows close the channel/session."
 }
 
-if ($body -notmatch "rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*TRUE\s*\)") {
-    throw "tryAdvance() does not force an initial device announce that includes filesystem drives."
+if ($body -match "rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*TRUE\s*\)") {
+    throw "tryAdvance() must not force filesystem drive announce before PAKID_CORE_USER_LOGGEDON."
 }
 
-if ($source -notmatch "PAKID_CORE_USER_LOGGEDON[\s\S]*?!rdpdr->userLoggedOn[\s\S]*?rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*TRUE\s*\)") {
-    throw "USER_LOGGEDON handling does not guard against duplicate filesystem device announces."
+if ($source -notmatch "PAKID_CORE_USER_LOGGEDON[\s\S]*?rdpdr_send_device_list_announce_request\s*\(\s*rdpdr\s*,\s*TRUE\s*\)") {
+    throw "USER_LOGGEDON handling must announce filesystem devices after login."
 }
 
-Write-Host "RDPDR reconnect drive announce check passed."
+Write-Host "RDPDR drive announce timing check passed."

@@ -8,16 +8,29 @@
     <string name="settings_keepalive_subtitle">电池优化、自启动与后台限制</string>
     <string name="settings_logs_title">日志</string>
     <string name="settings_logs_subtitle">查看、导出或清空运行日志</string>
+    <string name="settings_quick_actions_title">快捷入口</string>
+    <string name="settings_appearance_title">外观与语言</string>
+    <string name="settings_app_tagline">轻量、清晰、专注远程桌面的 Android RDP 客户端</string>
     <string name="settings_theme_title">主题颜色</string>
     <string name="settings_language_title">语言</string>
     <string name="settings_chrome_alpha_title">操控界面透明度</string>
     <string name="settings_toolbar_alpha_title">上下工具栏</string>
     <string name="settings_controls_alpha_title">缩放按钮和移动摇杆</string>
     <string name="settings_alpha_percent">%1$s：%2$d%%</string>
+    <string name="settings_alpha_value">%1$d%%</string>
+    <string name="settings_alpha_min">35%</string>
+    <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">应用信息</string>
+    <string name="settings_about_version_label">当前版本</string>
+    <string name="settings_about_version_short">v%1$s</string>
     <string name="settings_about_version">版本：%1$s</string>
     <string name="settings_about_author">作者：%1$s</string>
     <string name="settings_about_author_name" translatable="false">HanFengRuYue</string>
+    <string name="settings_about_repository_title">项目仓库</string>
+    <string name="settings_about_author_homepage_title">作者主页</string>
+    <string name="settings_about_repository_url" translatable="false">https://github.com/HanFengRuYue/PocketRDP</string>
+    <string name="settings_about_author_homepage_url" translatable="false">https://github.com/HanFengRuYue</string>
+    <string name="cd_open_external">打开外部链接</string>
     <string name="settings_theme_system">跟随系统</string>
     <string name="settings_theme_light">浅色</string>
     <string name="settings_theme_dark">深色</string>
