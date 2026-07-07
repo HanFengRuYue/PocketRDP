@@ -1,5 +1,6 @@
 package com.hanfengruyue.pocketrdp.nav
 
+import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -13,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
+import com.hanfengruyue.pocketrdp.feature.connections.list.ConnectionRuntimeState
 import com.hanfengruyue.pocketrdp.feature.connections.edit.ConnectionEditScreen
 import com.hanfengruyue.pocketrdp.feature.connections.list.ConnectionListScreen
 import com.hanfengruyue.pocketrdp.feature.connections.nav.ConnectionsRoutes
@@ -30,6 +32,7 @@ object AppRoutes {
 @Composable
 fun PocketRdpNavHost(
     activeSessionIds: Set<Long>,
+    liveThumbnails: Map<Long, Bitmap>,
     onConnect: (Long) -> Unit,
 ) {
     val navController = rememberNavController()
@@ -54,7 +57,10 @@ fun PocketRdpNavHost(
                 onOpenSettings = { navController.navigate(AppRoutes.SETTINGS) },
                 onOpenKeepAliveGuide = { navController.navigate(AppRoutes.KEEPALIVE_GUIDE) },
                 showKeepAliveHint = showKeepAliveHint,
-                activeSessionIds = activeSessionIds,
+                connectionRuntime = ConnectionRuntimeState(
+                    activeSessionIds = activeSessionIds,
+                    liveThumbnails = liveThumbnails,
+                ),
             )
         }
 

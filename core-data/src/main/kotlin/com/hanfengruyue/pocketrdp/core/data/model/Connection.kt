@@ -27,10 +27,11 @@ data class ConnectionEntity(
     @ColumnInfo(name = "dynamic_resolution") val dynamicResolution: Boolean = true,
     // Max remote resolution cap while dynamic-resolution is on (issue: 防止直接套用手机全分辨率导致被控端
     // 渲染压力过大). 0 = 跟随设备 (no cap — send the full local view size). Otherwise the SHORT-edge cap in
-    // px (720 / 1080 / 1440); the long edge is bounded to 16:9 of it. Ignored when dynamicResolution is
-    // off or a custom fixed resolution is set. Default 1080 (1080p cap) for lower 操控延迟: a phone's full
-    // 1440p+ view is a 4 MP+ frame to encode AND decode every frame; capping to 1080p roughly halves that
-    // cost. Existing connections keep their stored value (0 = uncapped); users can pick 跟随设备 for full res.
+    // px (for example 720 / 1080 / 1440 / 2160); the long edge is bounded to 16:9 of it. Ignored when
+    // dynamicResolution is off or a custom fixed resolution is set. Default 1080 (1080p cap) for lower
+    // 操控延迟: a phone's full 1440p+ view is a 4 MP+ frame to encode AND decode every frame; capping to
+    // 1080p roughly halves that cost. Existing connections keep their stored value (0 = uncapped);
+    // users can pick 跟随设备 for full res.
     @ColumnInfo(name = "dynamic_res_max") val dynamicResMax: Int = 1080,
     @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = true,
     @ColumnInfo(name = "redirect_clipboard") val redirectClipboard: Boolean = true,

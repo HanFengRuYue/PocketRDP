@@ -44,7 +44,7 @@ data class ConnectionEditUiState(
     val preferAvc420: Boolean = true,
     val useGfx: Boolean = true,
     val dynamicResolution: Boolean = true,
-    // Max remote-resolution cap while dynamic-resolution is on. 0 = 跟随设备 (no cap); 720/1080/1440 =
+    // Max remote-resolution cap while dynamic-resolution is on. 0 = 跟随设备 (no cap); otherwise the
     // short-edge px cap (long edge bounded to 16:9). See ConnectionEntity.dynamicResMax.
     // Default 1080 — matches the entity's intended low-latency default (a phone's full 1440p+ view is a
     // 4 MP+ frame to encode AND decode every frame; the 1080p cap roughly halves that). Was 0 here, which

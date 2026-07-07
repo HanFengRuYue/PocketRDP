@@ -16,6 +16,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistry
+import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistrySnapshot
+import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRuntimeState
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.feature.session.R
 import dagger.hilt.EntryPoint
@@ -28,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import java.util.Locale
 
 /**
  * Keep-alive foreground service for an active RDP session — the M7 "切到后台不断开" fix.
@@ -80,10 +83,6 @@ class RdpSessionService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var observing = false
 
-    private var connectionName: String = ""
-    private var connectionHost: String = ""
-    private var lastStatusText: String? = null
-
     // Not a bound service — clients talk to it only via start()/stop() intents.
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -114,13 +113,6 @@ class RdpSessionService : Service() {
                 sessionRegistry.disconnectAll()
             }
             else -> {
-                connectionName = intent?.getStringExtra(EXTRA_NAME)?.takeIf { it.isNotBlank() }
-                    ?: connectionName
-                connectionHost = intent?.getStringExtra(EXTRA_HOST)?.takeIf { it.isNotBlank() }
-                    ?: connectionHost
-                // Caller-supplied status lets the (foreground) initial-connect path set "已连接"
-                // directly, in case our event subscription started after a very fast Connected fired.
-                intent?.getStringExtra(EXTRA_STATUS)?.takeIf { it.isNotBlank() }?.let { lastStatusText = it }
                 // Promote to a foreground service within the ~5 s window. specialUse type is required
                 // on API 34+; gate the constant so older devices (which ignore the type) still work.
                 val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -131,7 +123,7 @@ class RdpSessionService : Service() {
                 ServiceCompat.startForeground(
                     this,
                     NOTIF_ID,
-                    buildNotification(lastStatusText ?: getString(R.string.session_notification_status_connecting)),
+                    buildNotification(sessionRegistry.snapshot.value),
                     type,
                 )
                 observeSessions()
@@ -154,15 +146,7 @@ class RdpSessionService : Service() {
                     return@onEach
                 }
                 if (snapshot.connectedCount > 0) acquireLocks() else releaseLocks()
-                updateStatus(
-                    when {
-                        snapshot.connectedCount > 0 -> getString(R.string.session_notification_status_connected)
-                        snapshot.connectingCount > 0 -> getString(R.string.session_notification_status_connecting)
-                        snapshot.reconnectingCount > 0 ->
-                            getString(R.string.session_notification_status_reconnecting)
-                        else -> getString(R.string.session_notification_status_failed)
-                    },
-                )
+                updateStatus(snapshot)
             }
             .launchIn(scope)
     }
@@ -193,10 +177,9 @@ class RdpSessionService : Service() {
         wifiLock = null
     }
 
-    private fun updateStatus(text: String) {
-        lastStatusText = text
+    private fun updateStatus(snapshot: RdpSessionRegistrySnapshot) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIF_ID, buildNotification(text))
+        nm.notify(NOTIF_ID, buildNotification(snapshot))
     }
 
     private fun shutdown() {
@@ -212,7 +195,7 @@ class RdpSessionService : Service() {
         super.onDestroy()
     }
 
-    private fun buildNotification(statusText: String): Notification {
+    private fun buildNotification(snapshot: RdpSessionRegistrySnapshot): Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             // Bring the existing (singleTask) Activity to the front instead of a fresh task.
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -226,21 +209,25 @@ class RdpSessionService : Service() {
             Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val title = connectionName.takeIf { it.isNotBlank() }
-            ?: getString(R.string.session_notification_title)
-        val text = connectionHost.takeIf { it.isNotBlank() }
-            ?.let { "$statusText · $it" } ?: statusText
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val content = buildRdpSessionNotificationContent(snapshot, rdpSessionNotificationStrings())
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_session)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setContentTitle(content.title)
+            .setContentText(content.text)
             .setContentIntent(contentPi)
             .setOngoing(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(0, getString(R.string.session_notification_disconnect_action), disconnectPi)
-            .build()
+            .addAction(0, content.disconnectAction, disconnectPi)
+        if (content.bigLines.isNotEmpty()) {
+            val style = NotificationCompat.InboxStyle()
+                .setBigContentTitle(content.title)
+                .setSummaryText(content.text)
+            content.bigLines.forEach(style::addLine)
+            builder.setStyle(style)
+        }
+        return builder.build()
     }
 
     companion object {
@@ -277,3 +264,92 @@ class RdpSessionService : Service() {
         }
     }
 }
+
+internal data class RdpSessionNotificationStrings(
+    val defaultTitle: String,
+    val connecting: String,
+    val connected: String,
+    val reconnecting: String,
+    val failed: String,
+    val disconnect: String,
+    val disconnectAll: String,
+    val multiTitleFormat: String,
+    val multiSummaryFormat: String,
+    val moreSessionsFormat: String,
+)
+
+internal data class RdpSessionNotificationContent(
+    val title: String,
+    val text: String,
+    val bigLines: List<String>,
+    val disconnectAction: String,
+)
+
+private fun Context.rdpSessionNotificationStrings(): RdpSessionNotificationStrings =
+    RdpSessionNotificationStrings(
+        defaultTitle = getString(R.string.session_notification_title),
+        connecting = getString(R.string.session_notification_status_connecting),
+        connected = getString(R.string.session_notification_status_connected),
+        reconnecting = getString(R.string.session_notification_status_reconnecting),
+        failed = getString(R.string.session_notification_status_failed),
+        disconnect = getString(R.string.session_notification_disconnect_action),
+        disconnectAll = getString(R.string.session_notification_disconnect_all_action),
+        multiTitleFormat = getString(R.string.session_notification_multi_title),
+        multiSummaryFormat = getString(R.string.session_notification_multi_summary),
+        moreSessionsFormat = getString(R.string.session_notification_more_sessions),
+    )
+
+internal fun buildRdpSessionNotificationContent(
+    snapshot: RdpSessionRegistrySnapshot,
+    strings: RdpSessionNotificationStrings,
+): RdpSessionNotificationContent {
+    val sessions = snapshot.sessions
+    if (snapshot.activeCount <= 1) {
+        val info = sessions.firstOrNull()
+        val status = statusLabel(info?.state ?: RdpSessionRuntimeState.CONNECTING, strings)
+        val title = info?.displayName?.takeIf { it.isNotBlank() } ?: strings.defaultTitle
+        val text = info?.hostLabel?.takeIf { it.isNotBlank() }?.let { "$status · $it" } ?: status
+        return RdpSessionNotificationContent(
+            title = title,
+            text = text,
+            bigLines = emptyList(),
+            disconnectAction = strings.disconnect,
+        )
+    }
+
+    val shown = sessions.take(MAX_NOTIFICATION_SESSION_LINES).map { info ->
+        val name = info.displayName.takeIf { it.isNotBlank() }
+            ?: info.hostLabel.takeIf { it.isNotBlank() }
+            ?: strings.defaultTitle
+        val status = statusLabel(info.state, strings)
+        info.hostLabel.takeIf { it.isNotBlank() }
+            ?.let { "$name · $status · $it" } ?: "$name · $status"
+    }
+    val extra = (sessions.size - MAX_NOTIFICATION_SESSION_LINES).coerceAtLeast(0)
+    val lines = if (extra > 0) {
+        shown + String.format(Locale.getDefault(), strings.moreSessionsFormat, extra)
+    } else {
+        shown
+    }
+    return RdpSessionNotificationContent(
+        title = String.format(Locale.getDefault(), strings.multiTitleFormat, snapshot.activeCount),
+        text = String.format(
+            Locale.getDefault(),
+            strings.multiSummaryFormat,
+            snapshot.connectedCount,
+            snapshot.connectingCount,
+            snapshot.reconnectingCount,
+        ),
+        bigLines = lines,
+        disconnectAction = strings.disconnectAll,
+    )
+}
+
+private fun statusLabel(state: RdpSessionRuntimeState, strings: RdpSessionNotificationStrings): String =
+    when (state) {
+        RdpSessionRuntimeState.CONNECTING -> strings.connecting
+        RdpSessionRuntimeState.CONNECTED -> strings.connected
+        RdpSessionRuntimeState.RECONNECTING -> strings.reconnecting
+    }
+
+private const val MAX_NOTIFICATION_SESSION_LINES = 5

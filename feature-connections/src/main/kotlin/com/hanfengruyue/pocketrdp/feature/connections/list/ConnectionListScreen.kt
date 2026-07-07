@@ -1,10 +1,5 @@
 package com.hanfengruyue.pocketrdp.feature.connections.list
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -31,7 +26,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,7 +54,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -96,9 +89,6 @@ private val landscapeThumbnailHeightDp = 124.dp
 private val landscapeThumbnailCornerDp = 10.dp
 private val landscapeContentGapDp = 12.dp
 private val landscapeMetaPillCornerDp = 8.dp
-private val runningBadgeSizeDp = 62.dp
-private val runningBadgeCoreDp = 42.dp
-private val runningBadgeIconDp = 28.dp
 private const val DESKTOP_ASPECT = 16f / 9f
 private const val SCRIM_ALPHA = 0.55f
 private const val META_PILL_ALPHA = 0.46f
@@ -113,9 +103,9 @@ fun ConnectionListScreen(
     onOpenSettings: () -> Unit,
     onOpenKeepAliveGuide: () -> Unit = {},
     showKeepAliveHint: Boolean = false,
-    activeSessionIds: Set<Long> = emptySet(),
-    viewModel: ConnectionListViewModel = hiltViewModel(),
+    connectionRuntime: ConnectionRuntimeState = ConnectionRuntimeState(),
 ) {
+    val viewModel: ConnectionListViewModel = hiltViewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     // The kill hint is shown at most once per visit — track local dismissal here so we don't need a
     // separate dismiss callback param (keeps the parameter list under detekt's threshold).
@@ -127,7 +117,10 @@ fun ConnectionListScreen(
                 title = { Text(stringResource(R.string.connection_app_name)) },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.connection_action_settings))
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = stringResource(R.string.connection_action_settings),
+                        )
                     }
                 },
             )
@@ -154,7 +147,7 @@ fun ConnectionListScreen(
                 onEdit = onEdit,
                 onConnect = onConnect,
                 onDelete = viewModel::delete,
-                activeSessionIds = activeSessionIds,
+                connectionRuntime = connectionRuntime,
             )
         }
     }
@@ -248,7 +241,7 @@ private fun ConnectionList(
     onEdit: (Long) -> Unit,
     onConnect: (Long) -> Unit,
     onDelete: (ConnectionEntity) -> Unit,
-    activeSessionIds: Set<Long>,
+    connectionRuntime: ConnectionRuntimeState,
 ) {
     // Bump on every ON_RESUME so cards reload their thumbnails when the user returns from a session
     // (the session just saved a fresh snapshot, but the DB row didn't change so the list flow won't
@@ -276,10 +269,12 @@ private fun ConnectionList(
                     refreshKey = refreshKey,
                     useLandscapeLayout = useLandscapeLayout,
                     loadThumbnail = loadThumbnail,
-                    onEdit = { onEdit(conn.id) },
-                    onConnect = { onConnect(conn.id) },
-                    onDelete = { onDelete(conn) },
-                    isActive = activeSessionIds.contains(conn.id),
+                    actions = ConnectionCardActions(
+                        onEdit = { onEdit(conn.id) },
+                        onConnect = { onConnect(conn.id) },
+                        onDelete = { onDelete(conn) },
+                    ),
+                    connectionRuntime = connectionRuntime,
                 )
             }
         }
@@ -307,18 +302,18 @@ private fun ConnectionCard(
     refreshKey: Int,
     useLandscapeLayout: Boolean,
     loadThumbnail: suspend (Long) -> Bitmap?,
-    onEdit: () -> Unit,
-    onConnect: () -> Unit,
-    onDelete: () -> Unit,
-    isActive: Boolean,
+    actions: ConnectionCardActions,
+    connectionRuntime: ConnectionRuntimeState,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
-    val thumbnail by produceState<Bitmap?>(initialValue = null, entity.id, refreshKey) {
+    val diskThumbnail by produceState<Bitmap?>(initialValue = null, entity.id, refreshKey) {
         value = loadThumbnail(entity.id)
     }
+    val thumbnail = chooseConnectionThumbnail(connectionRuntime.liveThumbnails[entity.id], diskThumbnail)
+    val isActive = connectionRuntime.activeSessionIds.contains(entity.id)
 
     ElevatedCard(
-        onClick = onConnect,
+        onClick = actions.onConnect,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(if (useLandscapeLayout) landscapeCardCornerDp else cardCornerDp),
         elevation = CardDefaults.elevatedCardElevation(),
@@ -327,8 +322,8 @@ private fun ConnectionCard(
             LandscapeConnectionCardContent(
                 entity = entity,
                 thumbnail = thumbnail,
-                onConnect = onConnect,
-                onEdit = onEdit,
+                onConnect = actions.onConnect,
+                onEdit = actions.onEdit,
                 onDelete = { confirmDelete = true },
                 isActive = isActive,
             )
@@ -344,7 +339,7 @@ private fun ConnectionCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ConnectionSummary(entity = entity, modifier = Modifier.weight(1f))
-                IconButton(onClick = onEdit) {
+                IconButton(onClick = actions.onEdit) {
                     Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
                 }
                 IconButton(onClick = { confirmDelete = true }) {
@@ -361,11 +356,17 @@ private fun ConnectionCard(
     if (confirmDelete) {
         DeleteConfirmDialog(
             name = entity.name.ifBlank { entity.host },
-            onConfirm = { confirmDelete = false; onDelete() },
+            onConfirm = { confirmDelete = false; actions.onDelete() },
             onDismiss = { confirmDelete = false },
         )
     }
 }
+
+private data class ConnectionCardActions(
+    val onEdit: () -> Unit,
+    val onConnect: () -> Unit,
+    val onDelete: () -> Unit,
+)
 
 @Composable
 private fun LandscapeConnectionCardContent(
@@ -527,59 +528,6 @@ private fun DesktopThumbnail(bitmap: Bitmap?, host: String?, isActive: Boolean, 
                 contentDescription = null,
                 modifier = Modifier.padding(8.dp),
                 tint = Color.White,
-            )
-        }
-    }
-}
-
-@Composable
-private fun RunningBadge(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "running-session")
-    val haloAlpha by transition.animateFloat(
-        initialValue = 0.22f,
-        targetValue = 0.82f,
-        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
-        label = "running-session-halo",
-    )
-    val haloScale by transition.animateFloat(
-        initialValue = 0.82f,
-        targetValue = 1.18f,
-        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
-        label = "running-session-halo-scale",
-    )
-    val coreScale by transition.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse),
-        label = "running-session-core-scale",
-    )
-    Box(modifier = modifier.size(runningBadgeSizeDp), contentAlignment = Alignment.Center) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = haloScale
-                    scaleY = haloScale
-                },
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = haloAlpha),
-            contentColor = Color.White,
-        ) {}
-        Surface(
-            modifier = Modifier
-                .size(runningBadgeCoreDp)
-                .graphicsLayer {
-                    scaleX = coreScale
-                    scaleY = coreScale
-                },
-            shape = CircleShape,
-            color = Color(0xFF00A83B),
-            contentColor = Color.White,
-        ) {
-            Icon(
-                imageVector = Icons.Default.SettingsEthernet,
-                contentDescription = stringResource(R.string.connection_running),
-                modifier = Modifier.padding(7.dp).size(runningBadgeIconDp),
             )
         }
     }

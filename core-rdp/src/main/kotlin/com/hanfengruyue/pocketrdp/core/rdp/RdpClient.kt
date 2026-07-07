@@ -128,7 +128,7 @@ class RdpClient @Inject constructor(
             return
         }
         nativeInstance = inst
-        sessionRegistry.markConnecting(this)
+        sessionRegistry.markConnecting(this, params)
         LibFreeRDP.registerEventListener(inst, eventListener)
         LibFreeRDP.registerUIEventListener(inst, uiEventListener)
         keyEventLogCount = 0

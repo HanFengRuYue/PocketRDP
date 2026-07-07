@@ -47,4 +47,8 @@
     <string name="session_notification_status_failed">连接失败</string>
     <string name="session_notification_title">远程桌面会话</string>
     <string name="session_notification_disconnect_action">断开</string>
+    <string name="session_notification_disconnect_all_action">断开全部</string>
+    <string name="session_notification_multi_title">正在控制 %1$d 台电脑</string>
+    <string name="session_notification_multi_summary">已连接 %1$d · 连接中 %2$d · 重连 %3$d</string>
+    <string name="session_notification_more_sessions">另有 %1$d 台…</string>
 </resources>
