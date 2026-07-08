@@ -13,7 +13,7 @@
     <string name="settings_app_tagline">A lightweight Android RDP client focused on remote desktops</string>
     <string name="settings_theme_title">Theme color</string>
     <string name="settings_language_title">Language</string>
-    <string name="settings_chrome_alpha_title">Control UI opacity</string>
+    <string name="settings_chrome_alpha_title">Glass blur intensity</string>
     <string name="settings_toolbar_alpha_title">Top and bottom toolbars</string>
     <string name="settings_controls_alpha_title">Zoom button and move joystick</string>
     <string name="settings_cursor_group_title">Simulated mouse cursor</string>
@@ -23,7 +23,7 @@
     <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
-    <string name="settings_alpha_min">35%</string>
+    <string name="settings_alpha_min">0%</string>
     <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">App information</string>
     <string name="settings_about_version_label">Current version</string>

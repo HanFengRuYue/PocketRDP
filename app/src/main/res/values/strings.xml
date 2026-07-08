@@ -13,7 +13,7 @@
     <string name="settings_app_tagline">轻量、清晰、专注远程桌面的 Android RDP 客户端</string>
     <string name="settings_theme_title">主题颜色</string>
     <string name="settings_language_title">语言</string>
-    <string name="settings_chrome_alpha_title">操控界面透明度</string>
+    <string name="settings_chrome_alpha_title">毛玻璃强度</string>
     <string name="settings_toolbar_alpha_title">上下工具栏</string>
     <string name="settings_controls_alpha_title">缩放按钮和移动摇杆</string>
     <string name="settings_cursor_group_title">模拟鼠标光标</string>
@@ -23,7 +23,7 @@
     <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s：%2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
-    <string name="settings_alpha_min">35%</string>
+    <string name="settings_alpha_min">0%</string>
     <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">应用信息</string>
     <string name="settings_about_version_label">当前版本</string>

@@ -489,7 +489,7 @@ private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) 
                 )
             }
         }
-        Slider(value = value, onValueChange = onChange, valueRange = 0.35f..1f)
+        Slider(value = value, onValueChange = onChange, valueRange = 0f..1f)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
