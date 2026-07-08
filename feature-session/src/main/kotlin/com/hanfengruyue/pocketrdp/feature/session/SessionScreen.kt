@@ -100,6 +100,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -113,7 +114,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -172,8 +175,14 @@ fun SessionScreen(
     val toolbarBg = Color.Black.copy(alpha = toolbarAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
     val controlBg = Color.Black.copy(alpha = controlAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
     val simulatedCursorScale = cursorScale.coerceIn(MIN_SIMULATED_CURSOR_SCALE, MAX_SIMULATED_CURSOR_SCALE)
+    val chromeFrameTick = remember { mutableStateOf(0L) }
+    val chromeViewportSize = remember { mutableStateOf(IntSize.Zero) }
+    val chromeViewportTopInRoot = remember { mutableStateOf(0f) }
     BackHandler { onClose() }
     LaunchedEffect(connectionId) { viewModel.ensureStarted(connectionId) }
+    LaunchedEffect(rdpClient.buffer) {
+        rdpClient.buffer.dirty.collect { chromeFrameTick.value++ }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -218,6 +227,7 @@ fun SessionScreen(
     // lambda, so a gesture frame re-records only the GPU layer instead of recomposing the canvas.
     // (The old approach hoisted zoom/pan into Compose state via a virtualPosition sampler that
     // never fired during a pinch — the transform froze until the gesture ended.)
+    val chromeTransformState = controller.userTransform.collectAsStateWithLifecycle()
 
     // Drive the system-bars (immersive) state.
     val view = LocalView.current
@@ -335,10 +345,16 @@ fun SessionScreen(
                 exit = slideOutVertically { -it } + fadeOut(),
             ) {
                 Box {
-                    Box(
+                    GlassChromeBackground(
+                        buffer = rdpClient.buffer,
+                        viewportSize = chromeViewportSize.value,
+                        frameTick = chromeFrameTick,
+                        transformState = chromeTransformState,
+                        chromeTopPx = 0f,
+                        containerColor = toolbarBg,
+                        edge = GlassChromeEdge.Bottom,
                         modifier = Modifier
-                            .matchParentSize()
-                            .glassChromeBackground(toolbarBg, GlassChromeEdge.Bottom),
+                            .matchParentSize(),
                     )
                     TopAppBar(
                         title = {
@@ -436,6 +452,8 @@ fun SessionScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .onSizeChanged { chromeViewportSize.value = it }
+                .onGloballyPositioned { chromeViewportTopInRoot.value = it.positionInRoot().y }
                 .consumeWindowInsets(padding),
         ) {
             // The framebuffer fills the ENTIRE content area at all times and is NEVER shrunk by the
@@ -562,6 +580,11 @@ fun SessionScreen(
                 SessionToolbar(
                     viewModel = viewModel,
                     state = state,
+                    buffer = rdpClient.buffer,
+                    viewportSize = chromeViewportSize.value,
+                    viewportTopInRoot = chromeViewportTopInRoot.value,
+                    frameTick = chromeFrameTick,
+                    transformState = chromeTransformState,
                     containerColor = toolbarBg,
                     onBarHeightChanged = { functionToolbarHeightPx.intValue = it },
                 )
@@ -715,13 +738,16 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
 // pills like dark glass, while the white content stays legible. Shared by the TopAppBar, the function-key
 // bar, the zoom pill, the move handle and the exit FAB. 0.7 keeps it clearly see-through yet readable.
 private const val CHROME_ALPHA = 0.7f
-private const val MIN_CHROME_ALPHA = 0.35f
+private const val MIN_CHROME_ALPHA = 0f
 private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
 private val TOOLBAR_CONTENT = Color.White
 private const val GLASS_EDGE_ALPHA = 0.22f
-private const val GLASS_HIGHLIGHT_ALPHA = 0.10f
-private const val GLASS_SHADOW_ALPHA = 0.18f
+private const val GLASS_HIGHLIGHT_ALPHA = 0.14f
+private const val GLASS_SHADOW_ALPHA = 0.16f
+private const val GLASS_TINT_MULTIPLIER = 0.58f
+private val GLASS_BACKDROP_MIN_BLUR_RADIUS = 0.dp
+private val GLASS_BACKDROP_MAX_BLUR_RADIUS = 10.dp
 private const val DEFAULT_CURSOR_HEIGHT = 26f
 private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
 private const val DEFAULT_CURSOR_TAIL_Y = 15f
@@ -738,21 +764,86 @@ private const val KEY_BORDER_ALPHA = 0.55f
 
 private enum class GlassChromeEdge { Top, Bottom }
 
-private fun Modifier.glassChromeBackground(containerColor: Color, edge: GlassChromeEdge): Modifier =
+@Composable
+private fun GlassChromeBackground(
+    buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
+    viewportSize: IntSize,
+    frameTick: State<Long>,
+    transformState: State<UserTransform>,
+    chromeTopPx: Float,
+    containerColor: Color,
+    edge: GlassChromeEdge,
+    modifier: Modifier = Modifier,
+) {
+    val tick = frameTick.value
+    val frame = remember(buffer, tick) { buffer.peekFront() }
+    val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
+        .coerceIn(0f, 1f)
+    val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
+        (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
+    Box(modifier = modifier) {
+        if (containerColor.alpha > 0f && frame != null && viewportSize.width > 0 && viewportSize.height > 0) {
+            val frameImage = remember(frame, tick) { frame.asImageBitmap() }
+            Canvas(
+                modifier = Modifier
+                    .matchParentSize()
+                    .blur(blurRadius),
+            ) {
+                val scale = minOf(
+                    viewportSize.width.toFloat() / frame.width.toFloat(),
+                    viewportSize.height.toFloat() / frame.height.toFloat(),
+                )
+                val baseWidth = frame.width * scale
+                val baseHeight = frame.height * scale
+                val baseLeft = (viewportSize.width - baseWidth) / 2f
+                val baseTop = (viewportSize.height - baseHeight) / 2f
+                val transform = transformState.value
+                val centerX = viewportSize.width / 2f
+                val centerY = viewportSize.height / 2f
+                val transformedLeft = centerX + (baseLeft - centerX) * transform.zoom + transform.panX
+                val transformedTop = centerY + (baseTop - centerY) * transform.zoom +
+                    transform.panY + transform.offsetY
+                val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
+                val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
+                drawImage(
+                    image = frameImage,
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(frame.width, frame.height),
+                    dstOffset = IntOffset(
+                        transformedLeft.roundToInt(),
+                        transformedTop.roundToInt() - chromeTopPx.roundToInt(),
+                    ),
+                    dstSize = IntSize(transformedWidth, transformedHeight),
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .glassChromeTint(containerColor, edge),
+        )
+    }
+}
+
+private fun Modifier.glassChromeTint(containerColor: Color, edge: GlassChromeEdge): Modifier =
     this
-        .background(containerColor)
+        .background(
+            containerColor.copy(
+                alpha = (containerColor.alpha * GLASS_TINT_MULTIPLIER).coerceIn(0f, 0.62f),
+            ),
+        )
         .background(
             Brush.verticalGradient(
                 colors = when (edge) {
                     GlassChromeEdge.Top -> listOf(
-                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.55f),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA),
+                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.55f * containerColor.alpha),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
                     )
                     GlassChromeEdge.Bottom -> listOf(
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.45f),
-                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
+                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.45f * containerColor.alpha),
+                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
                     )
                 },
             ),
@@ -762,13 +853,13 @@ private fun Modifier.glassChromeBackground(containerColor: Color, edge: GlassChr
             val edgeY = if (edge == GlassChromeEdge.Top) stroke / 2f else size.height - stroke / 2f
             val shadowY = if (edge == GlassChromeEdge.Top) stroke * 1.5f else size.height - stroke * 1.5f
             drawLine(
-                color = Color.Black.copy(alpha = GLASS_SHADOW_ALPHA),
+                color = Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
                 start = Offset(0f, shadowY),
                 end = Offset(size.width, shadowY),
                 strokeWidth = stroke * 2f,
             )
             drawLine(
-                color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA),
+                color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA * containerColor.alpha),
                 start = Offset(0f, edgeY),
                 end = Offset(size.width, edgeY),
                 strokeWidth = stroke,
@@ -1189,6 +1280,11 @@ private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
 private fun SessionToolbar(
     viewModel: SessionViewModel,
     state: SessionUiState,
+    buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
+    viewportSize: IntSize,
+    viewportTopInRoot: Float,
+    frameTick: State<Long>,
+    transformState: State<UserTransform>,
     containerColor: Color,
     onBarHeightChanged: (Int) -> Unit,
 ) {
@@ -1196,6 +1292,7 @@ private fun SessionToolbar(
         modifier = Modifier.fillMaxWidth().imePadding(),
         contentAlignment = Alignment.BottomCenter,
     ) {
+        var toolbarTopPx by remember { mutableStateOf(0f) }
         var page by remember { mutableStateOf(ToolbarPage.QUICK) }
         var expanded by remember { mutableStateOf(false) }
         var editingQuickRow by remember { mutableStateOf(false) }
@@ -1213,9 +1310,22 @@ private fun SessionToolbar(
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .glassChromeBackground(containerColor, GlassChromeEdge.Top)
+                .onGloballyPositioned {
+                    toolbarTopPx = it.positionInRoot().y - viewportTopInRoot
+                }
                 .consumeAllPointerInput(),
-        )
+        ) {
+            GlassChromeBackground(
+                buffer = buffer,
+                viewportSize = viewportSize,
+                frameTick = frameTick,
+                transformState = transformState,
+                chromeTopPx = toolbarTopPx,
+                containerColor = containerColor,
+                edge = GlassChromeEdge.Top,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()

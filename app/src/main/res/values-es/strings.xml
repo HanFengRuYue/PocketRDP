@@ -12,7 +12,7 @@
     <string name="settings_app_tagline">Cliente RDP ligero para Android, centrado en escritorios remotos</string>
     <string name="settings_theme_title">Color del tema</string>
     <string name="settings_language_title">Idioma</string>
-    <string name="settings_chrome_alpha_title">Opacidad de controles</string>
+    <string name="settings_chrome_alpha_title">Intensidad de desenfoque</string>
     <string name="settings_toolbar_alpha_title">Barras superior e inferior</string>
     <string name="settings_controls_alpha_title">Botón de zoom y joystick de movimiento</string>
     <string name="settings_cursor_group_title">Cursor de ratón simulado</string>
@@ -22,7 +22,7 @@
     <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
-    <string name="settings_alpha_min">35%</string>
+    <string name="settings_alpha_min">0%</string>
     <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">Información de la app</string>
     <string name="settings_about_version_label">Versión actual</string>

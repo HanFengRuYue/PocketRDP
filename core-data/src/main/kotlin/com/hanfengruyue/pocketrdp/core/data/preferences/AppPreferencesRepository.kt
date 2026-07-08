@@ -156,7 +156,7 @@ fun sanitizeFunctionToolbarQuickIds(ids: List<String>): List<String> {
 }
 
 const val DEFAULT_CHROME_ALPHA = 0.7f
-private const val MIN_ALPHA = 0.35f
+private const val MIN_ALPHA = 0f
 private const val MAX_ALPHA = 1f
 
 const val DEFAULT_SIMULATED_CURSOR_SCALE = 1f

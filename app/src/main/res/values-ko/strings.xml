@@ -12,7 +12,7 @@
     <string name="settings_app_tagline">원격 데스크톱에 집중한 가벼운 Android RDP 클라이언트</string>
     <string name="settings_theme_title">테마 색상</string>
     <string name="settings_language_title">언어</string>
-    <string name="settings_chrome_alpha_title">조작 UI 투명도</string>
+    <string name="settings_chrome_alpha_title">유리 흐림 강도</string>
     <string name="settings_toolbar_alpha_title">상단 및 하단 도구 모음</string>
     <string name="settings_controls_alpha_title">확대 버튼과 이동 조이스틱</string>
     <string name="settings_cursor_group_title">시뮬레이션 마우스 커서</string>
@@ -22,7 +22,7 @@
     <string name="settings_cursor_size_max">200%</string>
     <string name="settings_alpha_percent">%1$s: %2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
-    <string name="settings_alpha_min">35%</string>
+    <string name="settings_alpha_min">0%</string>
     <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">앱 정보</string>
     <string name="settings_about_version_label">현재 버전</string>
