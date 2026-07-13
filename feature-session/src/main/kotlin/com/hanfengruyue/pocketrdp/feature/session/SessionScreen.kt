@@ -157,6 +157,8 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+internal fun shouldDismissIme(event: Lifecycle.Event): Boolean = event == Lifecycle.Event.ON_PAUSE
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionScreen(
@@ -186,8 +188,9 @@ fun SessionScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.retryAfterAllFilesAccess()
+            when {
+                shouldDismissIme(event) -> viewModel.setImeVisible(false)
+                event == Lifecycle.Event.ON_RESUME -> viewModel.retryAfterAllFilesAccess()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -598,8 +601,9 @@ fun SessionScreen(
                 toolbarHeightPx = { functionToolbarHeightPx.intValue },
             )
 
-            // Hidden IME bridge — Compose tree always contains it, but it only requests
-            // focus when state.imeVisible is true.
+            // Hidden IME bridge — Compose tree always contains it, but it only owns focus while
+            // state.imeVisible is true. Hiding it releases focus so Android cannot restore the IME
+            // after a background/foreground transition without another explicit button tap.
             SessionImeBridge(
                 visible = state.imeVisible,
                 onUnicodeText = viewModel::typeText,
