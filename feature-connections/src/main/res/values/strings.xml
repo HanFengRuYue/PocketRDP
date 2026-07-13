@@ -63,11 +63,11 @@
     <string name="connection_h264_tier">H.264 画质档</string>
     <string name="connection_quality_first">画质优先</string>
     <string name="connection_smooth_first">流畅优先</string>
-    <string name="connection_h264_tier_desc">流畅优先延迟更低；画质优先文字更清晰。</string>
+    <string name="connection_h264_tier_desc">H.264 档位只控制清晰度和延迟；系统动效由“低延迟视觉”控制。</string>
     <string name="connection_gfx_title">兼容图形模式</string>
     <string name="connection_gfx_desc">仅在关闭视频加速时使用。</string>
     <string name="connection_low_latency_visuals_title">低延迟视觉</string>
-    <string name="connection_low_latency_visuals_desc">关闭远端墙纸和动画，减少延迟。</string>
+    <string name="connection_low_latency_visuals_desc">开启时关闭远端墙纸和动效；关闭后重新连接会请求完整效果。</string>
     <string name="connection_dynamic_resolution_title">动态分辨率</string>
     <string name="connection_dynamic_resolution_desc">屏幕旋转/拉伸时远端跟随调整</string>
     <string name="connection_dynamic_resolution_max">动态分辨率上限</string>

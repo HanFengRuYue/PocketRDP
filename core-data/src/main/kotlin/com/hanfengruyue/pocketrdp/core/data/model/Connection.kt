@@ -53,9 +53,9 @@ data class ConnectionEntity(
     @ColumnInfo(name = "target_frame_rate") val targetFrameRate: Int = 0,
     // Per-connection performance bitmask (v1 baseline column, previously unused — repurposed like
     // sound_mode was, so NO migration / version bump is needed). Bit [PERF_LOW_LATENCY_VISUALS] = 1
-    // asks the server to drop wallpaper + themes (RdpClient emits -wallpaper -themes), trading remote
-    // eye-candy for a slightly leaner per-frame encode/decode payload (低延迟视觉). Default 0 = unchanged
-    // (rich desktop). Room more flags onto higher bits later without a schema change.
+    // asks the server to drop wallpaper, window/menu animations, themes and desktop composition while
+    // retaining font smoothing. Default 0 explicitly requests the rich desktop experience. Room more
+    // flags onto higher bits later without a schema change.
     @ColumnInfo(name = "performance_flags") val performanceFlags: Int = 0,
     @ColumnInfo(name = "last_used_at") val lastUsedAt: Long = 0L,
     @ColumnInfo(name = "cert_thumb_sha256") val certThumbSha256: String? = null,
@@ -125,9 +125,9 @@ data class ConnectionEntity(
 
     companion object {
         /**
-         * [performanceFlags] bit: when set, ask the remote to disable wallpaper + themes for a leaner
-         * per-frame payload (低延迟视觉). Bitmask so future perf toggles can claim higher bits without a
-         * DB migration. Kept here so the edit screen, the entity and RdpClient.buildCommandLine agree.
+         * [performanceFlags] bit: when set, ask the remote to disable its costly visual effects while
+         * retaining font smoothing. Bitmask so future perf toggles can claim higher bits without a DB
+         * migration. Kept here so the edit screen, the entity and RdpClient.buildCommandLine agree.
          */
         const val PERF_LOW_LATENCY_VISUALS = 1
     }

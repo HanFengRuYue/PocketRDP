@@ -63,11 +63,11 @@
     <string name="connection_h264_tier">Calidad H.264</string>
     <string name="connection_quality_first">Priorizar calidad</string>
     <string name="connection_smooth_first">Priorizar fluidez</string>
-    <string name="connection_h264_tier_desc">Fluidez reduce la latencia; calidad mantiene el texto más claro.</string>
+    <string name="connection_h264_tier_desc">El nivel H.264 solo controla la nitidez y la latencia; las animaciones del sistema se controlan con «Visuales de baja latencia».</string>
     <string name="connection_gfx_title">Modo gráfico compatible</string>
     <string name="connection_gfx_desc">Solo se usa cuando la aceleración de video está desactivada.</string>
     <string name="connection_low_latency_visuals_title">Visuales de baja latencia</string>
-    <string name="connection_low_latency_visuals_desc">Desactiva fondo y animaciones remotas para reducir latencia.</string>
+    <string name="connection_low_latency_visuals_desc">Al activar esta opción, se desactivan el fondo de pantalla y las animaciones remotas. Tras desactivarla, vuelve a conectarte para solicitar todos los efectos visuales.</string>
     <string name="connection_dynamic_resolution_title">Resolución dinámica</string>
     <string name="connection_dynamic_resolution_desc">El tamaño remoto sigue la rotación y el cambio de tamaño</string>
     <string name="connection_dynamic_resolution_max">Límite de resolución dinámica</string>

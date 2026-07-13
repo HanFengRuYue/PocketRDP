@@ -63,11 +63,11 @@
     <string name="connection_h264_tier">H.264 quality tier</string>
     <string name="connection_quality_first">Quality first</string>
     <string name="connection_smooth_first">Smooth first</string>
-    <string name="connection_h264_tier_desc">Smooth first lowers latency; quality first keeps text clearer.</string>
+    <string name="connection_h264_tier_desc">The H.264 tier controls only image clarity and latency; system animations are controlled by Low-latency visuals.</string>
     <string name="connection_gfx_title">Compatible graphics mode</string>
     <string name="connection_gfx_desc">Used only when video acceleration is off.</string>
     <string name="connection_low_latency_visuals_title">Low-latency visuals</string>
-    <string name="connection_low_latency_visuals_desc">Disable remote wallpaper and animations to reduce latency.</string>
+    <string name="connection_low_latency_visuals_desc">When enabled, this disables remote wallpaper and animations. After disabling it, reconnect to request the full visual effects.</string>
     <string name="connection_dynamic_resolution_title">Dynamic resolution</string>
     <string name="connection_dynamic_resolution_desc">Remote size follows screen rotation and resizing</string>
     <string name="connection_dynamic_resolution_max">Dynamic resolution limit</string>

@@ -60,11 +60,11 @@
     <string name="connection_h264_tier">H.264 画質設定</string>
     <string name="connection_quality_first">画質優先</string>
     <string name="connection_smooth_first">滑らかさ優先</string>
-    <string name="connection_h264_tier_desc">滑らかさ優先は遅延を下げ、画質優先は文字をより鮮明にします。</string>
+    <string name="connection_h264_tier_desc">H.264 のモードは鮮明さと遅延だけを制御し、システムのアニメーションは「低遅延表示」で制御します。</string>
     <string name="connection_gfx_title">互換グラフィックモード</string>
     <string name="connection_gfx_desc">動画アクセラレーションがオフのときだけ使用します。</string>
     <string name="connection_low_latency_visuals_title">低遅延表示</string>
-    <string name="connection_low_latency_visuals_desc">リモートの壁紙とアニメーションを無効にして遅延を減らします。</string>
+    <string name="connection_low_latency_visuals_desc">有効にすると、リモートの壁紙とアニメーションが無効になります。無効にして再接続すると、すべての視覚効果を要求します。</string>
     <string name="connection_dynamic_resolution_title">動的解像度</string>
     <string name="connection_dynamic_resolution_desc">画面回転やサイズ変更に合わせてリモート側を調整</string>
     <string name="connection_dynamic_resolution_max">動的解像度の上限</string>

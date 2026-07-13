@@ -69,7 +69,7 @@ data class ConnectionEditUiState(
     val defaultInputMode: Int = 0,
     val targetFrameRate: Int = 0,
     // Per-connection performance bitmask (ConnectionEntity.performanceFlags). Default 0 = rich desktop.
-    // The 低延迟视觉 toggle flips bit ConnectionEntity.PERF_LOW_LATENCY_VISUALS (-wallpaper -themes).
+    // The 低延迟视觉 toggle selects a deterministic lean/rich FreeRDP visual experience argument set.
     val performanceFlags: Int = 0,
     val saving: Boolean = false,
     val saved: Boolean = false,
@@ -168,7 +168,7 @@ class ConnectionEditViewModel @Inject constructor(
     fun updateCustomHeight(value: String) = _state.update { it.copy(customHeight = value.filter { ch -> ch.isDigit() }.take(5)) }
     fun updateDefaultInputMode(value: Int) = _state.update { it.copy(defaultInputMode = value) }
 
-    /** 低延迟视觉: toggle the PERF_LOW_LATENCY_VISUALS bit (server drops wallpaper + themes). */
+    /** 低延迟视觉: toggle the PERF_LOW_LATENCY_VISUALS bit for lean/rich remote visual effects. */
     fun toggleLowLatencyVisuals(value: Boolean) = _state.update {
         val flags = if (value) {
             it.performanceFlags or ConnectionEntity.PERF_LOW_LATENCY_VISUALS

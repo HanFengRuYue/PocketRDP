@@ -28,8 +28,8 @@ data class RdpConnectionParams(
     val initialWidth: Int,
     val initialHeight: Int,
     val acceptedCertThumbprint: String?,
-    // Per-connection performance bitmask (mirrors ConnectionEntity.performanceFlags). Bit 1
-    // (ConnectionEntity.PERF_LOW_LATENCY_VISUALS) → buildCommandLine emits -wallpaper -themes so the
-    // server renders a flat desktop (低延迟视觉). 0 = unchanged. Default 0 so existing call sites stay put.
+    // Per-connection performance bitmask (mirrors ConnectionEntity.performanceFlags). Bit 1 selects the
+    // explicit low-latency visual set; 0 selects the explicit rich visual set. Font smoothing stays on in
+    // both modes. Default 0 keeps existing call sites on the rich desktop experience.
     val performanceFlags: Int = 0,
 )

@@ -602,7 +602,7 @@ class RdpClient @Inject constructor(
 
     companion object {
         private const val TAG = "RdpClient"
-        // performanceFlags bit (mirrors ConnectionEntity.PERF_LOW_LATENCY_VISUALS) — drop wallpaper+themes.
+        // performanceFlags bit (mirrors ConnectionEntity.PERF_LOW_LATENCY_VISUALS) — use lean visuals.
         // core-rdp does not depend on core-data, so the value is duplicated here; keep the two in sync.
         const val PERF_LOW_LATENCY_VISUALS = 1
         // Per-connection cap on keyboard-input debug logs. Captures the start-of-typing

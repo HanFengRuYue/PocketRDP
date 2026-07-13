@@ -60,11 +60,11 @@
     <string name="connection_h264_tier">H.264 화질 단계</string>
     <string name="connection_quality_first">화질 우선</string>
     <string name="connection_smooth_first">부드러움 우선</string>
-    <string name="connection_h264_tier_desc">부드러움 우선은 지연을 낮추고, 화질 우선은 글자를 더 선명하게 유지합니다.</string>
+    <string name="connection_h264_tier_desc">H.264 단계는 선명도와 지연 시간만 제어하며, 시스템 애니메이션은 ‘저지연 표시’에서 제어합니다.</string>
     <string name="connection_gfx_title">호환 그래픽 모드</string>
     <string name="connection_gfx_desc">비디오 가속이 꺼져 있을 때만 사용합니다.</string>
     <string name="connection_low_latency_visuals_title">저지연 표시</string>
-    <string name="connection_low_latency_visuals_desc">원격 배경화면과 애니메이션을 꺼서 지연을 줄입니다.</string>
+    <string name="connection_low_latency_visuals_desc">켜면 원격 배경 화면과 애니메이션을 끕니다. 끈 후 다시 연결하면 전체 시각 효과를 요청합니다.</string>
     <string name="connection_dynamic_resolution_title">동적 해상도</string>
     <string name="connection_dynamic_resolution_desc">화면 회전과 크기 변경에 맞춰 원격 화면 조정</string>
     <string name="connection_dynamic_resolution_max">동적 해상도 상한</string>

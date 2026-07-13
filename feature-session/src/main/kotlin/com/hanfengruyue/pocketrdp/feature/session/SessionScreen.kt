@@ -117,6 +117,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -178,6 +179,8 @@ fun SessionScreen(
     val chromeFrameTick = remember { mutableStateOf(0L) }
     val chromeViewportSize = remember { mutableStateOf(IntSize.Zero) }
     val chromeViewportTopInRoot = remember { mutableStateOf(0f) }
+    val chromeViewportPositionOnScreen = remember { mutableStateOf(Offset.Zero) }
+    val topChromeTopInRoot = remember { mutableStateOf(0f) }
     BackHandler { onClose() }
     LaunchedEffect(connectionId) { viewModel.ensureStarted(connectionId) }
     LaunchedEffect(rdpClient.buffer) {
@@ -344,13 +347,17 @@ fun SessionScreen(
                 enter = slideInVertically { -it } + fadeIn(),
                 exit = slideOutVertically { -it } + fadeOut(),
             ) {
-                Box {
+                Box(
+                    modifier = Modifier.onGloballyPositioned {
+                        topChromeTopInRoot.value = it.positionInRoot().y
+                    },
+                ) {
                     GlassChromeBackground(
                         buffer = rdpClient.buffer,
                         viewportSize = chromeViewportSize.value,
                         frameTick = chromeFrameTick,
                         transformState = chromeTransformState,
-                        chromeTopPx = 0f,
+                        chromeTopPx = topChromeTopInRoot.value - chromeViewportTopInRoot.value,
                         containerColor = toolbarBg,
                         edge = GlassChromeEdge.Bottom,
                         modifier = Modifier
@@ -382,6 +389,10 @@ fun SessionScreen(
                                 lastError = state.lastError,
                                 menuContainerColor = toolbarBg,
                                 menuContentColor = TOOLBAR_CONTENT,
+                                glassBuffer = rdpClient.buffer,
+                                glassViewportSize = chromeViewportSize.value,
+                                glassViewportPositionOnScreen = chromeViewportPositionOnScreen.value,
+                                glassTransformState = chromeTransformState,
                                 onErrorClick = {
                                     val err = state.lastError ?: return@SessionStatusTitle
                                     scope.launch {
@@ -453,7 +464,10 @@ fun SessionScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .onSizeChanged { chromeViewportSize.value = it }
-                .onGloballyPositioned { chromeViewportTopInRoot.value = it.positionInRoot().y }
+                .onGloballyPositioned {
+                    chromeViewportTopInRoot.value = it.positionInRoot().y
+                    chromeViewportPositionOnScreen.value = it.positionOnScreen()
+                }
                 .consumeWindowInsets(padding),
         ) {
             // The framebuffer fills the ENTIRE content area at all times and is NEVER shrunk by the

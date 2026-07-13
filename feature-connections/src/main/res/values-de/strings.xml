@@ -63,11 +63,11 @@
     <string name="connection_h264_tier">H.264-Qualitätsstufe</string>
     <string name="connection_quality_first">Qualität zuerst</string>
     <string name="connection_smooth_first">Flüssigkeit zuerst</string>
-    <string name="connection_h264_tier_desc">Flüssigkeit senkt Latenz; Qualität hält Text klarer.</string>
+    <string name="connection_h264_tier_desc">Die H.264-Stufe steuert nur Bildschärfe und Latenz; Systemanimationen werden über „Latenzarme Darstellung“ gesteuert.</string>
     <string name="connection_gfx_title">Kompatibler Grafikmodus</string>
     <string name="connection_gfx_desc">Nur genutzt, wenn Videobeschleunigung deaktiviert ist.</string>
     <string name="connection_low_latency_visuals_title">Latenzarme Darstellung</string>
-    <string name="connection_low_latency_visuals_desc">Deaktiviert Hintergrundbild und Animationen remote, um Latenz zu senken.</string>
+    <string name="connection_low_latency_visuals_desc">Bei Aktivierung werden Remote-Hintergrundbild und -Animationen deaktiviert. Nach dem Ausschalten neu verbinden, um alle visuellen Effekte anzufordern.</string>
     <string name="connection_dynamic_resolution_title">Dynamische Auflösung</string>
     <string name="connection_dynamic_resolution_desc">Remotegröße folgt Drehung und Größenänderung</string>
     <string name="connection_dynamic_resolution_max">Limit für dynamische Auflösung</string>

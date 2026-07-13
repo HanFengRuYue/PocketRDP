@@ -30,8 +30,23 @@ internal fun buildRdpCommandLine(
     args += "/auto-reconnect"
 
     if (p.performanceFlags and RdpClient.PERF_LOW_LATENCY_VISUALS != 0) {
-        args += "-wallpaper"
-        args += "-themes"
+        args += listOf(
+            "/fonts",
+            "-wallpaper",
+            "-window-drag",
+            "-menu-anims",
+            "-themes",
+            "-aero",
+        )
+    } else {
+        args += listOf(
+            "/fonts",
+            "/wallpaper",
+            "/window-drag",
+            "/menu-anims",
+            "/themes",
+            "/aero",
+        )
     }
 
     val scale = p.desktopScaleFactor.coerceIn(MIN_DESKTOP_SCALE, MAX_DESKTOP_SCALE)

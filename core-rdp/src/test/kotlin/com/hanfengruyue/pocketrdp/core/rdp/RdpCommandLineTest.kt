@@ -6,6 +6,64 @@ import org.junit.Test
 
 class RdpCommandLineTest {
     @Test
+    fun richVisualsAreExplicitWhenLowLatencyVisualsAreOff() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(performanceFlags = 0),
+            h264Supported = true,
+        ).toList()
+
+        val enabledVisuals = listOf(
+            "/fonts",
+            "/wallpaper",
+            "/window-drag",
+            "/menu-anims",
+            "/themes",
+            "/aero",
+        )
+        val disabledVisuals = enabledVisuals.map { "-${it.removePrefix("/")}" }
+        assertTrue(args.containsAll(enabledVisuals))
+        assertFalse(args.any { it in disabledVisuals })
+    }
+
+    @Test
+    fun lowLatencyVisualsExplicitlyDisableRemoteEffectsButKeepFontSmoothing() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(
+                performanceFlags = RdpClient.PERF_LOW_LATENCY_VISUALS,
+            ),
+            h264Supported = true,
+        ).toList()
+
+        val disabledVisuals = listOf(
+            "-wallpaper",
+            "-window-drag",
+            "-menu-anims",
+            "-themes",
+            "-aero",
+        )
+        val enabledEffects = disabledVisuals.map { "/${it.removePrefix("-")}" }
+        assertTrue(args.contains("/fonts"))
+        assertTrue(args.containsAll(disabledVisuals))
+        assertFalse(args.any { it in enabledEffects })
+        assertFalse(args.contains("-fonts"))
+    }
+
+    @Test
+    fun qualityFirstCodecCanBeCombinedWithRichVisuals() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(
+                preferAvc420 = false,
+                performanceFlags = 0,
+            ),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(args.contains("/gfx:AVC444"))
+        assertTrue(args.contains("/menu-anims"))
+        assertTrue(args.contains("/aero"))
+    }
+
+    @Test
     fun driveRedirectionIsEmittedWhenEnabledWithFilesystemPath() {
         val args = buildRdpCommandLine(
             params(redirectFiles = true, drivePath = "/storage/emulated/0"),

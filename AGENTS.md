@@ -13,6 +13,8 @@ This file is the single agent-facing guide for Codex when working in this reposi
 - Multi-session is intentional: each retained `SessionViewModel` owns its own unscoped `RdpClient`, native instance, and `BitmapBuffer`. Do not put `@Singleton` back on `RdpClient`; the foreground service observes singleton `RdpSessionRegistry` for aggregate keep-alive state.
 - Home-list live previews are sampled from active session buffers, not rendered frame-by-frame through Compose. Keep them low-frequency and memory-backed; the saved JPEG thumbnail remains the inactive/restart fallback.
 - Foreground keep-alive uses one aggregate notification for all active sessions. Do not split it into per-session notifications unless the whole service UX is deliberately redesigned.
+- Visual-performance policy is independent of AVC420/AVC444: with low-latency visuals off, emit `/fonts /wallpaper /window-drag /menu-anims /themes /aero`; with it on, emit `/fonts -wallpaper -window-drag -menu-anims -themes -aero`. Do not add `/network:lan` for this behavior.
+- The later milestone sentence saying `buildCommandLine` emits only `-wallpaper -themes` is historical and superseded by the visual-performance policy above.
 
 ## What this app is
 
@@ -76,8 +78,8 @@ While that script runs it backs `local.properties` up to `local.properties.windo
 
 - **AGP 9 migration is now validated (2026-07-03).** The former AGP 9/KSP/Hilt deadlock is resolved by using AGP built-in Kotlin + KSP2: AGP 9.2.1, Gradle 9.6.1, KSP 2.3.9, Hilt 2.60, Room 2.8.4, and `ksp.useKSP2=true` pass `:app:assembleDebug` and `testDebugUnitTest`. Do not re-add `org.jetbrains.kotlin.android`, do not set `android.builtInKotlin=false`, and do not flip back to KSP1.
 - **`com.freerdp.freerdpcore.services.LibFreeRDP` class FQN is locked** by `third_party/FreeRDP/.../android_freerdp_jni.h:JAVA_LIBFREERDP_CLASS`. Don't rename or move the file. The shim at `core-rdp/src/main/java/com/freerdp/freerdpcore/services/LibFreeRDP.java` deliberately keeps this path while dropping upstream's BookmarkBase/SessionState/ApplicationSettingsActivity deps.
-- **Do NOT re-add `:freeRDPCore` to `settings.gradle.kts`**. Already attempted in commit history â€?pulls in androidx.appcompat / room 2.8.4 / sqlcipher / preference / recyclerview which conflict with our Compose + Room 2.6.1 stack. The current strategy (compile cpp + minimal LibFreeRDP.java in `:core-rdp`) is deliberate.
-- **FreeRDP submodule is pinned at local commit `f60d197`** (FreeRDP 3.x; upstream base `9b04e3b` plus PocketRDP Android/native patches such as RDPEI touch, Unicode force-enable, static FFmpeg, 16 KB alignment, and transport JNI). Don't `git submodule update --remote` without verifying the CMake superbuild and re-applying local patches â€?upstream's `client/Android/cmake/External*.cmake` files have known Windows portability bugs (Unix `:` path separators) that we'd have to re-patch.
+- **Do NOT re-add `:freeRDPCore` to `settings.gradle.kts`**. Already attempted in commit history â€?pulls in androidx.appcompat / room 2.8.4 / sqlcipher / preference / recyclerview which conflict with our Compose + Room 2.8.4 stack. The current strategy (compile cpp + minimal LibFreeRDP.java in `:core-rdp`) is deliberate.
+- **FreeRDP submodule is pinned at local commit `b92b165`** (FreeRDP 3.x; upstream base `9b04e3b` plus PocketRDP Android/native patches such as RDPEI touch, Unicode force-enable, static FFmpeg, 16 KB alignment, and transport JNI). Don't `git submodule update --remote` without verifying the CMake superbuild and re-applying local patches â€?upstream's `client/Android/cmake/External*.cmake` files have known Windows portability bugs (Unix `:` path separators) that we'd have to re-patch.
 - **`app/proguard-rules.pro` must keep `com.freerdp.freerdpcore.**`** â€?the FreeRDP JNI bridge calls Java callbacks (`OnConnectionSuccess`, `OnGraphicsUpdate`, `OnAuthenticate`, â€? via reflection. Without the keep rule, R8 strips them and release builds crash on first connect with `NoSuchMethodError`. The Hilt and Room keep rules in that file are also load-bearing â€?don't trim "unused" entries.
 
 ## Rendering & input â€?load-bearing invariants
@@ -120,6 +122,7 @@ While that script runs it backs `local.properties` up to `local.properties.windo
 
 - Debug build: `./gradlew.bat :app:assembleDebug --no-configuration-cache --console=plain --no-daemon` â€?produces `app/build/outputs/apk/debug/app-debug.apk` (**~204 MB now that it carries all four ABIs**; was ~112 MB arm64-only). Signed with the release keystore via `keystore.properties`; size dominated by the four-ABI FreeRDP+OpenSSL .so, incl. FFmpeg statically linked into each `libfreerdp3`. **Run gradle from the repo root** â€?if the shell's CWD is a subdir like `core-rdp/src/main/jniLibs`, Gradle tries to make that the default project and dies with `Project directory 'â€?jniLibs' is not part of the build defined by settings file`.
 - Release build: `./gradlew.bat :app:assembleRelease --no-configuration-cache --console=plain --no-daemon` â€?produces `app/build/outputs/apk/release/app-release.apk` (R8-minified Kotlin, v1/v2/v3/v4 signed when `keystore.properties` is present; native .so are not shrunk).
+- JVM unit tests: `./gradlew.bat testDebugUnitTest --no-configuration-cache --console=plain --no-daemon` - covers tests in `:core-rdp`, `:feature-session`, and `:feature-connections`.
 - Full clean: `./gradlew.bat clean` (do NOT delete `~/.gradle/caches` â€?Compose BOM / Hilt artifacts will redownload from Aliyun and take minutes).
 - Configuration-cache off (`--no-configuration-cache`) is recommended while iterating on `build.gradle.kts` â€?it caches aggressively and stale entries cause silent build skips.
 - To pull runtime logs without ADB: open the app â†?main screen TopBar â†?log icon â†?share. File lands as `pocketrdp-YYYY-MM-DD.log` via FileProvider, can be sent over QQ/WeChat/email/etc.
@@ -143,7 +146,7 @@ While that script runs it backs `local.properties` up to `local.properties.windo
 
 ## What's missing (intentionally, not gaps to fill silently)
 
-No unit tests, no instrumented tests, no CI workflow. detekt (`detekt.yml` + `detekt-baseline.xml`) and `.editorconfig` are in place. Don't add the missing pieces without explicit ask â€?keep the project minimal until M3+ stabilizes the input/render layer.
+JVM unit tests exist in `:core-rdp`, `:feature-session`, and `:feature-connections`; there are no instrumented/Compose tests and no CI workflow. detekt (`detekt.yml` + `detekt-baseline.xml`) and `.editorconfig` are in place. Don't add the missing pieces without explicit ask â€?keep the project minimal until M3+ stabilizes the input/render layer.
 
 detekt is configured with `maxIssues: 0` plus a baseline â€?any new finding fails the build. The check task is `./gradlew detekt` (there is **no** `detektMain` task â€?this is one root `detekt {}` over an explicit `source.setFrom` list, not per-module). To accept legitimate new findings (e.g. after a refactor): `./gradlew detektBaseline` regenerates `detekt-baseline.xml`. Prefer that over scattering `@Suppress` annotations.
 
