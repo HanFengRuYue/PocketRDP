@@ -16,6 +16,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
@@ -51,6 +52,22 @@ import androidx.compose.ui.unit.dp
  */
 private const val SENTINEL = "​" // zero-width space
 
+internal fun applyImeVisibility(
+    visible: Boolean,
+    requestFocus: () -> Unit,
+    clearFocus: () -> Unit,
+    showKeyboard: () -> Unit,
+    hideKeyboard: () -> Unit,
+) {
+    if (visible) {
+        requestFocus()
+        showKeyboard()
+    } else {
+        clearFocus()
+        hideKeyboard()
+    }
+}
+
 @Composable
 fun SessionImeBridge(
     visible: Boolean,
@@ -58,16 +75,18 @@ fun SessionImeBridge(
     onVkKey: (vk: Int, down: Boolean) -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     var buffer by remember { mutableStateOf(TextFieldValue(SENTINEL, selection = TextRange(SENTINEL.length))) }
 
     LaunchedEffect(visible) {
-        if (visible) {
-            focusRequester.requestFocus()
-            keyboard?.show()
-        } else {
-            keyboard?.hide()
-        }
+        applyImeVisibility(
+            visible = visible,
+            requestFocus = focusRequester::requestFocus,
+            clearFocus = { focusManager.clearFocus(force = true) },
+            showKeyboard = { keyboard?.show() },
+            hideKeyboard = { keyboard?.hide() },
+        )
     }
 
     BasicTextField(
