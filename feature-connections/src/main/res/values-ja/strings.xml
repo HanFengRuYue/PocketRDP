@@ -74,13 +74,13 @@
     <string name="connection_custom_resolution_desc">指定した幅と高さにリモート側を固定します。動的解像度は無効になります。</string>
     <string name="connection_width">幅</string>
     <string name="connection_height">高さ</string>
-    <string name="connection_multitransport_title">UDP マルチトランスポート</string>
-    <string name="connection_multitransport_desc">サーバーとネットワークが同じポートの UDP を許可する必要があります。利用できない場合は TCP に戻ります。</string>
+    <string name="connection_multitransport_title">UDP マルチトランスポート（試験的）</string>
+    <string name="connection_multitransport_desc">同梱の FreeRDP 3.30 は現在 UDP チャネルを確立しません。無効のままにしてください。有効にしてもネゴシエーション後に TCP へ戻ります。</string>
     <string name="connection_section_redirection">リダイレクト</string>
     <string name="connection_clipboard_title">クリップボード双方向同期</string>
     <string name="connection_clipboard_desc">スマートフォンと PC の間でコピーした文字を同期します。画像はまだ対応していません。</string>
     <string name="connection_files_title">フォルダーリダイレクト</string>
-    <string name="connection_files_desc">スマートフォンのストレージを PC 上の「PocketRDP」ドライブとして表示します。</string>
+    <string name="connection_files_desc">リモート PC に「PocketRDP」ドライブを通じて、スマートフォンの共有ストレージ全体への読み書きアクセスを許可します。</string>
     <string name="connection_audio_title">リモート音声</string>
     <string name="connection_audio_client">操作端末で再生</string>
     <string name="connection_audio_server">リモート PC で再生</string>
@@ -94,4 +94,10 @@
     <string name="connection_error_password_required">パスワードは必須です</string>
     <string name="connection_error_custom_width_invalid">カスタム幅は 200-8192 にしてください</string>
     <string name="connection_error_custom_height_invalid">カスタム高さは 200-8192 にしてください</string>
+    <string name="connection_files_permission_desc">先に「すべてのファイルへのアクセス」を許可してください。許可しないと、リモート コンピューターに PocketRDP ドライブが表示されません。</string>
+    <string name="connection_files_permission_action">ファイル アクセスを許可</string>
+    <string name="connection_error_load_failed">接続を読み込めませんでした。戻ってもう一度お試しください。</string>
+    <string name="connection_error_not_found">この接続は存在しません。</string>
+    <string name="connection_error_save_failed">接続を保存できませんでした。もう一度お試しください。</string>
+    <string name="connection_error_framebuffer_too_large">カスタム解像度が大きすぎます。1,677 万ピクセル以下にしてください。</string>
 </resources>

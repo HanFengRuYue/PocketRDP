@@ -114,4 +114,5 @@
         <item>If your system has Autostart or Background running switches, enable them for PocketRDP</item>
         <item>Lock PocketRDP in Recents if supported so it is not cleared automatically</item>
     </string-array>
+    <string name="logs_export_failed">Could not export the logs.</string>
 </resources>

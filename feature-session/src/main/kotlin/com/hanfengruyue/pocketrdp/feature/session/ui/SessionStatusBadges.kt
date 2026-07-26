@@ -84,6 +84,7 @@ import kotlin.math.roundToInt
  * and a **采样** row (accepted vs discarded discrete-input samples: a high discard ratio means presses
  * aren't producing frames, i.e. the cost is server-side/inert-screen, not the client).
  */
+@Suppress("LongParameterList") // Compose title slot receives independently changing UI state values.
 @Composable
 fun SessionStatusTitle(
     status: SessionConnectionStatus,
@@ -230,7 +231,75 @@ fun SessionStatusTitle(
                                 leadingIcon = { MenuRowIcon(Icons.Default.Bolt, menuContentColor) },
                                 onClick = { expanded = false },
                             ) {
-                                MenuText(stringResource(R.string.session_status_total_latency, totalLatency), menuContentColor)
+                                MenuText(
+                                    stringResource(R.string.session_status_total_latency, totalLatency),
+                                    menuContentColor,
+                                )
+                            }
+                            StatusMetricRow(
+                                icon = Icons.Default.Bolt,
+                                text = stringResource(
+                                    R.string.session_status_control_latency,
+                                    totalLatencyLabel(controlLatencyMs),
+                                ),
+                                contentColor = menuContentColor,
+                                onClick = { expanded = false },
+                            )
+                            StatusMetricRow(
+                                icon = Icons.Default.Speed,
+                                text = stringResource(
+                                    R.string.session_status_display_latency,
+                                    totalLatencyLabel(presentLagMs),
+                                ),
+                                contentColor = menuContentColor,
+                                onClick = { expanded = false },
+                            )
+                            StatusMetricRow(
+                                icon = Icons.Default.SettingsEthernet,
+                                text = stringResource(
+                                    R.string.session_status_network_rtt,
+                                    totalLatencyLabel(networkRttMs),
+                                ),
+                                contentColor = menuContentColor,
+                                onClick = { expanded = false },
+                            )
+                            if (latencyAccepted > 0 || latencyDiscarded > 0) {
+                                StatusMetricRow(
+                                    icon = Icons.Default.Speed,
+                                    text = stringResource(
+                                        R.string.session_status_samples,
+                                        latencyAccepted,
+                                        latencyDiscarded,
+                                    ),
+                                    contentColor = menuContentColor,
+                                    onClick = { expanded = false },
+                                )
+                            }
+                            if (transportStats != RdpTransportStats()) {
+                                StatusMetricRow(
+                                    icon = Icons.Default.SettingsEthernet,
+                                    text = stringResource(
+                                        R.string.session_status_transport_stats,
+                                        transportStats.inBytes,
+                                        transportStats.outBytes,
+                                        transportStats.retransmits,
+                                    ),
+                                    contentColor = menuContentColor,
+                                    onClick = { expanded = false },
+                                )
+                            }
+                            if (transportStats.hasFailureDetails()) {
+                                StatusMetricRow(
+                                    icon = Icons.Default.ErrorOutline,
+                                    text = stringResource(
+                                        R.string.session_status_transport_error,
+                                        transportStats.failureStage,
+                                        java.lang.Long.toHexString(transportStats.tunnelHr),
+                                        transportStats.socketError,
+                                    ),
+                                    contentColor = menuContentColor,
+                                    onClick = { expanded = false },
+                                )
                             }
                         }
                         if (stickyModifierLabels.isNotEmpty()) {
@@ -275,6 +344,24 @@ fun SessionStatusTitle(
         }
     }
 }
+
+@Composable
+private fun StatusMetricRow(
+    icon: ImageVector,
+    text: String,
+    contentColor: Color,
+    onClick: () -> Unit,
+) {
+    StatusMenuItem(
+        leadingIcon = { MenuRowIcon(icon, contentColor) },
+        onClick = onClick,
+    ) {
+        MenuText(text, contentColor)
+    }
+}
+
+private fun RdpTransportStats.hasFailureDetails(): Boolean =
+    failureStage != 0L || tunnelHr != 0L || socketError != 0L
 
 @Composable
 private fun StatusMenuGlassBackground(

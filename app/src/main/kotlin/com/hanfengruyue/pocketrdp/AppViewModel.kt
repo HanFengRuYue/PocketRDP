@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp
 
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferences
 import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferencesRepository
@@ -44,6 +45,31 @@ class AppViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = emptyMap(),
     )
+
+    private val sessionStores: MutableMap<Long, ViewModelStore> = mutableMapOf()
+
+    @Synchronized
+    fun sessionStore(connectionId: Long): ViewModelStore =
+        sessionStores.getOrPut(connectionId) { ViewModelStore() }
+
+    @Synchronized
+    fun clearSessionStore(connectionId: Long) {
+        sessionStores.remove(connectionId)?.clear()
+    }
+
+    @Synchronized
+    fun retainSessionStores(connectionIds: Set<Long>) {
+        val staleIds = sessionStores.keys - connectionIds
+        staleIds.forEach { id -> sessionStores.remove(id)?.clear() }
+    }
+
+    override fun onCleared() {
+        synchronized(this) {
+            sessionStores.values.forEach(ViewModelStore::clear)
+            sessionStores.clear()
+        }
+        super.onCleared()
+    }
 
     private companion object {
         // Home-card previews are intentionally sampled, not frame-driven, so the list never becomes

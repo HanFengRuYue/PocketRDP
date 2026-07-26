@@ -6,15 +6,21 @@ internal fun buildRdpCommandLine(
     p: RdpConnectionParams,
     h264Supported: Boolean,
 ): Array<String> {
+    // Validate before FreeRDP allocates its initial GDI framebuffer. The resize callback's bounds
+    // check is too late for a corrupted database or another internal caller supplying huge values.
+    val (initialWidth, initialHeight) = safeInitialRdpSize(p.initialWidth, p.initialHeight)
     val args = mutableListOf(
         "freerdp",
         "/gdi:sw",
         "/v:${p.host}",
         "/port:${p.port}",
         "/u:${p.username}",
-        "/cert:ignore",
-        "/size:${p.initialWidth}x${p.initialHeight}",
-        "/bpp:${p.colorDepth}",
+        "/size:${initialWidth}x$initialHeight",
+        "/bpp:${p.colorDepth.takeIf { it in SUPPORTED_COLOR_DEPTHS } ?: DEFAULT_COLOR_DEPTH}",
+        // Keep NLA and TLS negotiation enabled, but never downgrade to the unauthenticated legacy
+        // Standard RDP Security layer (RC4/proprietary server certificate), which bypasses the
+        // TLS certificate pin/TOFU callback entirely.
+        "/sec:rdp:off",
     )
     if (p.password.isNotEmpty()) args += "/p:${p.password}"
     if (p.domain.isNotEmpty()) args += "/d:${p.domain}"
@@ -28,6 +34,10 @@ internal fun buildRdpCommandLine(
     if (p.dynamicResolution) args += "/dynamic-resolution"
     args += if (p.useMultitransport) "/multitransport" else "-multitransport"
     args += "/auto-reconnect"
+    // FreeRDP otherwise retries a network drop 20 times before returning control to the app's own
+    // bounded exponential-backoff policy. Five native attempts preserve short transient recovery
+    // without holding a dead session for minutes or multiplying authentication failures.
+    args += "/auto-reconnect-max-retries:5"
 
     if (p.performanceFlags and RdpClient.PERF_LOW_LATENCY_VISUALS != 0) {
         args += listOf(
@@ -75,3 +85,14 @@ internal fun driveRedirectionArg(redirectFiles: Boolean, drivePath: String?): St
 
 private const val MIN_DESKTOP_SCALE = 100
 private const val MAX_DESKTOP_SCALE = 300
+private const val DEFAULT_INITIAL_WIDTH = 1920
+private const val DEFAULT_INITIAL_HEIGHT = 1080
+private const val DEFAULT_COLOR_DEPTH = 32
+private val SUPPORTED_COLOR_DEPTHS = setOf(16, 24, 32)
+
+internal fun safeInitialRdpSize(width: Int, height: Int): Pair<Int, Int> =
+    if (isSafeFramebufferSize(width, height)) {
+        width to height
+    } else {
+        DEFAULT_INITIAL_WIDTH to DEFAULT_INITIAL_HEIGHT
+    }

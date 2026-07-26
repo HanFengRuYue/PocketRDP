@@ -40,9 +40,10 @@ import java.util.Locale
  * native worker thread and BitmapBuffer. This service observes [RdpSessionRegistry] and pins the
  * *process* to the foreground-service importance bucket while at least one session is active.
  *
- * It additionally holds a [PowerManager.PARTIAL_WAKE_LOCK] + a [WifiManager.WifiLock] while the
- * session is connected so a screen-off / backgrounded socket isn't starved by CPU suspend or Wi-Fi
- * power-save. Both are released the instant the session ends — never held when no session is live.
+ * It additionally holds a [PowerManager.PARTIAL_WAKE_LOCK] + a [WifiManager.WifiLock] throughout
+ * every active session lifecycle (connecting, connected, or reconnecting) so screen-off/background
+ * work isn't starved by CPU suspend or Wi-Fi power-save. Both are released only when no session is
+ * active.
  *
  * ## foregroundServiceType
  * `specialUse` (see AndroidManifest). NOT `dataSync`: Android 15 (API 35) caps dataSync at a
@@ -57,12 +58,9 @@ import java.util.Locale
  */
 /**
  * Hilt entry point to reach the singleton [RdpSessionRegistry] from this service. We deliberately use
- * [EntryPointAccessors] instead of `@AndroidEntryPoint` + `@Inject`: Hilt 2.55's member-injection
- * processor reads the injected class's Kotlin metadata with a kotlinx-metadata that caps at version
- * 2.1.0, and our classes compile to metadata 2.2.0 (Kotlin 2.2.21) — field injection into the
- * service crashed `hiltJavaCompileDebug` with "Provided Metadata instance has version 2.2.0". An
- * @EntryPoint accessor reads no member metadata, so it sidesteps that until the AGP-9/Hilt-2.56
- * upgrade is unblocked (see CLAUDE.md Hard constraints).
+ * [EntryPointAccessors] so the service obtains only the aggregate registry and never appears to own
+ * or inject a session-scoped [com.hanfengruyue.pocketrdp.core.rdp.RdpClient]. Each retained
+ * SessionViewModel remains the sole owner of its native connection and framebuffer.
  */
 @EntryPoint
 @InstallIn(SingletonComponent::class)
@@ -111,6 +109,7 @@ class RdpSessionService : Service() {
                 // The notification action is process-wide: disconnect every active session.
                 PocketLogger.i(TAG, "notification disconnect action -> disconnect all sessions")
                 sessionRegistry.disconnectAll()
+                if (!sessionRegistry.snapshot.value.hasActiveSessions) shutdown()
             }
             else -> {
                 // Promote to a foreground service within the ~5 s window. specialUse type is required
@@ -141,33 +140,47 @@ class RdpSessionService : Service() {
         observing = true
         sessionRegistry.snapshot
             .onEach { snapshot ->
-                if (!snapshot.hasActiveSessions) {
+                if (!shouldHoldSessionLocks(snapshot)) {
                     shutdown()
                     return@onEach
                 }
-                if (snapshot.connectedCount > 0) acquireLocks() else releaseLocks()
+                // CONNECTING and RECONNECTING are still live session lifecycles. Releasing the
+                // partial wake/Wi-Fi locks during either state can suspend the process/radio while
+                // the screen is off, preventing the pending connect or backoff retry from running.
+                acquireLocks()
                 updateStatus(snapshot)
             }
             .launchIn(scope)
     }
 
     private fun acquireLocks() {
-        if (cpuLock?.isHeld == true) return
-        runCatching {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            cpuLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)
-                .apply { setReferenceCounted(false); acquire() }
-        }.onFailure { PocketLogger.w(TAG, "acquire wake lock failed: ${it.message}") }
-        runCatching {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            // FULL_HIGH_PERF keeps the radio powered regardless of screen state — the right choice
-            // for holding a socket while backgrounded / screen-off. (LOW_LATENCY only takes effect
-            // foreground + screen-on, so it is a no-op for the keep-alive case.)
-            @Suppress("DEPRECATION")
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WAKELOCK_TAG)
-                .apply { setReferenceCounted(false); acquire() }
-        }.onFailure { PocketLogger.w(TAG, "acquire wifi lock failed: ${it.message}") }
-        PocketLogger.d(TAG, "session locks acquired")
+        if (cpuLock?.isHeld != true) {
+            runCatching {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                cpuLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)
+                    .apply { setReferenceCounted(false); acquire() }
+            }.onFailure {
+                cpuLock = null
+                PocketLogger.w(TAG, "acquire wake lock failed: ${it.message}")
+            }
+        }
+        // Acquire independently. A prior CPU-lock success must not suppress a Wi-Fi-lock retry after
+        // a transient WifiManager failure.
+        if (wifiLock?.isHeld != true) {
+            runCatching {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WAKELOCK_TAG)
+                    .apply { setReferenceCounted(false); acquire() }
+            }.onFailure {
+                wifiLock = null
+                PocketLogger.w(TAG, "acquire wifi lock failed: ${it.message}")
+            }
+        }
+        PocketLogger.d(
+            TAG,
+            "session locks: cpu=${cpuLock?.isHeld == true}, wifi=${wifiLock?.isHeld == true}",
+        )
     }
 
     private fun releaseLocks() {
@@ -183,10 +196,12 @@ class RdpSessionService : Service() {
     }
 
     private fun shutdown() {
-        releaseLocks()
-        SessionKeepAliveFlag.setActive(this, false)
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        sessionRegistry.runIfNoActiveSessions {
+            releaseLocks()
+            SessionKeepAliveFlag.setActive(this, false)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
@@ -196,30 +211,47 @@ class RdpSessionService : Service() {
     }
 
     private fun buildNotification(snapshot: RdpSessionRegistrySnapshot): Notification {
-        val launch = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-            // Bring the existing (singleTask) Activity to the front instead of a fresh task.
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+            ?.takeIf { it.component?.packageName == packageName }
+            ?.apply {
+                // Bring the existing (singleTask) Activity to the front instead of a fresh task.
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+        val contentPi = launch?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
         }
-        val contentPi = PendingIntent.getActivity(
-            this, 0, launch ?: Intent(),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
         val disconnectPi = PendingIntent.getService(
             this, 1,
             Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val content = buildRdpSessionNotificationContent(snapshot, rdpSessionNotificationStrings())
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        val publicBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_session)
-            .setContentTitle(content.title)
-            .setContentText(content.text)
-            .setContentIntent(contentPi)
+            .setContentTitle(getString(R.string.session_notification_title))
+            .setContentText(getString(R.string.session_notification_status_connected))
             .setOngoing(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        if (contentPi != null) publicBuilder.setContentIntent(contentPi)
+        val publicNotification = publicBuilder.build()
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_session)
+            .setContentTitle(content.title)
+            .setContentText(content.text)
+            .setOngoing(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .addAction(0, content.disconnectAction, disconnectPi)
+        if (contentPi != null) builder.setContentIntent(contentPi)
         if (content.bigLines.isNotEmpty()) {
             val style = NotificationCompat.InboxStyle()
                 .setBigContentTitle(content.title)
@@ -351,5 +383,8 @@ private fun statusLabel(state: RdpSessionRuntimeState, strings: RdpSessionNotifi
         RdpSessionRuntimeState.CONNECTED -> strings.connected
         RdpSessionRuntimeState.RECONNECTING -> strings.reconnecting
     }
+
+internal fun shouldHoldSessionLocks(snapshot: RdpSessionRegistrySnapshot): Boolean =
+    snapshot.hasActiveSessions
 
 private const val MAX_NOTIFICATION_SESSION_LINES = 5

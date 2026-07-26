@@ -10,7 +10,7 @@ import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 
 @Database(
     entities = [ConnectionEntity::class],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class PocketRdpDatabase : RoomDatabase() {
@@ -89,10 +89,32 @@ abstract class PocketRdpDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 to v8 marks legacy ciphertext that was authenticated without record-specific AAD.
+         * The repository upgrades each legacy credential after its first successful decryption,
+         * binding future decryptions to host, port, username and domain. It also disables the
+         * historical multitransport default: FreeRDP 3.30 rejects client UDP bootstrap with E_ABORT,
+         * so advertising it currently only produces a TCP fallback.
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE connections ADD COLUMN password_aad_version INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL("UPDATE connections SET use_multitransport = 0")
+            }
+        }
+
         fun create(context: Context): PocketRdpDatabase =
             Room.databaseBuilder(context, PocketRdpDatabase::class.java, DB_NAME)
                 .addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
                 )
                 .build()
     }

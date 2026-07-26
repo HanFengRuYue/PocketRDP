@@ -24,6 +24,10 @@ kotlin {
     }
 }
 
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     api(project(":core-logging"))
 
@@ -32,10 +36,10 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     api(libs.androidx.datastore.preferences)
-    api(libs.androidx.security.crypto)
-
     api(libs.hilt.android)
     ksp(libs.hilt.compiler)
 
     api(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
 }

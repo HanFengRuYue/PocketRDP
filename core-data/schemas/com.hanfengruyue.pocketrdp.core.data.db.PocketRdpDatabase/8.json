@@ -1,0 +1,191 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 8,
+    "identityHash": "1eee0f162d5ac20ad4c09b2679c1eb4d",
+    "entities": [
+      {
+        "tableName": "connections",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `username` TEXT NOT NULL, `domain` TEXT NOT NULL, `password_cipher` BLOB NOT NULL, `password_iv` BLOB NOT NULL, `password_aad_version` INTEGER NOT NULL, `color_depth` INTEGER NOT NULL, `use_h264` INTEGER NOT NULL, `prefer_avc420` INTEGER NOT NULL, `use_gfx` INTEGER NOT NULL, `dynamic_resolution` INTEGER NOT NULL, `dynamic_res_max` INTEGER NOT NULL, `use_multitransport` INTEGER NOT NULL, `redirect_clipboard` INTEGER NOT NULL, `redirect_files` INTEGER NOT NULL, `shared_folder_uri` TEXT, `sound_mode` INTEGER NOT NULL, `desktop_scale_factor` INTEGER NOT NULL, `custom_width` INTEGER NOT NULL, `custom_height` INTEGER NOT NULL, `default_input_mode` INTEGER NOT NULL, `target_frame_rate` INTEGER NOT NULL, `performance_flags` INTEGER NOT NULL, `last_used_at` INTEGER NOT NULL, `cert_thumb_sha256` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "host",
+            "columnName": "host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "port",
+            "columnName": "port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "username",
+            "columnName": "username",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "domain",
+            "columnName": "domain",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "passwordCipher",
+            "columnName": "password_cipher",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "passwordIv",
+            "columnName": "password_iv",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "passwordAadVersion",
+            "columnName": "password_aad_version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorDepth",
+            "columnName": "color_depth",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "useH264",
+            "columnName": "use_h264",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "preferAvc420",
+            "columnName": "prefer_avc420",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "useGfx",
+            "columnName": "use_gfx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dynamicResolution",
+            "columnName": "dynamic_resolution",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dynamicResMax",
+            "columnName": "dynamic_res_max",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "useMultitransport",
+            "columnName": "use_multitransport",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "redirectClipboard",
+            "columnName": "redirect_clipboard",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "redirectFiles",
+            "columnName": "redirect_files",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sharedFolderUri",
+            "columnName": "shared_folder_uri",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "soundMode",
+            "columnName": "sound_mode",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "desktopScaleFactor",
+            "columnName": "desktop_scale_factor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customWidth",
+            "columnName": "custom_width",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customHeight",
+            "columnName": "custom_height",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "defaultInputMode",
+            "columnName": "default_input_mode",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetFrameRate",
+            "columnName": "target_frame_rate",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "performanceFlags",
+            "columnName": "performance_flags",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastUsedAt",
+            "columnName": "last_used_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "certThumbSha256",
+            "columnName": "cert_thumb_sha256",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '1eee0f162d5ac20ad4c09b2679c1eb4d')"
+    ]
+  }
+}

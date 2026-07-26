@@ -108,4 +108,5 @@
         <item>Si votre système propose Démarrage auto ou Arrière-plan, activez-les pour PocketRDP</item>
         <item>Verrouillez PocketRDP dans les apps récentes si possible</item>
     </string-array>
+    <string name="logs_export_failed">Impossible d’exporter les journaux.</string>
 </resources>

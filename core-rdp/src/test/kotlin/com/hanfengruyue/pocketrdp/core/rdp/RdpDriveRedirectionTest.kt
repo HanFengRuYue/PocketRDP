@@ -34,6 +34,14 @@ class RdpDriveRedirectionTest {
         assertEquals(RdpDriveRedirectionPlan.Ready("/storage/emulated/0"), plan)
     }
 
+    @Test
+    fun rejectsReadOnlyStoragePath() {
+        val plan = plan(pathCanWrite = false)
+
+        assertTrue(plan is RdpDriveRedirectionPlan.Unavailable)
+        assertTrue((plan as RdpDriveRedirectionPlan.Unavailable).reason.contains("not writable"))
+    }
+
     private fun plan(
         redirectFiles: Boolean = true,
         allFilesAccessGranted: Boolean = true,
@@ -42,6 +50,7 @@ class RdpDriveRedirectionTest {
         pathExists: Boolean = true,
         pathIsDirectory: Boolean = true,
         pathCanRead: Boolean = true,
+        pathCanWrite: Boolean = true,
     ): RdpDriveRedirectionPlan = planRdpDriveRedirection(
         redirectFiles = redirectFiles,
         allFilesAccessGranted = allFilesAccessGranted,
@@ -50,5 +59,6 @@ class RdpDriveRedirectionTest {
         pathExists = { pathExists },
         pathIsDirectory = { pathIsDirectory },
         pathCanRead = { pathCanRead },
+        pathCanWrite = { pathCanWrite },
     )
 }

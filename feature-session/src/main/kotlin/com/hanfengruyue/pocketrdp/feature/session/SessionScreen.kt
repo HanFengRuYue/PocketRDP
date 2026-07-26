@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.annotation.StringRes
 import androidx.activity.compose.BackHandler
@@ -153,8 +154,10 @@ import com.hanfengruyue.pocketrdp.feature.session.input.sessionGestures
 import com.hanfengruyue.pocketrdp.feature.session.render.RdpSurface
 import com.hanfengruyue.pocketrdp.feature.session.ui.SessionStatusTitle
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -173,6 +176,7 @@ fun SessionScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rdpClient = viewModel.rdpClient
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val toolbarBg = Color.Black.copy(alpha = toolbarAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
@@ -184,16 +188,59 @@ fun SessionScreen(
     val chromeViewportPositionOnScreen = remember { mutableStateOf(Offset.Zero) }
     val topChromeTopInRoot = remember { mutableStateOf(0f) }
     BackHandler { onClose() }
-    LaunchedEffect(connectionId) { viewModel.ensureStarted(connectionId) }
-    LaunchedEffect(rdpClient.buffer) {
-        rdpClient.buffer.dirty.collect { chromeFrameTick.value++ }
+    var showLocalNetworkPermissionDialog by remember(connectionId) { mutableStateOf(false) }
+    var allFilesPromptShown by remember(connectionId) { mutableStateOf(false) }
+    var showAllFilesDialog by remember(connectionId) { mutableStateOf(false) }
+    val localNetworkPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            showLocalNetworkPermissionDialog = false
+            viewModel.ensureStarted(connectionId)
+        } else {
+            showLocalNetworkPermissionDialog = true
+        }
+    }
+    LaunchedEffect(connectionId) {
+        if (Build.VERSION.SDK_INT < ANDROID_API_37 ||
+            ContextCompat.checkSelfPermission(context, ACCESS_LOCAL_NETWORK_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.ensureStarted(connectionId)
+        } else {
+            localNetworkPermissionLauncher.launch(ACCESS_LOCAL_NETWORK_PERMISSION)
+        }
+    }
+    LaunchedEffect(rdpClient) {
+        // The glass chrome is decorative and must not route every remote frame through Compose.
+        // frameUpdates is already conflated; delaying the collector samples only when new content
+        // exists and caps chrome recomposition at a low frequency. RdpSurface continues drawing the
+        // actual desktop independently at its configured frame rate.
+        rdpClient.frameUpdates.collect {
+            chromeFrameTick.value++
+            delay(GLASS_SAMPLE_INTERVAL_MS)
+        }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when {
                 shouldDismissIme(event) -> viewModel.setImeVisible(false)
-                event == Lifecycle.Event.ON_RESUME -> viewModel.retryAfterAllFilesAccess()
+                event == Lifecycle.Event.ON_RESUME -> {
+                    if (viewModel.retryAfterAllFilesAccess()) {
+                        // Returning from Settings without granting access must not strand the
+                        // session in Idle with a permanently consumed one-shot prompt.
+                        allFilesPromptShown = true
+                        showAllFilesDialog = true
+                    }
+                    if (Build.VERSION.SDK_INT < ANDROID_API_37 ||
+                        ContextCompat.checkSelfPermission(context, ACCESS_LOCAL_NETWORK_PERMISSION) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        showLocalNetworkPermissionDialog = false
+                        viewModel.ensureStartedOnResume(connectionId)
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -228,11 +275,11 @@ fun SessionScreen(
         }
     }
 
-    // Local pinch zoom/pan is owned by the controller and exposed as a StateFlow (userTransform).
+    // Local zoom/pan is owned by the controller and exposed as a StateFlow (userTransform).
     // SessionCanvas collects it into a State that is read DEFERRED inside the graphicsLayer{}
     // lambda, so a gesture frame re-records only the GPU layer instead of recomposing the canvas.
     // (The old approach hoisted zoom/pan into Compose state via a virtualPosition sampler that
-    // never fired during a pinch — the transform froze until the gesture ended.)
+    // could miss continuous control updates — the transform froze until the interaction ended.)
     val chromeTransformState = controller.userTransform.collectAsStateWithLifecycle()
 
     // Drive the system-bars (immersive) state.
@@ -264,15 +311,18 @@ fun SessionScreen(
     // notification to be visible, and (2) — to survive Doze with the screen off — a battery-
     // optimization exemption. Both are requested here, the moment a real session is up, so the
     // ask is contextual ("keep THIS session from dropping") rather than a cold-start permission wall.
-    val context = LocalContext.current
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { /* result ignored — the FGS runs regardless; this only governs notification visibility */ }
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+    var notificationPromptShown by remember(connectionId) { mutableStateOf(false) }
+    LaunchedEffect(state.status) {
+        if (state.status is SessionConnectionStatus.Connected &&
+            !notificationPromptShown &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            notificationPromptShown = true
             notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
@@ -309,13 +359,39 @@ fun SessionScreen(
         )
     }
 
+    if (showLocalNetworkPermissionDialog) {
+        LocalNetworkPermissionDialog(
+            onOpenSettings = {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                }
+            },
+            onContinueWithoutLan = {
+                showLocalNetworkPermissionDialog = false
+                viewModel.ensureStarted(connectionId)
+            },
+            onDismiss = onClose,
+        )
+    }
+
+    state.pendingCertificate?.let { pending ->
+        CertificateTrustDialog(
+            certificate = pending,
+            onAccept = viewModel::acceptPendingCertificate,
+            onReject = viewModel::rejectPendingCertificate,
+        )
+    }
+
     // --- All Files Access for folder redirection (整盘共享) ---
     // When the connection has 文件夹重定向 on but the app lacks MANAGE_EXTERNAL_STORAGE, the remote
     // "PocketRDP" drive (= the whole internal storage) shows empty. Prompt contextually once per
     // session to grant it. The drive is mounted from the /drive flag at connect time, so granting
     // mid-session needs a reconnect — the dialog says so.
-    var allFilesPromptShown by remember { mutableStateOf(false) }
-    var showAllFilesDialog by remember { mutableStateOf(false) }
     LaunchedEffect(state.status, state.filesRedirectEnabled, state.allFilesAccessRequired) {
         if ((state.allFilesAccessRequired || state.status is SessionConnectionStatus.Connected) &&
             state.filesRedirectEnabled && !allFilesPromptShown &&
@@ -414,7 +490,10 @@ fun SessionScreen(
                             }
                         },
                         actions = {
-                            IconButton(onClick = viewModel::toggleIme) {
+                            IconButton(
+                                onClick = viewModel::toggleIme,
+                                enabled = state.status is SessionConnectionStatus.Connected,
+                            ) {
                                 Icon(
                                     imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
                                     contentDescription = stringResource(R.string.session_cd_keyboard),
@@ -571,6 +650,7 @@ fun SessionScreen(
                 if (state.mode == InputMode.TOUCH) {
                     PanHandle(
                         controller = controller,
+                        containerSize = overlaySize,
                         containerColor = controlBg,
                         modifier = Modifier.align(Alignment.Center),
                     )
@@ -718,6 +798,81 @@ private fun AllFilesAccessDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+@Composable
+private fun LocalNetworkPermissionDialog(
+    onOpenSettings: () -> Unit,
+    onContinueWithoutLan: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.session_local_network_title)) },
+        text = { Text(stringResource(R.string.session_local_network_message)) },
+        confirmButton = {
+            TextButton(onClick = onOpenSettings) {
+                Text(stringResource(R.string.session_action_open_settings))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onContinueWithoutLan) {
+                Text(stringResource(R.string.session_action_continue_without_lan))
+            }
+        },
+    )
+}
+
+@Composable
+private fun CertificateTrustDialog(
+    certificate: PendingCertificate,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
+    val title = if (certificate.isChange) {
+        stringResource(R.string.session_certificate_changed_title)
+    } else {
+        stringResource(R.string.session_certificate_new_title)
+    }
+    val message = if (certificate.isChange) {
+        stringResource(R.string.session_certificate_changed_message)
+    } else {
+        stringResource(R.string.session_certificate_new_message)
+    }
+    val formattedFingerprint = remember(certificate.sha256) {
+        certificate.sha256.chunked(2).joinToString(":")
+    }
+    AlertDialog(
+        onDismissRequest = onReject,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(message)
+                Text(
+                    stringResource(
+                        R.string.session_certificate_endpoint,
+                        certificate.host,
+                        certificate.port,
+                    ),
+                )
+                Text(
+                    stringResource(R.string.session_certificate_fingerprint, formattedFingerprint),
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onAccept) {
+                Text(stringResource(R.string.session_certificate_trust))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReject) {
+                Text(stringResource(R.string.session_certificate_reject))
+            }
+        },
+    )
+}
+
 /** Open the system "All files access" settings page for this app (folder redirection 整盘共享). */
 private fun openAllFilesAccessSettings(context: Context) {
     runCatching {
@@ -756,6 +911,8 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
 // pills like dark glass, while the white content stays legible. Shared by the TopAppBar, the function-key
 // bar, the zoom pill, the move handle and the exit FAB. 0.7 keeps it clearly see-through yet readable.
 private const val CHROME_ALPHA = 0.7f
+private const val ANDROID_API_37 = 37
+private const val ACCESS_LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 private const val MIN_CHROME_ALPHA = 0f
 private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
@@ -764,6 +921,7 @@ private const val GLASS_EDGE_ALPHA = 0.22f
 private const val GLASS_HIGHLIGHT_ALPHA = 0.14f
 private const val GLASS_SHADOW_ALPHA = 0.16f
 private const val GLASS_TINT_MULTIPLIER = 0.58f
+private const val GLASS_SAMPLE_INTERVAL_MS = 250L
 private val GLASS_BACKDROP_MIN_BLUR_RADIUS = 0.dp
 private val GLASS_BACKDROP_MAX_BLUR_RADIUS = 10.dp
 private const val DEFAULT_CURSOR_HEIGHT = 26f
@@ -914,7 +1072,7 @@ private fun ImeLiftEffect(
 }
 
 /**
- * Applies the local pinch zoom/pan as a graphicsLayer transform. The [transform] State is read
+ * Applies the local control-driven zoom/pan as a graphicsLayer transform. The [transform] State is read
  * INSIDE the layer block, so it runs in the layer-record (draw) phase — a transform change
  * re-records only the GPU layer and never recomposes the caller. Used by BOTH the framebuffer
  * AndroidView and the crosshair Canvas so they share one transform and stay in lock-step.
@@ -967,7 +1125,7 @@ private fun SessionCanvas(
     var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
     var viewSize by remember { mutableStateOf(0 to 0) }
     // Keep these as State<...> (NOT `by`): read .value ONLY inside the graphicsLayer / Canvas draw
-    // lambdas below so a pinch/pan/cursor move re-records the layer/draw phase without recomposing
+    // lambdas below so a zoom/pan/cursor move re-records the layer/draw phase without recomposing
     // SessionCanvas (which would re-run the AndroidView update lambda every frame).
     val transformState = controller.userTransform.collectAsStateWithLifecycle()
     val virtualPosState = controller.virtualPosition.collectAsStateWithLifecycle()
@@ -1714,7 +1872,7 @@ private fun Modifier.quickChipReorderGesture(
 ): Modifier = pointerInput(index, totalCount) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val startMs = System.currentTimeMillis()
+        val startMs = SystemClock.uptimeMillis()
         var totalDx = 0f
         var totalDy = 0f
         var dragging = false
@@ -1723,7 +1881,7 @@ private fun Modifier.quickChipReorderGesture(
         while (tracking) {
             val armLongPress = !dragging && abs(totalDx) + abs(totalDy) <= TOOLBAR_REORDER_SLOP_PX
             val event = if (armLongPress) {
-                val remaining = (TOOLBAR_REORDER_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                val remaining = (TOOLBAR_REORDER_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
                     .coerceAtLeast(1L)
                 withTimeoutOrNull(remaining) { awaitPointerEvent() }
             } else {
@@ -1840,7 +1998,7 @@ private const val ZOOM_RELOCATE_LONG_PRESS_MS = 350L
  * Floating zoom control — a SINGLE compact pill (issue #2): drag it UP to zoom in, DOWN to zoom
  * out (continuous), double-tap to reset to 100%. Replaces the old ＋ / － / reset button stack that
  * ran a tall strip down the right edge: being a large touch dead-zone it kept swallowing the
- * two-finger scroll/pinch gestures (worst in TOUCH mode, where every gesture is multi-finger and
+ * two-finger scroll/native-touch gestures (worst in TOUCH mode, where every gesture is multi-finger and
  * one finger often landed on a button). The pill is a much smaller target, so the canvas gets the
  * whole right edge back.
  *
@@ -1941,19 +2099,22 @@ private fun Modifier.zoomPillGestures(
         down.consume()
         val startZoom = controller.userZoom()
         val startOffset = handleOffset()
-        val startMs = System.currentTimeMillis()
+        val startMs = SystemClock.uptimeMillis()
         var totalDx = 0f
         var totalDy = 0f
+        var tapCancelled = false
+        var endedNormally = false
         var isDrag = false    // vertical travel past slop → zoom drag
         var moveSelf = false  // long-press fired while still → relocate the pill itself
         var tracking = true
-        while (tracking) {
+        try {
+            while (tracking) {
             // While still and not yet zoom-dragging, arm a long-press → relocate mode
             // (same vocab as PanHandle); moving past the slop first makes it a zoom drag.
             val armLong = !isDrag && !moveSelf &&
-                abs(totalDx) + abs(totalDy) <= ZOOM_DRAG_SLOP_PX
+                hypot(totalDx, totalDy) <= ZOOM_DRAG_SLOP_PX
             val event = if (armLong) {
-                val remaining = (ZOOM_RELOCATE_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                val remaining = (ZOOM_RELOCATE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
                     .coerceAtLeast(1L)
                 withTimeoutOrNull(remaining) { awaitPointerEvent() }
             } else {
@@ -1970,7 +2131,10 @@ private fun Modifier.zoomPillGestures(
                 val d = change.positionChange()
                 totalDx += d.x
                 totalDy += d.y
-                if (!moveSelf && !isDrag && abs(totalDy) > ZOOM_DRAG_SLOP_PX) {
+                if (hypot(totalDx, totalDy) > ZOOM_DRAG_SLOP_PX) tapCancelled = true
+                if (!moveSelf && !isDrag &&
+                    abs(totalDy) > ZOOM_DRAG_SLOP_PX && abs(totalDy) >= abs(totalDx)
+                ) {
                     isDrag = true
                     setDragging(true)
                 }
@@ -1987,18 +2151,23 @@ private fun Modifier.zoomPillGestures(
             } else {
                 // Our pointer lifted (or vanished) → end this gesture.
                 change?.consume()
+                endedNormally = change != null
                 tracking = false
             }
         }
-        setDragging(false)
-        setMovingSelf(false)
-        if (isDrag || moveSelf) {
+        } finally {
+            setDragging(false)
+            setMovingSelf(false)
+        }
+        if (!endedNormally) {
+            lastTapMs = 0L
+        } else if (isDrag || moveSelf || tapCancelled) {
             // A zoom drag or relocate breaks the double-tap chain so a stray tap after it
             // can't be read as a double-tap and wipe the zoom just set.
             lastTapMs = 0L
         } else {
             // It was a tap; a second tap inside the window resets the zoom to 100%.
-            val now = System.currentTimeMillis()
+            val now = SystemClock.uptimeMillis()
             if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
                 controller.resetZoom()
                 lastTapMs = 0L
@@ -2021,6 +2190,24 @@ private fun clampPillOffset(base: Offset, dx: Float, dy: Float, container: IntSi
     val minX = -(container.width - pill.width).coerceAtLeast(0).toFloat()
     val maxY = ((container.height - pill.height).coerceAtLeast(0) / 2).toFloat()
     return Offset((base.x + dx).coerceIn(minX, 0f), (base.y + dy).coerceIn(-maxY, maxY))
+}
+
+private fun clampCenteredControlOffset(
+    base: Offset,
+    dx: Float,
+    dy: Float,
+    container: IntSize,
+    control: IntSize,
+): Offset {
+    if (minOf(container.width, container.height, control.width, control.height) <= 0) {
+        return Offset(base.x + dx, base.y + dy)
+    }
+    val maxX = ((container.width - control.width).coerceAtLeast(0) / 2f)
+    val maxY = ((container.height - control.height).coerceAtLeast(0) / 2f)
+    return Offset(
+        x = (base.x + dx).coerceIn(-maxX, maxX),
+        y = (base.y + dy).coerceIn(-maxY, maxY),
+    )
 }
 
 // Move-handle tuning (issue: a dedicated button to pan the magnified picture, plus long-press to
@@ -2046,6 +2233,7 @@ private const val PAN_HANDLE_KEYBOARD_GAIN = 2.5f
 @Composable
 private fun PanHandle(
     controller: RdpInputController,
+    containerSize: IntSize,
     containerColor: Color,
     modifier: Modifier = Modifier,
 ) {
@@ -2053,7 +2241,17 @@ private fun PanHandle(
     // remember is called unconditionally (before the early return) so the slot table stays stable;
     // the handle keeps its dragged-to position across hide/show.
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
+    var handleSize by remember { mutableStateOf(IntSize.Zero) }
     var movingSelf by remember { mutableStateOf(false) }
+    LaunchedEffect(containerSize, handleSize) {
+        handleOffset = clampCenteredControlOffset(
+            base = handleOffset,
+            dx = 0f,
+            dy = 0f,
+            container = containerSize,
+            control = handleSize,
+        )
+    }
     val zoomed = (transform.zoom * 100).roundToInt() > 100
     // offsetY < 0 means the keyboard auto-lift pushed the picture up — show the handle so the top
     // (now off-screen) can be pulled back into view, even when not magnified.
@@ -2064,7 +2262,8 @@ private fun PanHandle(
         modifier = modifier
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
             .size(PAN_HANDLE_SIZE_DP.dp)
-            .pointerInput(controller) {
+            .onSizeChanged { handleSize = it }
+            .pointerInput(controller, containerSize) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
@@ -2072,16 +2271,17 @@ private fun PanHandle(
                     val startPanY = controller.userPanY()
                     val gain = if (controller.userZoom() > 1f) controller.userZoom() else PAN_HANDLE_KEYBOARD_GAIN
                     val startOffset = handleOffset
-                    val startMs = System.currentTimeMillis()
+                    val startMs = SystemClock.uptimeMillis()
                     var totalDx = 0f
                     var totalDy = 0f
                     var moveSelf = false
                     var tracking = true
+                    try {
                     while (tracking) {
                         // While still stationary, arm a long-press that switches to "move the handle".
                         val armLong = !moveSelf && abs(totalDx) + abs(totalDy) <= PAN_HANDLE_SLOP_PX
                         val event = if (armLong) {
-                            val remaining = (PAN_HANDLE_LONG_PRESS_MS - (System.currentTimeMillis() - startMs))
+                            val remaining = (PAN_HANDLE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
                                 .coerceAtLeast(1L)
                             withTimeoutOrNull(remaining) { awaitPointerEvent() }
                         } else {
@@ -2102,7 +2302,13 @@ private fun PanHandle(
                             totalDy += d.y
                             if (moveSelf) {
                                 // Relocate the handle itself (follows the finger 1:1).
-                                handleOffset = Offset(startOffset.x + totalDx, startOffset.y + totalDy)
+                                handleOffset = clampCenteredControlOffset(
+                                    base = startOffset,
+                                    dx = totalDx,
+                                    dy = totalDy,
+                                    container = containerSize,
+                                    control = handleSize,
+                                )
                             } else {
                                 // Pan the picture the same direction the handle is dragged.
                                 controller.setUserPan(startPanX + totalDx * gain, startPanY + totalDy * gain)
@@ -2110,7 +2316,9 @@ private fun PanHandle(
                             change.consume()
                         }
                     }
-                    movingSelf = false
+                    } finally {
+                        movingSelf = false
+                    }
                 }
             },
         shape = CircleShape,
@@ -2122,28 +2330,6 @@ private fun PanHandle(
                 imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
                 contentDescription = stringResource(R.string.session_pan_cd),
                 tint = TOOLBAR_CONTENT,
-            )
-        }
-    }
-}
-
-/**
- * A momentary key on the black function-key bar: white label inside a thin white-outline pill,
- * transparent fill (用户需求: 黑底白字). Built from a clickable [Surface] (not AssistChip) so we fully
- * control the white-on-black palette.
- */
-@Composable
-private fun ToolbarPageTabs(selected: ToolbarPage, onSelect: (ToolbarPage) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        ToolbarPage.entries.forEach { page ->
-            ToolbarToggleChip(
-                label = stringResource(page.labelRes),
-                active = selected == page,
-                onClick = { onSelect(page) },
-                modifier = Modifier.weight(1f),
             )
         }
     }

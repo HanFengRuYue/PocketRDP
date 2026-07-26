@@ -29,6 +29,12 @@
     <string name="session_status_fps">帧率：%1$d fps</string>
     <string name="session_status_transport">链路：%1$s</string>
     <string name="session_status_total_latency">延迟：%1$s</string>
+    <string name="session_status_control_latency">操控延迟：%1$s</string>
+    <string name="session_status_display_latency">显示延迟：%1$s</string>
+    <string name="session_status_network_rtt">网络往返：%1$s</string>
+    <string name="session_status_samples">采样：有效 %1$d / 丢弃 %2$d</string>
+    <string name="session_status_transport_stats">流量：下行 %1$d B / 上行 %2$d B，重传 %3$d</string>
+    <string name="session_status_transport_error">链路错误：阶段 %1$d，隧道 0x%2$s，套接字 %3$d</string>
     <string name="session_status_sticky_modifiers">粘滞修饰键：%1$s</string>
     <string name="session_status_last_error">最近错误：%1$s</string>
     <string name="session_status_measuring">测量中…</string>
@@ -51,4 +57,22 @@
     <string name="session_notification_multi_title">正在控制 %1$d 台电脑</string>
     <string name="session_notification_multi_summary">已连接 %1$d · 连接中 %2$d · 重连 %3$d</string>
     <string name="session_notification_more_sessions">另有 %1$d 台…</string>
+    <string name="session_local_network_title">允许访问本地网络</string>
+    <string name="session_local_network_message">PocketRDP 需要本地网络权限才能连接局域网中的远程桌面。拒绝后，Android 可能会阻止此连接。</string>
+    <string name="session_action_open_settings">打开设置</string>
+    <string name="session_action_continue_without_lan">仅连接公网地址</string>
+    <string name="session_action_cancel">取消</string>
+    <string name="session_certificate_new_title">确认远程计算机证书</string>
+    <string name="session_certificate_new_message">这是首次连接此远程计算机。请先核对证书指纹；确认后 PocketRDP 会将其固定到此连接。</string>
+    <string name="session_certificate_changed_title">远程计算机证书已更改</string>
+    <string name="session_certificate_changed_message">证书与此前保存的指纹不符。这可能是服务器重装，也可能表示连接被拦截。确认原因前请勿信任。</string>
+    <string name="session_certificate_endpoint">远程地址：%1$s:%2$d</string>
+    <string name="session_certificate_fingerprint">SHA-256 指纹：%1$s</string>
+    <string name="session_certificate_trust">信任并连接</string>
+    <string name="session_certificate_reject">拒绝</string>
+    <string name="session_certificate_rejected">已拒绝远程计算机证书。</string>
+    <string name="session_certificate_endpoint_changed">保存证书前连接地址已发生变化；为安全起见，已取消连接。</string>
+    <string name="session_credential_unavailable">无法解密已保存的密码。请编辑此连接并重新输入密码。</string>
+    <string name="session_connection_load_failed">无法读取此连接的配置。请返回连接列表后重试。</string>
+    <string name="session_certificate_save_failed">无法安全保存证书指纹。请重试，或取消连接。</string>
 </resources>

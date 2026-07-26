@@ -3,6 +3,22 @@
 PocketRDP is an Android RDP client built with Kotlin, Jetpack Compose, Room,
 Hilt, and FreeRDP.
 
+## Build
+
+Windows Gradle builds must use Android Studio's JBR 21:
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+.\gradlew.bat :app:assembleDebug --no-configuration-cache --console=plain --no-daemon
+```
+
+Normal builds package the four prebuilt ABI directories and do not need a native
+toolchain. FreeRDP native rebuilding is WSL2-only. The submodule stays at official
+FreeRDP 3.30.0 and PocketRDP's changes are tracked in
+`patches/freerdp/pocketrdp-3.30.patch`; see `NATIVE_BUILD_NOTES.md` for the
+reproducible apply, build and ELF-alignment workflow.
+
 ## Project Layout
 
 ### Android app modules

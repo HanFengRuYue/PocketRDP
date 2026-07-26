@@ -4,11 +4,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Environment
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferencesRepository
 import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionOperationCoordinator
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
 import com.hanfengruyue.pocketrdp.core.data.thumbnail.ConnectionThumbnailStore
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
@@ -27,8 +27,10 @@ import com.hanfengruyue.pocketrdp.feature.session.input.TextInputEncoder
 import com.hanfengruyue.pocketrdp.feature.session.service.RdpSessionService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,8 +100,36 @@ data class SessionUiState(
     val filesRedirectEnabled: Boolean = false,
     val allFilesAccessRequired: Boolean = false,
     val functionToolbarQuickIds: List<String> = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS,
+    val pendingCertificate: PendingCertificate? = null,
     val lastError: String? = null,
 )
+
+data class PendingCertificate(
+    val host: String,
+    val port: Int,
+    val sha256: String,
+    val isChange: Boolean,
+)
+
+private sealed interface TextInputCommand {
+    val generation: Long
+
+    data class Type(val text: String, override val generation: Long) : TextInputCommand
+    data class Paste(val text: String, override val generation: Long) : TextInputCommand
+}
+
+internal fun truncateClipboardText(text: String, maxChars: Int): String {
+    require(maxChars >= 0) { "maxChars must be non-negative" }
+    if (text.length <= maxChars) return text
+    if (maxChars == 0) return ""
+    val end = if (text[maxChars - 1].isHighSurrogate()) maxChars - 1 else maxChars
+    return text.substring(0, end)
+}
+
+internal fun toWindowsClipboardText(text: String): String =
+    text.replace("\r\n", "\n")
+        .replace('\r', '\n')
+        .replace("\n", "\r\n")
 
 private val toolbarModifierOrder = listOf(
     ScancodeMap.Modifier.CTRL,
@@ -112,10 +142,10 @@ private val toolbarModifierOrder = listOf(
 class SessionViewModel @Inject constructor(
     val rdpClient: RdpClient,
     private val repository: ConnectionRepository,
+    private val operationCoordinator: ConnectionOperationCoordinator,
     private val preferencesRepository: AppPreferencesRepository,
     private val thumbnailStore: ConnectionThumbnailStore,
     @ApplicationContext private val appContext: Context,
-    savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SessionUiState())
@@ -153,7 +183,8 @@ class SessionViewModel @Inject constructor(
     // setPrimaryClip (so our own OnPrimaryClipChanged sees an unchanged value and skips), and
     // local→remote sets it before sendClipboard (so the server echoing the same text back as
     // ClipboardReceived is ignored). Without it the two directions ping-pong the same text forever.
-    @Volatile private var lastSyncedClipboard: String = ""
+    @Volatile private var lastRemoteClipboardPayload: String = ""
+    @Volatile private var lastAppliedRemoteClipboard: String = ""
     private val clipboardManager: ClipboardManager by lazy {
         appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
@@ -176,14 +207,18 @@ class SessionViewModel @Inject constructor(
                 .orEmpty()
             // Skip empties and anything we just received from the remote (loop guard, compared on the
             // RAW clip so an over-cap remote paste echoed back here still matches and isn't bounced).
-            if (raw.isEmpty() || raw == lastSyncedClipboard) return@launch
-            lastSyncedClipboard = raw
+            if (raw.isEmpty()) return@launch
+            if (raw == lastAppliedRemoteClipboard) {
+                lastAppliedRemoteClipboard = ""
+                return@launch
+            }
             val txt = if (raw.length > CLIPBOARD_MAX_CHARS) {
                 PocketLogger.w(TAG, "clipboard ${raw.length} chars > cap $CLIPBOARD_MAX_CHARS, truncating")
-                raw.take(CLIPBOARD_MAX_CHARS)
+                truncateClipboardText(raw, CLIPBOARD_MAX_CHARS)
             } else {
                 raw
             }
+            lastRemoteClipboardPayload = txt
             rdpClient.sendClipboard(txt)
         }
     }
@@ -191,7 +226,12 @@ class SessionViewModel @Inject constructor(
     // Large-text input queue (the 粘贴大量文本→断开/闪退 fix). typeText offers each committed chunk here;
     // a SINGLE background consumer coroutine (startTypeConsumer) types it via TextInputEncoder.typeThrottled
     // so keystrokes are paced (no UI block, no input-channel flood) AND ordered across overlapping pastes.
-    private val typeChannel = Channel<String>(Channel.UNLIMITED)
+    private val typeChannel = Channel<TextInputCommand>(
+        capacity = TYPE_QUEUE_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    private var typeConsumerJob: Job? = null
+    @Volatile private var inputGeneration: Long = 0L
 
     // Latest latency probe result (ms, -1 = unknown), sampled by a background coroutine and folded
     // into UI state by the 1 Hz metrics ticker (the sole writer of metrics — see CLAUDE.md).
@@ -226,18 +266,18 @@ class SessionViewModel @Inject constructor(
     private var userInitiatedDisconnect: Boolean = false
     private var reconnectAttempt: Int = 0
     private var reconnectJob: Job? = null
+    private var certificateDecisionPending: Boolean = false
 
     init {
-        val id = savedStateHandle.get<Long>("id") ?: 0L
-        _state.update { it.copy(connectionId = id) }
         observeEvents()
         observePointerEvents()
+        observeFrameUpdates()
+        observeClipboardUpdates()
+        observeResizeUpdates()
         observePreferences()
         startMetricsTicker()
         startLatencyProbe()
         startThumbnailCapture()
-        startTypeConsumer()
-        if (id > 0L) launchConnect(id)
     }
 
     private fun observePreferences() {
@@ -249,18 +289,62 @@ class SessionViewModel @Inject constructor(
     }
 
     fun ensureStarted(connectionId: Long) {
+        startIfAllowed(connectionId, allowStoppedSessionRestart = true)
+    }
+
+    /**
+     * Lifecycle resumes are not an explicit retry gesture. In particular, restarting a failed
+     * authentication attempt merely because the user backgrounded and resumed the app can consume
+     * another server-side login attempt and contribute to an account lockout. Certificate rejection
+     * must likewise remain final until the user deliberately leaves and re-opens the session.
+     */
+    fun ensureStartedOnResume(connectionId: Long) {
+        startIfAllowed(connectionId, allowStoppedSessionRestart = false)
+    }
+
+    private fun startIfAllowed(connectionId: Long, allowStoppedSessionRestart: Boolean) {
         if (connectionId <= 0L) return
         val current = _state.value
-        if (!shouldLaunchConnect(current, connectionId)) return
-        _state.update { it.copy(connectionId = connectionId) }
+        if (!shouldLaunchConnect(current, connectionId, allowStoppedSessionRestart)) return
+        _state.update {
+            it.copy(
+                connectionId = connectionId,
+                // Claim the launch synchronously. Permission-result and ON_RESUME callbacks can
+                // arrive back-to-back; waiting for RdpClient.Connecting would let both start a
+                // separate repository/decrypt/native-connect coroutine for the same session.
+                status = SessionConnectionStatus.Connecting,
+                pendingCertificate = null,
+            )
+        }
+        // A foreground/manual restart supersedes any delayed auto-reconnect left by the previous
+        // failure. Cancel it before launching repository I/O so the timer cannot win that race.
+        reconnectJob?.cancel()
         launchConnect(connectionId)
     }
 
-    fun retryAfterAllFilesAccess() {
+    /**
+     * Retry the pending connection after returning from the all-files-access settings page.
+     *
+     * @return true when access is still missing and the UI should show the contextual prompt again.
+     */
+    fun retryAfterAllFilesAccess(): Boolean {
         val current = _state.value
-        if (!current.allFilesAccessRequired || !Environment.isExternalStorageManager()) return
-        _state.update { it.copy(allFilesAccessRequired = false, lastError = null) }
+        if (!current.allFilesAccessRequired) return false
+        if (!Environment.isExternalStorageManager()) return true
+        // ON_RESUME invokes this immediately before ensureStarted(). Claim the launch
+        // synchronously so that second path observes Connecting and cannot create a duplicate
+        // repository/decrypt/native-connect pipeline for the same session.
+        _state.update {
+            it.copy(
+                status = SessionConnectionStatus.Connecting,
+                allFilesAccessRequired = false,
+                pendingCertificate = null,
+                lastError = null,
+            )
+        }
+        reconnectJob?.cancel()
         launchConnect(current.connectionId)
+        return false
     }
 
     /**
@@ -270,15 +354,39 @@ class SessionViewModel @Inject constructor(
      * native getter) so it tracks the post-connect capability flip.
      */
     private fun startTypeConsumer() {
-        viewModelScope.launch(Dispatchers.Default) {
-            for (text in typeChannel) {
+        typeConsumerJob?.cancel()
+        val generation = ++inputGeneration
+        typeConsumerJob = viewModelScope.launch(Dispatchers.Default) {
+            for (command in typeChannel) {
+                if (command.generation != generation ||
+                    generation != inputGeneration ||
+                    !canQueueTextInput(_state.value.status)
+                ) {
+                    continue
+                }
                 runCatching {
-                    TextInputEncoder.typeThrottled(
-                        text = text,
-                        unicodeSupported = rdpClient.isUnicodeInputSupported(),
-                        sendKey = rdpClient::sendKeyEvent,
-                        sendUnicode = rdpClient::sendUnicodeKey,
-                    )
+                    when (command) {
+                        is TextInputCommand.Type -> TextInputEncoder.typeThrottled(
+                            text = command.text,
+                            unicodeSupported = rdpClient.isUnicodeInputSupported(),
+                            sendKey = { key, down ->
+                                if (generation == inputGeneration &&
+                                    !isProtectedStickyModifierKey(key)
+                                ) {
+                                    rdpClient.sendKeyEvent(key, down)
+                                }
+                            },
+                            sendUnicode = { codePoint, down ->
+                                if (generation == inputGeneration) {
+                                    rdpClient.sendUnicodeKey(codePoint, down)
+                                }
+                            },
+                        )
+                        is TextInputCommand.Paste -> pasteViaRemoteClipboard(command.text, generation)
+                    }
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    PocketLogger.w(TAG, "text input command failed: ${error.message}")
                 }
             }
         }
@@ -290,6 +398,7 @@ class SessionViewModel @Inject constructor(
                 when (event) {
                     is RdpEvent.Connecting -> _state.update { it.copy(status = SessionConnectionStatus.Connecting) }
                     is RdpEvent.Connected -> {
+                        certificateDecisionPending = false
                         // A live connection: clear reconnect bookkeeping so a later drop starts its
                         // backoff from zero. On the INITIAL connect (not a reconnect) the app is in
                         // the foreground, so it's safe to refresh the FGS notification to "已连接"
@@ -307,6 +416,7 @@ class SessionViewModel @Inject constructor(
                             it.copy(
                                 status = SessionConnectionStatus.Connected,
                                 connectedAtMs = System.currentTimeMillis(),
+                                pendingCertificate = null,
                                 lastError = null,
                             )
                         }
@@ -321,24 +431,37 @@ class SessionViewModel @Inject constructor(
                         if (dynamicResolutionEnabled) scheduleMonitorLayoutRetry()
                         // Start watching the local clipboard so copies on the phone reach the remote.
                         registerClipboardListener()
+                        startTypeConsumer()
                     }
                     is RdpEvent.ClipboardReceived -> {
                         // Remote → local. Mirror the de-dupe token first so our own
                         // OnPrimaryClipChanged (fired by setPrimaryClip) recognises this as an
                         // echo and doesn't bounce it back to the server.
-                        if (clipboardSyncEnabled && event.text.isNotEmpty() && event.text != lastSyncedClipboard) {
-                            lastSyncedClipboard = event.text
-                            clipboardManager.setPrimaryClip(ClipData.newPlainText("PocketRDP", event.text))
+                        val remoteText = truncateClipboardText(event.text, CLIPBOARD_MAX_CHARS)
+                        if (event.text.length > CLIPBOARD_MAX_CHARS) {
+                            PocketLogger.w(TAG, "remote clipboard exceeded the safe size cap; truncating")
+                        }
+                        if (remoteText == lastRemoteClipboardPayload) {
+                            lastRemoteClipboardPayload = ""
+                        } else if (clipboardSyncEnabled && remoteText.isNotEmpty() &&
+                            remoteText != lastAppliedRemoteClipboard
+                        ) {
+                            lastAppliedRemoteClipboard = remoteText
+                            clipboardManager.setPrimaryClip(
+                                ClipData.newPlainText("PocketRDP", remoteText),
+                            )
                         }
                     }
                     is RdpEvent.Disconnected -> {
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
                         unregisterClipboardListener()
+                        stopTypeConsumer()
+                        clearStickyModifiers(sendReleases = false)
                         fpsCounter.reset()
                         _state.update {
                             it.copy(
-                                status = SessionConnectionStatus.Disconnected(event.reason),
+                                status = statusAfterDisconnect(it.status, event.reason),
                                 connectedAtMs = 0L,
                                 durationSec = 0L,
                                 fps = 0,
@@ -348,7 +471,7 @@ class SessionViewModel @Inject constructor(
                         // reason=="user" → deliberate teardown (disconnect button / left screen):
                         // the service self-stops, just cancel any pending reconnect. reason==null →
                         // an unexpected native/network drop: auto-reconnect with backoff.
-                        if (event.reason == "user") {
+                        if (event.reason == "user" || certificateDecisionPending) {
                             reconnectJob?.cancel()
                         } else {
                             scheduleReconnect()
@@ -358,6 +481,8 @@ class SessionViewModel @Inject constructor(
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
                         unregisterClipboardListener()
+                        stopTypeConsumer()
+                        clearStickyModifiers(sendReleases = false)
                         fpsCounter.reset()
                         _state.update {
                             it.copy(
@@ -371,20 +496,12 @@ class SessionViewModel @Inject constructor(
                         }
                         // A failed attempt (incl. mid-session reconnect) is retried with backoff
                         // unless the user tore the session down.
-                        scheduleReconnect()
-                    }
-                    is RdpEvent.GraphicsResized -> {
-                        _state.update { it.copy(remoteWidth = event.width, remoteHeight = event.height) }
-                        // The server occasionally clamps to multiples of 2 (we've seen 1278
-                        // come back from a 1279 request, 3038 from 3039), so tolerate small
-                        // diffs when deciding "matched, stop retrying".
-                        val pw = pendingMonitorWidth
-                        val ph = pendingMonitorHeight
-                        if (pw > 0 && ph > 0 &&
-                            (event.width - pw).absoluteValue <= 8 &&
-                            (event.height - ph).absoluteValue <= 8) {
-                            PocketLogger.i(TAG, "monitor layout acknowledged (remote=${event.width}x${event.height})")
-                            monitorLayoutRetryJob?.cancel()
+                        if (!certificateDecisionPending && event.retryable) {
+                            scheduleReconnect()
+                        } else if (!event.retryable) {
+                            // Auto-reconnect is impossible for a permanent validation/security
+                            // failure, so do not retain the decrypted password in RdpConnectionParams.
+                            lastParams = null
                         }
                     }
                     is RdpEvent.GraphicsUpdated -> {
@@ -398,6 +515,23 @@ class SessionViewModel @Inject constructor(
                         // ~content fps — and is honest. The 1 Hz ticker still samples snapshot().
                         fpsCounter.tick()
                     }
+                    is RdpEvent.CertificatePrompt -> {
+                        certificateDecisionPending = true
+                        // Accept/reject reloads the connection from the repository; the pending
+                        // trust decision does not need to keep a decrypted password in memory.
+                        lastParams = null
+                        reconnectJob?.cancel()
+                        _state.update {
+                            it.copy(
+                                pendingCertificate = PendingCertificate(
+                                    host = event.host,
+                                    port = event.port,
+                                    sha256 = event.sha256,
+                                    isChange = event.isChange,
+                                ),
+                            )
+                        }
+                    }
                     else -> Unit
                 }
             }
@@ -406,11 +540,65 @@ class SessionViewModel @Inject constructor(
 
     private fun observePointerEvents() {
         viewModelScope.launch {
-            rdpClient.events.collect { event ->
-                if (event is RdpEvent.PointerChanged) {
-                    _state.update { it.copy(remoteCursor = event.cursor) }
+            rdpClient.remoteCursor.collect { cursor ->
+                _state.update { it.copy(remoteCursor = cursor) }
+            }
+        }
+    }
+
+    private fun observeFrameUpdates() {
+        viewModelScope.launch {
+            rdpClient.frameUpdates.collect {
+                fpsCounter.tick()
+            }
+        }
+    }
+
+    private fun observeClipboardUpdates() {
+        viewModelScope.launch {
+            rdpClient.clipboardUpdates.collect { text ->
+                applyRemoteClipboard(text)
+            }
+        }
+    }
+
+    private fun observeResizeUpdates() {
+        viewModelScope.launch {
+            rdpClient.resizeUpdates.collect { event ->
+                _state.update { it.copy(remoteWidth = event.width, remoteHeight = event.height) }
+                // The server occasionally clamps to multiples of 2 (we've seen 1278 come back
+                // from a 1279 request, 3038 from 3039), so tolerate small differences when
+                // deciding that the monitor-layout request was acknowledged.
+                val pw = pendingMonitorWidth
+                val ph = pendingMonitorHeight
+                if (pw > 0 && ph > 0 &&
+                    (event.width - pw).absoluteValue <= 8 &&
+                    (event.height - ph).absoluteValue <= 8
+                ) {
+                    PocketLogger.i(
+                        TAG,
+                        "monitor layout acknowledged (remote=${event.width}x${event.height})",
+                    )
+                    monitorLayoutRetryJob?.cancel()
                 }
             }
+        }
+    }
+
+    private fun applyRemoteClipboard(text: String) {
+        val remoteText = truncateClipboardText(text, CLIPBOARD_MAX_CHARS)
+        if (text.length > CLIPBOARD_MAX_CHARS) {
+            PocketLogger.w(TAG, "remote clipboard exceeded the safe size cap; truncating")
+        }
+        if (remoteText == lastRemoteClipboardPayload) {
+            lastRemoteClipboardPayload = ""
+        } else if (clipboardSyncEnabled && remoteText.isNotEmpty() &&
+            remoteText != lastAppliedRemoteClipboard
+        ) {
+            lastAppliedRemoteClipboard = remoteText
+            clipboardManager.setPrimaryClip(
+                ClipData.newPlainText("PocketRDP", remoteText),
+            )
         }
     }
 
@@ -554,18 +742,34 @@ class SessionViewModel @Inject constructor(
     }
 
     private fun launchConnect(id: Long) {
+        // This path always reloads the authoritative row and constructs a fresh parameter set.
+        // Release any password retained for an earlier connection before permission/storage I/O:
+        // a paused or failed preflight must not keep stale credentials alive unnecessarily.
+        lastParams = null
         viewModelScope.launch {
-            val entity = repository.findById(id) ?: run {
-                PocketLogger.e(TAG, "connection id=$id not found in repository")
+            operationCoordinator.withExclusiveOperation connect@{
+            val entity = runCatching { repository.findById(id) }.getOrElse { error ->
+                PocketLogger.e(TAG, "connection configuration could not be loaded", error)
+                val message = appContext.getString(R.string.session_connection_load_failed)
                 _state.update {
                     it.copy(
-                        status = SessionConnectionStatus.Failed("connection not found"),
-                        lastError = "connection not found",
+                        status = SessionConnectionStatus.Failed(message),
+                        lastError = message,
                     )
                 }
-                return@launch
+                return@connect
+            } ?: run {
+                PocketLogger.e(TAG, "connection id=$id not found in repository")
+                val message = appContext.getString(R.string.session_connection_load_failed)
+                _state.update {
+                    it.copy(
+                        status = SessionConnectionStatus.Failed(message),
+                        lastError = message,
+                    )
+                }
+                return@connect
             }
-            PocketLogger.i(TAG, "launchConnect id=$id name='${entity.name}' host=${entity.host}:${entity.port}")
+            PocketLogger.i(TAG, "launchConnect id=$id endpoint=<redacted>")
             // Resolution: a custom fixed size (issue 自定义分辨率) pins the remote desktop and is
             // mutually exclusive with dynamic-resolution (we must NOT push monitor-layout PDUs that
             // would resize it). Otherwise fall back to the dynamic-res default of 1920×1080 initial.
@@ -595,7 +799,6 @@ class SessionViewModel @Inject constructor(
                     allFilesAccessRequired = false,
                 )
             }
-            val plain = runCatching { repository.decryptPassword(entity) }.getOrDefault("")
             // File redirection: export the whole shared storage (/storage/emulated/0) as a real
             // filesystem path. FreeRDP validates /drive during argument parsing and only logs a native
             // warning when the path does not exist, so preflight here keeps the remote "no drive"
@@ -604,7 +807,7 @@ class SessionViewModel @Inject constructor(
                 redirectFiles = entity.redirectFiles,
                 allFilesAccessGranted = Environment.isExternalStorageManager(),
                 storageMounted = runCatching { Environment.getExternalStorageState() }
-                    .map { it == Environment.MEDIA_MOUNTED || it == Environment.MEDIA_MOUNTED_READ_ONLY }
+                    .map { it == Environment.MEDIA_MOUNTED }
                     .getOrDefault(false),
                 externalStoragePath = runCatching {
                     Environment.getExternalStorageDirectory()?.absolutePath
@@ -612,6 +815,7 @@ class SessionViewModel @Inject constructor(
                 pathExists = { path -> File(path).exists() },
                 pathIsDirectory = { path -> File(path).isDirectory },
                 pathCanRead = { path -> File(path).canRead() },
+                pathCanWrite = { path -> File(path).canWrite() },
             )
             val driveDir = when (drivePlan) {
                 RdpDriveRedirectionPlan.Disabled -> null
@@ -628,10 +832,10 @@ class SessionViewModel @Inject constructor(
                             lastError = null,
                         )
                     }
-                    return@launch
+                    return@connect
                 }
                 is RdpDriveRedirectionPlan.Unavailable -> {
-                    PocketLogger.e(TAG, drivePlan.reason)
+                    PocketLogger.e(TAG, "folder redirection path unavailable")
                     _state.update {
                         it.copy(
                             status = SessionConnectionStatus.Failed(drivePlan.reason),
@@ -640,12 +844,26 @@ class SessionViewModel @Inject constructor(
                             lastError = drivePlan.reason,
                         )
                     }
-                    return@launch
+                    return@connect
                 }
                 is RdpDriveRedirectionPlan.Ready -> {
-                    PocketLogger.i(TAG, "folder redirection drive path ready: ${drivePlan.path}")
+                    PocketLogger.i(TAG, "folder redirection drive path ready")
                     drivePlan.path
                 }
+            }
+            // Decrypt only after every permission/storage preflight has passed. In particular, do
+            // not materialize a credential merely to pause at the all-files-access settings screen.
+            val plain = runCatching { repository.decryptPassword(entity) }.getOrElse { error ->
+                PocketLogger.e(TAG, "saved credential could not be decrypted", error)
+                lastParams = null
+                val message = appContext.getString(R.string.session_credential_unavailable)
+                _state.update {
+                    it.copy(
+                        status = SessionConnectionStatus.Failed(message),
+                        lastError = message,
+                    )
+                }
+                return@connect
             }
             val params = RdpConnectionParams(
                 connectionId = entity.id,
@@ -678,6 +896,7 @@ class SessionViewModel @Inject constructor(
             lastConnName = entity.name
             lastHostLabel = "${entity.host}:${entity.port}"
             userInitiatedDisconnect = false
+            certificateDecisionPending = false
             reconnectAttempt = 0
             reconnectJob?.cancel()
             rdpClient.connect(params)
@@ -687,22 +906,30 @@ class SessionViewModel @Inject constructor(
             if (rdpClient.hasActiveSession()) {
                 startKeepAlive(appContext.getString(R.string.session_notification_status_connecting))
             }
-            repository.touchLastUsed(entity.id)
+            runCatching { repository.touchLastUsed(entity.id) }
+                .onFailure { PocketLogger.w(TAG, "could not update connection last-used time", it) }
+            }
         }
     }
 
     /** Start (or refresh) the keep-alive foreground service for the current connection. */
     private fun startKeepAlive(status: String) {
-        // Mark "a session is meant to be alive" so a background process-kill is detectable next launch.
-        SessionKeepAliveFlag.setActive(appContext, true)
         runCatching { RdpSessionService.start(appContext, lastConnName, lastHostLabel, status) }
-            .onFailure { PocketLogger.w(TAG, "startForegroundService failed: ${it.message}") }
+            .onSuccess {
+                // Mark "a session is meant to be alive" only after Android accepted the service
+                // start. Otherwise a synchronous FGS-start failure looks like a later process kill.
+                SessionKeepAliveFlag.setActive(appContext, true)
+            }
+            .onFailure {
+                SessionKeepAliveFlag.setActive(appContext, false)
+                PocketLogger.w(TAG, "startForegroundService failed: ${it.message}")
+            }
     }
 
     /** Stop the keep-alive service only when this was the last active session. */
     private fun stopKeepAlive() {
         reconnectJob?.cancel()
-        if (rdpClient.activeSessionCount() == 0) {
+        rdpClient.runIfNoActiveSessions {
             // Clean teardown — clear the flag so we DON'T later mistake this for a background kill.
             SessionKeepAliveFlag.setActive(appContext, false)
             RdpSessionService.stop(appContext)
@@ -716,10 +943,11 @@ class SessionViewModel @Inject constructor(
      */
     private fun scheduleReconnect() {
         val params = lastParams ?: return
-        if (userInitiatedDisconnect) return
+        if (userInitiatedDisconnect || certificateDecisionPending) return
         reconnectJob?.cancel()
         if (reconnectAttempt >= RECONNECT_BACKOFF_MS.size) {
             PocketLogger.w(TAG, "auto-reconnect exhausted after $reconnectAttempt tries — giving up")
+            lastParams = null
             rdpClient.disconnect()
             stopKeepAlive()
             return
@@ -785,6 +1013,10 @@ class SessionViewModel @Inject constructor(
 
     /** Send a one-shot key chord without disturbing already latched toolbar modifiers. */
     fun sendKeyWithModifiers(vk: Int, modifierMask: Int) {
+        sendKeyChordNow(vk, modifierMask)
+    }
+
+    private fun sendKeyChordNow(vk: Int, modifierMask: Int) {
         val stickyMask = _state.value.stickyModifiers
         val transientModifiers = toolbarModifierOrder
             .filter { flag -> modifierMask and flag != 0 && stickyMask and flag == 0 }
@@ -798,19 +1030,36 @@ class SessionViewModel @Inject constructor(
 
     /** Forward a discrete VK down/up — used by the IME bridge's onPreviewKeyEvent path. */
     fun sendVkRaw(vk: Int, down: Boolean) {
-        rdpClient.sendKeyEvent(vk, down)
+        if (!isProtectedStickyModifierKey(vk)) {
+            rdpClient.sendKeyEvent(vk, down)
+        }
     }
 
     fun sendCtrlAltDel() {
-        val ctrl = ScancodeMap.VK.LCONTROL
-        val alt = ScancodeMap.VK.LMENU
-        val del = ScancodeMap.VK.DELETE
-        rdpClient.sendKeyEvent(ctrl, true)
-        rdpClient.sendKeyEvent(alt, true)
-        rdpClient.sendKeyEvent(del, true)
-        rdpClient.sendKeyEvent(del, false)
-        rdpClient.sendKeyEvent(alt, false)
-        rdpClient.sendKeyEvent(ctrl, false)
+        sendKeyChordNow(
+            vk = ScancodeMap.VK.DELETE,
+            modifierMask = ScancodeMap.Modifier.CTRL or ScancodeMap.Modifier.ALT,
+        )
+    }
+
+    private fun isProtectedStickyModifierKey(vk: Int): Boolean {
+        val stickyMask = _state.value.stickyModifiers
+        return toolbarModifierOrder.any { flag ->
+            stickyMask and flag != 0 && ScancodeMap.Modifier.vkFor(flag) == vk
+        }
+    }
+
+    private fun clearStickyModifiers(sendReleases: Boolean) {
+        val stickyMask = _state.value.stickyModifiers
+        if (sendReleases) {
+            toolbarModifierOrder.asReversed()
+                .filter { flag -> stickyMask and flag != 0 }
+                .mapNotNull(ScancodeMap.Modifier::vkFor)
+                .forEach { vk -> rdpClient.sendKeyEvent(vk, false) }
+        }
+        if (stickyMask != 0) {
+            _state.update { it.copy(stickyModifiers = 0) }
+        }
     }
 
     fun setFunctionToolbarQuickIds(ids: List<String>) {
@@ -820,10 +1069,21 @@ class SessionViewModel @Inject constructor(
     }
 
     fun typeText(rawText: String) {
-        if (rawText.isEmpty()) return
+        if (rawText.isEmpty() || !canQueueTextInput(_state.value.status)) {
+            return
+        }
+        val generation = inputGeneration
+        // A third-party IME can commit an arbitrarily large CharSequence in one callback. Bound it
+        // before line-ending normalization allocates another copy and before the bounded *message*
+        // channel retains it. Together with the eight-slot queue this bounds retained IME-controlled
+        // UTF-16 payload to roughly 1 MiB rather than allowing tens of MiB of process-heap pressure.
+        val boundedRaw = truncateClipboardText(rawText, TYPE_TEXT_MAX_CHARS)
+        if (boundedRaw.length != rawText.length) {
+            PocketLogger.w(TAG, "IME text exceeded the safe size cap; truncating")
+        }
         // Normalise line breaks to a single '\n' first so a CRLF never becomes a DOUBLE Enter in the
         // fallback typing path; the clipboard path re-expands to CRLF for Windows.
-        val text = rawText.replace("\r\n", "\n").replace('\r', '\n')
+        val text = boundedRaw.replace("\r\n", "\n").replace('\r', '\n')
         // A chunk that is MULTI-LINE or LARGE is a PASTE, not live typing. Route it through the remote
         // clipboard + Ctrl+V instead of typing it character-by-character. Char-by-char is wrong for a
         // paste in two ways the user hit in the field:
@@ -836,13 +1096,95 @@ class SessionViewModel @Inject constructor(
         // throttled char-by-char typing (still bounded, just can't avoid the newline-as-Enter there).
         val isPaste = text.length > PASTE_VIA_CLIPBOARD_THRESHOLD || text.contains('\n')
         if (isPaste && clipboardSyncEnabled) {
-            pasteViaRemoteClipboard(text)
+            typeChannel.trySend(TextInputCommand.Paste(text, generation))
         } else {
             // Offer the chunk to the background type consumer (startTypeConsumer). trySend never blocks;
-            // the channel is UNLIMITED and drained by ONE ordered consumer that paces the keystrokes.
+            // the bounded channel is drained by ONE ordered consumer that paces the keystrokes.
+            // Under an abusive IME flood, oldest queued chunks are discarded instead of allowing
+            // attacker-controlled text to grow process memory without bound.
             // Per-char routing (ASCII → scancode, else unicode) lives in TextInputEncoder.
-            typeChannel.trySend(text)
+            typeChannel.trySend(TextInputCommand.Type(text, generation))
         }
+    }
+
+    fun acceptPendingCertificate() {
+        val pending = _state.value.pendingCertificate ?: return
+        val connectionId = _state.value.connectionId
+        if (connectionId <= 0L || pending.sha256.length != SHA256_HEX_LENGTH) return
+        // Remove the dialog before starting I/O so repeated taps cannot save/launch the same trust
+        // decision twice. A recoverable database error restores it below.
+        _state.update {
+            it.copy(
+                status = SessionConnectionStatus.Connecting,
+                pendingCertificate = null,
+                lastError = null,
+            )
+        }
+        viewModelScope.launch {
+            val endpointMatches = runCatching {
+                repository.setCertThumbprintIfEndpointMatches(
+                    id = connectionId,
+                    expectedHost = pending.host,
+                    expectedPort = pending.port,
+                    thumb = pending.sha256,
+                )
+            }.getOrElse { error ->
+                PocketLogger.e(TAG, "certificate pin could not be saved", error)
+                val message = appContext.getString(R.string.session_certificate_save_failed)
+                _state.update {
+                    it.copy(
+                        status = SessionConnectionStatus.Failed(message),
+                        pendingCertificate = pending,
+                        lastError = message,
+                    )
+                }
+                return@launch
+            }
+            if (!endpointMatches) {
+                certificateDecisionPending = false
+                val message = appContext.getString(R.string.session_certificate_endpoint_changed)
+                _state.update {
+                    it.copy(
+                        status = SessionConnectionStatus.Failed(message),
+                        pendingCertificate = null,
+                        lastError = message,
+                    )
+                }
+                return@launch
+            }
+            certificateDecisionPending = false
+            _state.update {
+                it.copy(
+                    status = SessionConnectionStatus.Connecting,
+                    pendingCertificate = null,
+                    lastError = null,
+                )
+            }
+            launchConnect(connectionId)
+        }
+    }
+
+    fun rejectPendingCertificate() {
+        if (_state.value.pendingCertificate == null) return
+        certificateDecisionPending = false
+        userInitiatedDisconnect = true
+        lastParams = null
+        reconnectJob?.cancel()
+        stopTypeConsumer()
+        clearStickyModifiers(sendReleases = true)
+        val rejectedMessage = appContext.getString(R.string.session_certificate_rejected)
+        _state.update {
+            it.copy(
+                status = SessionConnectionStatus.Failed(rejectedMessage),
+                pendingCertificate = null,
+                lastError = rejectedMessage,
+            )
+        }
+        // RdpClient emits a final user-disconnect event while removing the registry entry. Publish
+        // the explicit rejection first; statusAfterDisconnect preserves that terminal explanation
+        // instead of replacing it with a generic "Disconnected" state one main-loop turn later.
+        rdpClient.disconnect()
+        stopKeepAlive()
     }
 
     /**
@@ -852,24 +1194,38 @@ class SessionViewModel @Inject constructor(
      * (断开/闪退) nor turns newlines into Enter (换行变回车). The cliprdr push is async, so we wait briefly
      * before the paste so the remote clipboard holds the new text first.
      */
-    private fun pasteViaRemoteClipboard(text: String) {
-        viewModelScope.launch(Dispatchers.Default) {
+    private suspend fun pasteViaRemoteClipboard(text: String, generation: Long) {
+        if (generation != inputGeneration) return
             // CRLF so Windows apps render the line breaks (a bare \n shows as no break in Notepad etc.),
             // and cap the length the same way the clipboard listener does.
-            val crlf = text.replace("\n", "\r\n")
-            val payload = if (crlf.length > CLIPBOARD_MAX_CHARS) crlf.take(CLIPBOARD_MAX_CHARS) else crlf
+        val crlf = toWindowsClipboardText(text)
+        val payload = truncateClipboardText(crlf, CLIPBOARD_MAX_CHARS)
             // Echo guard: mark before sending so the server echoing this text back (ClipboardReceived)
             // — and our own clipboard listener — recognise it and don't bounce it around.
-            lastSyncedClipboard = payload
-            rdpClient.sendClipboard(payload)
-            delay(CLIPBOARD_PASTE_DELAY_MS)
-            val ctrl = ScancodeMap.VK.LCONTROL
-            val vKey = ScancodeMap.asciiVkFor('v'.code)?.first ?: VK_V_FALLBACK
-            rdpClient.sendKeyEvent(ctrl, true)
-            rdpClient.sendKeyEvent(vKey, true)
-            rdpClient.sendKeyEvent(vKey, false)
-            rdpClient.sendKeyEvent(ctrl, false)
+        lastRemoteClipboardPayload = payload
+        rdpClient.sendClipboard(payload)
+        delay(CLIPBOARD_PASTE_DELAY_MS)
+        if (generation != inputGeneration) return
+        val vKey = ScancodeMap.asciiVkFor('v'.code)?.first ?: VK_V_FALLBACK
+        sendKeyChordNow(vKey, ScancodeMap.Modifier.CTRL)
+    }
+
+    private fun drainTypeQueue() {
+        while (typeChannel.tryReceive().isSuccess) {
+            // Drop input queued for a session that is no longer connected.
         }
+    }
+
+    private fun stopTypeConsumer() {
+        inputGeneration++
+        typeConsumerJob?.cancel()
+        typeConsumerJob = null
+        drainTypeQueue()
+        // These loop-suppression tokens can contain clipboard or pasted secrets. They are useful
+        // only while this native cliprdr session is alive; do not retain them across teardown or
+        // reconnect in the retained ViewModel.
+        lastRemoteClipboardPayload = ""
+        lastAppliedRemoteClipboard = ""
     }
 
     fun onSurfaceResized(width: Int, height: Int) {
@@ -919,9 +1275,13 @@ class SessionViewModel @Inject constructor(
             val delaysMs = longArrayOf(0, 500, 1000, 2000, 3000, 5000, 5000, 5000, 5000)
             for ((idx, ms) in delaysMs.withIndex()) {
                 delay(ms)
+                // The keyboard temporarily shrinks the AndroidView. onSurfaceResized deliberately
+                // records that latest size but does not dispatch it while the IME is visible; the
+                // retry loop must honor the same rule after a reconnect, otherwise it can resize
+                // the remote desktop to the keyboard-compressed viewport.
                 val w = pendingMonitorWidth
                 val h = pendingMonitorHeight
-                if (w <= 0 || h <= 0) continue
+                if (!shouldDispatchMonitorLayoutRetry(_state.value.imeVisible, w, h)) continue
                 val ok = rdpClient.sendMonitorLayout(w, h)
                 PocketLogger.i(TAG, "monitor-layout retry #$idx ${w}x$h (after ${ms}ms) ok=$ok")
                 // Don't break on ok==true: even if the JNI accepted it, the server might
@@ -955,9 +1315,14 @@ class SessionViewModel @Inject constructor(
         // Explicit user teardown (disconnect button): stop reconnecting and tear down only this
         // session. The keep-alive service stops only if no other RdpClient remains active.
         userInitiatedDisconnect = true
+        // RdpConnectionParams contains the decrypted password solely for auto-reconnect. Once the
+        // user explicitly ends the session, release that reference immediately.
+        lastParams = null
         // Grab a final desktop thumbnail BEFORE rdpClient.disconnect() releases the buffer — the
         // snapshot is an independent copy, so the subsequent release is harmless to it.
         captureThumbnail()
+        stopTypeConsumer()
+        clearStickyModifiers(sendReleases = true)
         rdpClient.disconnect()
         stopKeepAlive()
     }
@@ -969,10 +1334,13 @@ class SessionViewModel @Inject constructor(
         // IS a deliberate teardown for this session. Other active sessions stay alive.
         PocketLogger.i(TAG, "SessionViewModel.onCleared — disconnecting + stopping keep-alive")
         userInitiatedDisconnect = true
+        lastParams = null
         // Last chance to refresh the list thumbnail (still Connected here); the store encodes on its
         // own scope, so it survives this ViewModel's scope being cancelled right after onCleared.
         captureThumbnail()
         unregisterClipboardListener()
+        stopTypeConsumer()
+        clearStickyModifiers(sendReleases = true)
         typeChannel.close()
         rdpClient.disconnect()
         stopKeepAlive()
@@ -993,6 +1361,9 @@ class SessionViewModel @Inject constructor(
         // at the final stable clip, and cap how much text we push over cliprdr (the 大量文本→断开/闪退 fix).
         private const val CLIPBOARD_DEBOUNCE_MS = 250L
         private const val CLIPBOARD_MAX_CHARS = 256 * 1024
+        private const val TYPE_TEXT_MAX_CHARS = 64 * 1024
+        private const val TYPE_QUEUE_CAPACITY = 8
+        private const val SHA256_HEX_LENGTH = 64
         // typeText: a chunk longer than this (or containing any newline) is treated as a PASTE and is
         // delivered via the remote clipboard + Ctrl+V instead of char-by-char typing — see typeText.
         // High enough that normal typing / IME word commits never trip it; low enough to catch real
@@ -1004,10 +1375,10 @@ class SessionViewModel @Inject constructor(
         private const val CLIPBOARD_PASTE_DELAY_MS = 400L
         // VK_V (0x56) fallback if the ASCII map ever fails to resolve 'v'.
         private const val VK_V_FALLBACK = 0x56
-        // Desktop-thumbnail capture: snapshot the framebuffer this often so the connection card
-        // shows a recent picture even if the session ends abruptly (a crash/kill skips the
-        // disconnect-time capture). 12 s is frequent enough to stay current without churning the disk.
-        private const val THUMB_CAPTURE_INTERVAL_MS = 12_000L
+        // Active cards use memory-backed live previews and normal teardown always performs a final
+        // capture. Persist only a low-frequency crash/restart fallback: a 12-second interval could
+        // write well over a gigabyte of JPEG data during a day-long RDP session.
+        private const val THUMB_CAPTURE_INTERVAL_MS = 5 * 60_000L
         // Longest edge (px) of the stored thumbnail. Bumped 640 → 1280 to kill the connection-card
         // blur (用户反馈: 主页图片非常模糊): the card spans almost the full screen width, so a 640px source
         // was upscaled ~2× and looked soft. 1280px (paired with JPEG quality 92, see ConnectionThumbnail
@@ -1030,14 +1401,42 @@ class SessionViewModel @Inject constructor(
     }
 }
 
-internal fun shouldLaunchConnect(current: SessionUiState, requestedConnectionId: Long): Boolean {
+internal fun shouldLaunchConnect(
+    current: SessionUiState,
+    requestedConnectionId: Long,
+    allowStoppedSessionRestart: Boolean = true,
+): Boolean {
     if (requestedConnectionId <= 0L) return false
-    if (current.connectionId != requestedConnectionId || current.allFilesAccessRequired) return true
+    if (current.connectionId == requestedConnectionId && current.pendingCertificate != null) return false
+    if (current.connectionId != requestedConnectionId) return true
+    // retryAfterAllFilesAccess() owns this transition and first verifies that the grant really
+    // exists. A generic lifecycle callback must not spin repository/preflight work whenever the
+    // user returns from Settings without granting broad storage access.
+    if (current.allFilesAccessRequired) return false
     return when (current.status) {
-        SessionConnectionStatus.Idle,
+        SessionConnectionStatus.Idle -> true
         is SessionConnectionStatus.Disconnected,
-        is SessionConnectionStatus.Failed -> true
+        is SessionConnectionStatus.Failed -> allowStoppedSessionRestart
         SessionConnectionStatus.Connecting,
         SessionConnectionStatus.Connected -> false
     }
 }
+
+internal fun canQueueTextInput(status: SessionConnectionStatus): Boolean =
+    status is SessionConnectionStatus.Connected
+
+internal fun statusAfterDisconnect(
+    currentStatus: SessionConnectionStatus,
+    reason: String?,
+): SessionConnectionStatus =
+    if (reason == "user" && currentStatus is SessionConnectionStatus.Failed) {
+        currentStatus
+    } else {
+        SessionConnectionStatus.Disconnected(reason)
+    }
+
+internal fun shouldDispatchMonitorLayoutRetry(
+    imeVisible: Boolean,
+    width: Int,
+    height: Int,
+): Boolean = !imeVisible && width > 0 && height > 0

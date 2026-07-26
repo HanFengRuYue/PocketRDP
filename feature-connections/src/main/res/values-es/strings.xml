@@ -25,14 +25,17 @@
     <string name="connection_last_used_never">Nunca usada</string>
     <string name="connection_last_used_just_now">Ahora mismo</string>
     <plurals name="connection_last_used_minutes_ago">
+        <item quantity="many">hace %1$d minutos</item>
         <item quantity="one">hace %1$d minuto</item>
         <item quantity="other">hace %1$d minutos</item>
     </plurals>
     <plurals name="connection_last_used_hours_ago">
+        <item quantity="many">hace %1$d horas</item>
         <item quantity="one">hace %1$d hora</item>
         <item quantity="other">hace %1$d horas</item>
     </plurals>
     <plurals name="connection_last_used_days_ago">
+        <item quantity="many">hace %1$d días</item>
         <item quantity="one">hace %1$d día</item>
         <item quantity="other">hace %1$d días</item>
     </plurals>
@@ -77,13 +80,13 @@
     <string name="connection_custom_resolution_desc">Fija el lado remoto al ancho y alto elegidos. Desactiva la resolución dinámica.</string>
     <string name="connection_width">Ancho</string>
     <string name="connection_height">Alto</string>
-    <string name="connection_multitransport_title">Multitransporte UDP</string>
-    <string name="connection_multitransport_desc">Requiere que servidor y red permitan UDP en el mismo puerto; usa TCP si no está disponible.</string>
+    <string name="connection_multitransport_title">Multitransporte UDP (experimental)</string>
+    <string name="connection_multitransport_desc">FreeRDP 3.30 incluido no establece actualmente un canal UDP. Déjalo desactivado; al activarlo solo negocia y vuelve a TCP.</string>
     <string name="connection_section_redirection">Redirección</string>
     <string name="connection_clipboard_title">Sincronización bidireccional del portapapeles</string>
     <string name="connection_clipboard_desc">Sincroniza texto copiado entre el teléfono y el PC. Las imágenes aún no son compatibles.</string>
     <string name="connection_files_title">Redirección de carpetas</string>
-    <string name="connection_files_desc">Muestra el almacenamiento del teléfono como una unidad “PocketRDP” en el PC.</string>
+    <string name="connection_files_desc">Da al PC remoto acceso de lectura y escritura a todo el almacenamiento compartido del teléfono mediante la unidad «PocketRDP».</string>
     <string name="connection_audio_title">Audio remoto</string>
     <string name="connection_audio_client">Reproducir en controlador</string>
     <string name="connection_audio_server">Reproducir en PC remoto</string>
@@ -97,4 +100,10 @@
     <string name="connection_error_password_required">La contraseña es obligatoria</string>
     <string name="connection_error_custom_width_invalid">El ancho personalizado debe ser 200-8192</string>
     <string name="connection_error_custom_height_invalid">El alto personalizado debe ser 200-8192</string>
+    <string name="connection_files_permission_desc">Concede primero acceso a todos los archivos; de lo contrario, la unidad PocketRDP no aparecerá en el equipo remoto.</string>
+    <string name="connection_files_permission_action">Conceder acceso a archivos</string>
+    <string name="connection_error_load_failed">No se pudo cargar la conexión. Vuelve atrás e inténtalo de nuevo.</string>
+    <string name="connection_error_not_found">Esta conexión ya no existe.</string>
+    <string name="connection_error_save_failed">No se pudo guardar la conexión. Inténtalo de nuevo.</string>
+    <string name="connection_error_framebuffer_too_large">La resolución personalizada es demasiado grande; no puede superar los 16,7 millones de píxeles.</string>
 </resources>

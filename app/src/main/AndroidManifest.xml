@@ -3,7 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17/API 37 gates direct LAN TCP/UDP behind this runtime permission. PocketRDP
+         requests it only when a session screen is opened, before starting FreeRDP. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Prevent untrusted overlay windows from covering the interactive remote-desktop surface. -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!--
@@ -40,7 +45,8 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.PocketRDP"
-        tools:targetApi="33">
+        android:usesCleartextTraffic="false"
+        tools:targetApi="37">
 
         <activity
             android:name=".MainActivity"
@@ -58,7 +64,7 @@
 
         <!--
           Keep-alive foreground service that owns the session lifetime (M7). It does NOT hold the
-          FreeRDP connection object itself (that stays in the @Singleton RdpClient at process scope)
+          FreeRDP connection objects themselves (each retained session owns an unscoped RdpClient)
           — its job is to pin the process to the foreground-service importance bucket so the OS /
           OEM low-memory killer stops reclaiming it when the user switches apps, plus hold the
           wake/Wi-Fi locks for screen-off. foregroundServiceType MUST be present (required on API

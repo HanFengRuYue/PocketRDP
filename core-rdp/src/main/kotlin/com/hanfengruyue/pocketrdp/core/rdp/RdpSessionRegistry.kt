@@ -69,7 +69,20 @@ class RdpSessionRegistry @Inject constructor() {
         sessions.containsKey(client)
     }
 
-    fun activeCount(): Int = snapshot.value.activeCount
+    /**
+     * Run [action] while holding the same lock used to register sessions, but only if the registry
+     * is still empty. This closes the count-then-stop race where a new session could register
+     * between an `activeCount == 0` check and stopping the aggregate foreground service.
+     */
+    fun runIfNoActiveSessions(action: () -> Unit): Boolean = synchronized(lock) {
+        if (sessions.isNotEmpty()) return@synchronized false
+        action()
+        true
+    }
+
+    fun isConnectionActive(connectionId: Long): Boolean = synchronized(lock) {
+        connectionId > 0L && sessions.values.any { it.connectionId == connectionId }
+    }
 
     fun disconnectAll() {
         val clients = synchronized(lock) { sessions.keys.toList() }

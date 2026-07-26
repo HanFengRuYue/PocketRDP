@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RdpClientArchitectureTest {
@@ -23,6 +24,45 @@ class RdpClientArchitectureTest {
         assertFalse(
             "RdpClient must not import the Singleton scope; keep it session/ViewModel-owned.",
             source.contains("import javax.inject.Singleton"),
+        )
+    }
+
+    @Test
+    fun nativeCallbacksHaveNoProcessWideFallbackListener() {
+        val source = Files.readString(
+            projectRoot().resolve(
+                "core-rdp/src/main/java/com/freerdp/freerdpcore/services/LibFreeRDP.java",
+            ),
+        )
+
+        assertFalse(
+            "Late callbacks from one native instance must not fall through to another session.",
+            source.contains("private static EventListener listener;") ||
+                source.contains("private static UIEventListener uiListener;") ||
+                source.contains("setEventListener(") ||
+                source.contains("setUIEventListener("),
+        )
+    }
+
+    @Test
+    fun certificatePromptsDoNotRemainRegisteredAsReconnects() {
+        val source = Files.readString(
+            projectRoot().resolve(
+                "core-rdp/src/main/kotlin/com/hanfengruyue/pocketrdp/core/rdp/RdpClient.kt",
+            ),
+        )
+        val promptBodies = Regex(
+            """CertificateTerminalDisposition\.PROMPT\s*->\s*\{(.*?)^\s*\}""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.MULTILINE),
+        ).findAll(source).map { it.groupValues[1] }.toList()
+
+        assertTrue("Expected every certificate terminal path to handle PROMPT", promptBodies.size >= 3)
+        assertTrue(
+            "A certificate prompt has no live native session and must release its registry entry.",
+            promptBodies.all { body ->
+                body.contains("sessionRegistry.unregister(") &&
+                    !body.contains("sessionRegistry.markReconnecting(")
+            },
         )
     }
 

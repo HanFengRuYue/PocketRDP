@@ -54,7 +54,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -406,7 +408,8 @@ private fun SelectableSettingChip(selected: Boolean, label: String, onClick: () 
 
 @Composable
 private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
-    val percent = (value * 100).roundToInt()
+    var pendingValue by remember(value) { mutableFloatStateOf(value) }
+    val percent = (pendingValue * 100).roundToInt()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -434,8 +437,9 @@ private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
             }
         }
         Slider(
-            value = value,
-            onValueChange = onChange,
+            value = pendingValue,
+            onValueChange = { pendingValue = it },
+            onValueChangeFinished = { onChange(pendingValue) },
             valueRange = MIN_SIMULATED_CURSOR_SCALE..MAX_SIMULATED_CURSOR_SCALE,
         )
         Row(
@@ -458,7 +462,8 @@ private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
 
 @Composable
 private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) {
-    val percent = (value * 100).toInt()
+    var pendingValue by remember(value) { mutableFloatStateOf(value) }
+    val percent = (pendingValue * 100).toInt()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -485,7 +490,12 @@ private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) 
                 )
             }
         }
-        Slider(value = value, onValueChange = onChange, valueRange = 0f..1f)
+        Slider(
+            value = pendingValue,
+            onValueChange = { pendingValue = it },
+            onValueChangeFinished = { onChange(pendingValue) },
+            valueRange = 0f..1f,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,

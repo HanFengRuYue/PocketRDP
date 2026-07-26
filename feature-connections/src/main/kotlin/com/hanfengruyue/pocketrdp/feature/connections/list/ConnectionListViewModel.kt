@@ -4,8 +4,10 @@ import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
+import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionOperationCoordinator
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
 import com.hanfengruyue.pocketrdp.core.data.thumbnail.ConnectionThumbnailStore
+import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,6 +27,8 @@ data class ConnectionListUiState(
 class ConnectionListViewModel @Inject constructor(
     private val repository: ConnectionRepository,
     private val thumbnailStore: ConnectionThumbnailStore,
+    private val sessionRegistry: RdpSessionRegistry,
+    private val operationCoordinator: ConnectionOperationCoordinator,
 ) : ViewModel() {
 
     val uiState: StateFlow<ConnectionListUiState> =
@@ -36,12 +40,17 @@ class ConnectionListViewModel @Inject constructor(
                 initialValue = ConnectionListUiState(),
             )
 
+    val thumbnailRevision: StateFlow<Long> = thumbnailStore.revision
+
     fun delete(entity: ConnectionEntity) {
         viewModelScope.launch {
-            repository.delete(entity)
-            // Drop the desktop thumbnail too so a future connection reusing the same row id can't
-            // inherit a stale picture.
-            thumbnailStore.delete(entity.id)
+            operationCoordinator.withExclusiveOperation delete@{
+                if (sessionRegistry.isConnectionActive(entity.id)) return@delete
+                repository.delete(entity)
+                // Drop the desktop thumbnail too so a future connection reusing the same row id
+                // cannot inherit a stale picture.
+                thumbnailStore.delete(entity.id)
+            }
         }
     }
 

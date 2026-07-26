@@ -98,6 +98,60 @@ class RdpCommandLineTest {
         assertFalse(contentUriArgs.any { it.startsWith("/drive:") })
     }
 
+    @Test
+    fun multitransportUsesFreeRdpBooleanSigils() {
+        val disabled = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null),
+            h264Supported = true,
+        ).toList()
+        val enabled = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(useMultitransport = true),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(disabled.contains("-multitransport"))
+        assertFalse(disabled.any { it.startsWith("/multitransport:") })
+        assertTrue(enabled.contains("/multitransport"))
+        assertFalse(enabled.contains("-multitransport"))
+    }
+
+    @Test
+    fun unsafeInitialFramebufferAndColorDepthFallBackBeforeNativeAllocation() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(
+                initialWidth = Int.MAX_VALUE,
+                initialHeight = Int.MAX_VALUE,
+                colorDepth = Int.MAX_VALUE,
+            ),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(args.contains("/size:1920x1080"))
+        assertTrue(args.contains("/bpp:32"))
+    }
+
+    @Test
+    fun legacyStandardRdpSecurityDowngradeIsDisabled() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(args.contains("/sec:rdp:off"))
+        assertFalse(args.contains("/sec:rdp:on"))
+    }
+
+    @Test
+    fun nativeAutoReconnectRetriesAreBounded() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(args.contains("/auto-reconnect"))
+        assertTrue(args.contains("/auto-reconnect-max-retries:5"))
+    }
+
     private fun params(
         redirectFiles: Boolean,
         drivePath: String?,

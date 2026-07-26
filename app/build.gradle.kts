@@ -11,6 +11,23 @@ val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
+val releaseSigningKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val releaseStorePath = keystoreProps.getProperty("storeFile")
+val releaseSigningReady = releaseSigningKeys.all { !keystoreProps.getProperty(it).isNullOrBlank() } &&
+    releaseStorePath?.let { rootProject.file(it).isFile } == true
+fun isReleaseArtifactTask(taskName: String): Boolean {
+    val leaf = taskName.substringAfterLast(':').lowercase()
+    val localArtifact = leaf.contains("release") &&
+        listOf("assemble", "bundle", "package", "install").any(leaf::startsWith)
+    return localArtifact || (leaf.startsWith("publish") && leaf.contains("release"))
+}
+val releaseArtifactRequested = gradle.startParameter.taskNames.any(::isReleaseArtifactTask)
+if (releaseArtifactRequested && !releaseSigningReady) {
+    throw GradleException(
+        "A release artifact was requested, but keystore.properties is missing, incomplete, " +
+            "or points to a missing keystore. PocketRDP will not fall back to the debug signer.",
+    )
+}
 
 android {
     namespace = "com.hanfengruyue.pocketrdp"
@@ -25,14 +42,15 @@ android {
     }
 
     signingConfigs {
-        if (keystoreProps.getProperty("storeFile") != null) {
+        if (releaseSigningReady) {
             create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storeFile = rootProject.file(requireNotNull(releaseStorePath))
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
-                // Enable v1 + v2 + v3 + v4 so installation works from Android 12+ devices
-                // that some OEM ROMs require v1 schema even on minSdk 31.
+                // Keep every supported signing scheme explicit. Android 12+ verifies the v3
+                // block; v1/v2 remain present for tooling and distribution compatibility, and
+                // v4 produces the companion .idsig used by incremental installation.
                 enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true
@@ -50,13 +68,11 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.findByName("release")
-                ?: signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release")
-                ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -71,6 +87,17 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+}
+
+androidComponents {
+    if (!releaseSigningReady) {
+        // Fail closed without task-name guessing or TaskExecutionGraph listeners (which are not
+        // configuration-cache compatible). No release component or APK/AAB-producing task exists
+        // until a complete, existing release keystore is configured.
+        beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+            variantBuilder.enable = false
+        }
     }
 }
 

@@ -74,13 +74,13 @@
     <string name="connection_custom_resolution_desc">원격 화면을 선택한 너비와 높이로 고정합니다. 동적 해상도는 꺼집니다.</string>
     <string name="connection_width">너비</string>
     <string name="connection_height">높이</string>
-    <string name="connection_multitransport_title">UDP 다중 전송</string>
-    <string name="connection_multitransport_desc">서버와 네트워크가 같은 포트의 UDP를 허용해야 합니다. 사용할 수 없으면 TCP로 돌아갑니다.</string>
+    <string name="connection_multitransport_title">UDP 다중 전송(실험적)</string>
+    <string name="connection_multitransport_desc">포함된 FreeRDP 3.30은 현재 UDP 채널을 설정하지 않습니다. 꺼 두세요. 켜도 협상 후 TCP로 되돌아갑니다.</string>
     <string name="connection_section_redirection">리디렉션</string>
     <string name="connection_clipboard_title">클립보드 양방향 동기화</string>
     <string name="connection_clipboard_desc">휴대폰과 PC 간 복사한 텍스트를 동기화합니다. 이미지는 아직 지원하지 않습니다.</string>
     <string name="connection_files_title">폴더 리디렉션</string>
-    <string name="connection_files_desc">휴대폰 저장소를 PC의 “PocketRDP” 드라이브로 표시합니다.</string>
+    <string name="connection_files_desc">원격 PC가 “PocketRDP” 드라이브를 통해 휴대폰의 전체 공유 저장소를 읽고 수정할 수 있게 합니다.</string>
     <string name="connection_audio_title">원격 오디오</string>
     <string name="connection_audio_client">제어 기기에서 재생</string>
     <string name="connection_audio_server">원격 PC에서 재생</string>
@@ -94,4 +94,10 @@
     <string name="connection_error_password_required">비밀번호는 필수입니다</string>
     <string name="connection_error_custom_width_invalid">사용자 지정 너비는 200-8192여야 합니다</string>
     <string name="connection_error_custom_height_invalid">사용자 지정 높이는 200-8192여야 합니다</string>
+    <string name="connection_files_permission_desc">먼저 모든 파일 액세스를 허용하세요. 허용하지 않으면 원격 컴퓨터에 PocketRDP 드라이브가 표시되지 않습니다.</string>
+    <string name="connection_files_permission_action">파일 액세스 허용</string>
+    <string name="connection_error_load_failed">연결을 불러오지 못했습니다. 뒤로 돌아가 다시 시도하세요.</string>
+    <string name="connection_error_not_found">이 연결은 더 이상 존재하지 않습니다.</string>
+    <string name="connection_error_save_failed">연결을 저장하지 못했습니다. 다시 시도하세요.</string>
+    <string name="connection_error_framebuffer_too_large">사용자 지정 해상도가 너무 큽니다. 1,677만 픽셀을 초과할 수 없습니다.</string>
 </resources>

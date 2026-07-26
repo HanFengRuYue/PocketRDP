@@ -108,4 +108,5 @@
         <item>自動起動またはバックグラウンド実行のスイッチがあれば PocketRDP に対して有効化</item>
         <item>対応している場合は最近使ったアプリで PocketRDP をロック</item>
     </string-array>
+    <string name="logs_export_failed">ログをエクスポートできませんでした。</string>
 </resources>

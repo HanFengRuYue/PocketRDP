@@ -108,4 +108,5 @@
         <item>Falls Autostart oder Hintergrundausführung vorhanden ist, aktiviere sie für PocketRDP</item>
         <item>PocketRDP in Zuletzt verwendet sperren, falls unterstützt</item>
     </string-array>
+    <string name="logs_export_failed">Die Protokolle konnten nicht exportiert werden.</string>
 </resources>

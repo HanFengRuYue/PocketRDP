@@ -115,4 +115,5 @@
         <item>如果系统有“自启动”或“后台运行”开关，请为 PocketRDP 打开</item>
         <item>在“最近任务”里锁定 PocketRDP（如支持）以免被一键清理</item>
     </string-array>
+    <string name="logs_export_failed">导出日志失败。</string>
 </resources>

@@ -77,13 +77,13 @@
     <string name="connection_custom_resolution_desc">远端固定为指定宽高（将关闭动态分辨率）。</string>
     <string name="connection_width">宽度</string>
     <string name="connection_height">高度</string>
-    <string name="connection_multitransport_title">UDP 多路传输</string>
-    <string name="connection_multitransport_desc">需要服务器和网络允许同端口 UDP；不可用时自动回退 TCP。</string>
+    <string name="connection_multitransport_title">UDP 多路传输（实验性）</string>
+    <string name="connection_multitransport_desc">内置 FreeRDP 3.30 当前不会建立 UDP 通道；建议保持关闭。开启后只会尝试协商并回退 TCP。</string>
     <string name="connection_section_redirection">重定向</string>
     <string name="connection_clipboard_title">剪贴板双向同步</string>
     <string name="connection_clipboard_desc">手机与电脑间双向同步复制的文字（暂不支持图片）。</string>
     <string name="connection_files_title">文件夹重定向</string>
-    <string name="connection_files_desc">把手机存储显示为电脑里的“PocketRDP”盘。</string>
+    <string name="connection_files_desc">允许被控电脑通过“PocketRDP”盘读取和修改手机的整个共享存储。</string>
     <string name="connection_files_permission_desc">需要先授予“所有文件访问”权限，否则连接时电脑端不会出现 PocketRDP 盘。</string>
     <string name="connection_files_permission_action">授予文件访问权限</string>
     <string name="connection_audio_title">远程音频</string>
@@ -99,4 +99,8 @@
     <string name="connection_error_password_required">密码不能为空</string>
     <string name="connection_error_custom_width_invalid">自定义宽度需为 200-8192</string>
     <string name="connection_error_custom_height_invalid">自定义高度需为 200-8192</string>
+    <string name="connection_error_load_failed">读取连接失败，请返回后重试。</string>
+    <string name="connection_error_not_found">此连接已不存在。</string>
+    <string name="connection_error_save_failed">保存连接失败，请重试。</string>
+    <string name="connection_error_framebuffer_too_large">自定义分辨率过大；总像素数不能超过 1677 万。</string>
 </resources>

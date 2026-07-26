@@ -14,6 +14,7 @@ data class ConnectionEntity(
     val domain: String = "",
     @ColumnInfo(name = "password_cipher") val passwordCipher: ByteArray = ByteArray(0),
     @ColumnInfo(name = "password_iv") val passwordIv: ByteArray = ByteArray(0),
+    @ColumnInfo(name = "password_aad_version") val passwordAadVersion: Int = 1,
     @ColumnInfo(name = "color_depth") val colorDepth: Int = 32,
     @ColumnInfo(name = "use_h264") val useH264: Boolean = true,
     // false = 画质优先 (/gfx:AVC444, full 4:4:4); true = 流畅优先 (/gfx:AVC420, single YUV420 stream).
@@ -33,7 +34,10 @@ data class ConnectionEntity(
     // 1080p roughly halves that cost. Existing connections keep their stored value (0 = uncapped);
     // users can pick 跟随设备 for full res.
     @ColumnInfo(name = "dynamic_res_max") val dynamicResMax: Int = 1080,
-    @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = true,
+    // FreeRDP 3.30 advertises the capability but its client-side handler rejects the UDP
+    // bootstrap request with E_ABORT. Keep the setting for future upstream support, but default it
+    // off so normal connections do not perform a misleading negotiation that always falls back.
+    @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = false,
     @ColumnInfo(name = "redirect_clipboard") val redirectClipboard: Boolean = true,
     @ColumnInfo(name = "redirect_files") val redirectFiles: Boolean = false,
     @ColumnInfo(name = "shared_folder_uri") val sharedFolderUri: String? = null,
@@ -71,6 +75,7 @@ data class ConnectionEntity(
             domain == other.domain &&
             passwordCipher.contentEquals(other.passwordCipher) &&
             passwordIv.contentEquals(other.passwordIv) &&
+            passwordAadVersion == other.passwordAadVersion &&
             colorDepth == other.colorDepth &&
             useH264 == other.useH264 &&
             preferAvc420 == other.preferAvc420 &&
@@ -101,6 +106,7 @@ data class ConnectionEntity(
         result = 31 * result + domain.hashCode()
         result = 31 * result + passwordCipher.contentHashCode()
         result = 31 * result + passwordIv.contentHashCode()
+        result = 31 * result + passwordAadVersion
         result = 31 * result + colorDepth
         result = 31 * result + useH264.hashCode()
         result = 31 * result + preferAvc420.hashCode()

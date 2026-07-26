@@ -1,5 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
+import android.os.SystemClock
+
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
@@ -12,6 +14,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * Multi-touch gesture recognizer for the RDP session canvas. Lives in [Modifier.sessionGestures].
@@ -171,12 +174,14 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
     lastSingleTapY: Float,
     commitTap: (endMs: Long, x: Float, y: Float) -> Unit,
 ) {
-    val gestureStartMs = System.currentTimeMillis()
+    val gestureStartMs = SystemClock.uptimeMillis()
     val startX = first.position.x
     val startY = first.position.y
 
     var pointerCountPeak = 1
     var totalMove = 0f
+    var maxPointerTravel = 0f
+    val pointerTravel = HashMap<Long, Float>()
     var consumed = false            // scroll consumed this gesture (→ no tap/click on release)
     var holdDragActive = false      // we entered a held-button drag (double-tap OR long-press)
     var longPressFired = false
@@ -187,6 +192,7 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
     var twoActive = false
     var twoMove = 0f
     var twoPendingDy = 0f
+    var gestureEndedNormally = false
 
     val sinceLastTap = gestureStartMs - lastSingleTapEndMs
     val nearLast = abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
@@ -198,7 +204,7 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
             val armLongPress = !consumed && !holdDragActive && !longPressFired &&
                 pointerCountPeak == 1 && totalMove <= TAP_SLOP_PX
             val event = if (armLongPress) {
-                val remaining = (LONG_PRESS_MS - (System.currentTimeMillis() - gestureStartMs)).coerceAtLeast(1L)
+                val remaining = (LONG_PRESS_MS - (SystemClock.uptimeMillis() - gestureStartMs)).coerceAtLeast(1L)
                 withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Main) }
             } else {
                 awaitPointerEvent(PointerEventPass.Main)
@@ -212,9 +218,22 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
                 continue
             }
 
+            // Include the final up event in travel accounting. Some devices coalesce the last
+            // movement and lift into one event; filtering to pressed pointers first would miss that
+            // movement and could misclassify a drag as a tap.
+            event.changes.forEach { change ->
+                val delta = change.positionChange()
+                val travel = pointerTravel.getOrDefault(change.id.value, 0f) +
+                    hypot(delta.x, delta.y)
+                pointerTravel[change.id.value] = travel
+                maxPointerTravel = maxOf(maxPointerTravel, travel)
+            }
             val pressed = event.changes.filter { it.pressed }
             val currentCount = pressed.size
-            if (currentCount == 0) break
+            if (currentCount == 0) {
+                gestureEndedNormally = true
+                break
+            }
             pointerCountPeak = maxOf(pointerCountPeak, currentCount)
 
             // Reset the 2-finger phase whenever we're not in it, so a 2→1→2 transition re-arms the
@@ -235,7 +254,7 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
                                 holdDragActive = true
                             }
                         }
-                        controller.drag(dx, dy, ch.position.x, ch.position.y, size.width, size.height)
+                        controller.drag(dx, dy)
                         ch.consume()
                     }
                 }
@@ -245,6 +264,7 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
                     if (!twoActive) {
                         twoActive = true
                         twoMove = 0f
+                        twoPendingDy = 0f
                         controller.resetScrollAccum()
                         if (holdDragActive) {
                             controller.endDragHold()
@@ -252,7 +272,10 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
                         }
                     }
                     val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
-                    twoMove += abs(avgDy)
+                    twoMove += pressed.maxOf { change ->
+                        val delta = change.positionChange()
+                        hypot(delta.x, delta.y)
+                    }
                     twoPendingDy += avgDy
                     // Gate on a small travel so a still 2-finger TAP keeps `consumed` false and falls
                     // through to the right-click path in the finally block. Once the gate is crossed,
@@ -277,24 +300,24 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
     } finally {
         if (holdDragActive) controller.endDragHold()
 
-        val now = System.currentTimeMillis()
+        val now = SystemClock.uptimeMillis()
         val dur = now - gestureStartMs
-        if (!consumed && !holdDragActive && !longPressFired &&
-            dur < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
+        if (gestureEndedNormally && !consumed && !holdDragActive && !longPressFired &&
+            dur < TAP_TIMEOUT_MS && maxPointerTravel < TAP_SLOP_PX) {
             when (pointerCountPeak) {
                 1 -> {
                     // Always a left click. Two taps in a row therefore land as a normal remote
                     // double-click — the old "double-tap to reset local zoom" was removed because it
                     // ate the remote double-click; zoom reset now lives only on the zoom pill.
-                    controller.tap(startX, startY, size.width, size.height)
+                    controller.tap()
                     commitTap(now, startX, startY)
                 }
                 2 -> {
-                    controller.rightClick(startX, startY)
+                    controller.rightClick()
                     commitTap(0L, startX, startY)
                 }
                 3 -> {
-                    controller.middleClick(startX, startY)
+                    controller.middleClick()
                     commitTap(0L, startX, startY)
                 }
                 else -> Unit

@@ -77,13 +77,13 @@
     <string name="connection_custom_resolution_desc">Fix the remote side to the chosen width and height. This disables dynamic resolution.</string>
     <string name="connection_width">Width</string>
     <string name="connection_height">Height</string>
-    <string name="connection_multitransport_title">UDP multitransport</string>
-    <string name="connection_multitransport_desc">Requires the server and network to allow UDP on the same port; falls back to TCP when unavailable.</string>
+    <string name="connection_multitransport_title">UDP multitransport (experimental)</string>
+    <string name="connection_multitransport_desc">Bundled FreeRDP 3.30 does not currently establish a UDP channel; leave this off. Enabling it only negotiates and falls back to TCP.</string>
     <string name="connection_section_redirection">Redirection</string>
     <string name="connection_clipboard_title">Two-way clipboard sync</string>
     <string name="connection_clipboard_desc">Sync copied text between the phone and PC. Images are not supported yet.</string>
     <string name="connection_files_title">Folder redirection</string>
-    <string name="connection_files_desc">Show phone storage as a “PocketRDP” drive on the PC.</string>
+    <string name="connection_files_desc">Give the remote PC read and write access to all shared phone storage as a “PocketRDP” drive.</string>
     <string name="connection_audio_title">Remote audio</string>
     <string name="connection_audio_client">Play on controller</string>
     <string name="connection_audio_server">Play on remote PC</string>
@@ -97,4 +97,10 @@
     <string name="connection_error_password_required">Password is required</string>
     <string name="connection_error_custom_width_invalid">Custom width must be 200-8192</string>
     <string name="connection_error_custom_height_invalid">Custom height must be 200-8192</string>
+    <string name="connection_files_permission_desc">Grant “All files access” first, or the PocketRDP drive will not appear on the remote computer.</string>
+    <string name="connection_files_permission_action">Grant file access</string>
+    <string name="connection_error_load_failed">Could not load the connection. Go back and try again.</string>
+    <string name="connection_error_not_found">This connection no longer exists.</string>
+    <string name="connection_error_save_failed">Could not save the connection. Try again.</string>
+    <string name="connection_error_framebuffer_too_large">The custom resolution is too large; it may not exceed 16.7 million pixels.</string>
 </resources>

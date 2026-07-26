@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.feature.connections.edit
 
 import android.os.Environment
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -42,6 +43,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -118,7 +120,29 @@ fun ConnectionEditScreen(
             )
         },
     ) { padding ->
-        Column(
+        when {
+            state.isLoading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(padding),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            state.failure == ConnectionEditFailure.LOAD_FAILED ||
+                state.failure == ConnectionEditFailure.NOT_FOUND -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = connectionEditFailureText(requireNotNull(state.failure)),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+            }
+            else -> Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -420,6 +444,19 @@ fun ConnectionEditScreen(
                     }
                 }
             }
+            state.failure?.let { failure ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = connectionEditFailureText(failure),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
 
             Spacer(Modifier.size(8.dp))
             Button(
@@ -436,6 +473,7 @@ fun ConnectionEditScreen(
                 )
             }
             Spacer(Modifier.size(40.dp))
+            }
         }
     }
 }
@@ -638,6 +676,16 @@ private fun connectionEditErrorText(error: ConnectionEditError): String = string
         ConnectionEditError.PASSWORD_REQUIRED -> R.string.connection_error_password_required
         ConnectionEditError.CUSTOM_WIDTH_INVALID -> R.string.connection_error_custom_width_invalid
         ConnectionEditError.CUSTOM_HEIGHT_INVALID -> R.string.connection_error_custom_height_invalid
+        ConnectionEditError.FRAMEBUFFER_TOO_LARGE -> R.string.connection_error_framebuffer_too_large
+    },
+)
+
+@Composable
+private fun connectionEditFailureText(failure: ConnectionEditFailure): String = stringResource(
+    when (failure) {
+        ConnectionEditFailure.LOAD_FAILED -> R.string.connection_error_load_failed
+        ConnectionEditFailure.NOT_FOUND -> R.string.connection_error_not_found
+        ConnectionEditFailure.SAVE_FAILED -> R.string.connection_error_save_failed
     },
 )
 

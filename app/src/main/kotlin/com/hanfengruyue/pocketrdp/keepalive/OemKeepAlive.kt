@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.annotation.ArrayRes
 import androidx.annotation.StringRes
 import com.hanfengruyue.pocketrdp.R
+import java.util.Locale
 
 /**
  * OEM-specific background keep-alive helpers.
@@ -27,7 +28,7 @@ object OemKeepAlive {
 
     enum class Oem { XIAOMI, HUAWEI, HONOR, OPPO, ONEPLUS, VIVO, SAMSUNG, MEIZU, OTHER }
 
-    fun detect(): Oem = when (Build.MANUFACTURER.lowercase()) {
+    fun detect(): Oem = when (Build.MANUFACTURER.lowercase(Locale.ROOT)) {
         "xiaomi", "redmi", "poco" -> Oem.XIAOMI
         "huawei" -> Oem.HUAWEI
         "honor" -> Oem.HONOR

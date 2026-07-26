@@ -27,7 +27,7 @@ import kotlin.math.roundToInt
  *  - `remote` — RDP framebuffer pixels (0..remoteWidth-1, 0..remoteHeight-1).
  *
  * [toRemote] therefore has to undo BOTH the centred fit-to-view scale that [RdpSurface] applies
- * AND the user's pinch/zoom-button transform (graphicsLayer, origin = view centre) so a touch on a
+ * AND the user's zoom-pill/pan-handle transform (graphicsLayer, origin = view centre) so a touch on a
  * visually-zoomed pixel lands on the correct remote pixel. (This used to be a no-op for the user
  * zoom — fine while touch-mode zoom was unused, but wrong now that the zoom button magnifies the
  * touch surface in both modes.)
@@ -55,7 +55,7 @@ class RdpInputController(
     val remoteCursor: StateFlow<RdpCursor> = _remoteCursor.asStateFlow()
 
     private val _userTransform = MutableStateFlow(UserTransform())
-    /** Local pinch/zoom-button transform, published on EVERY change so the graphicsLayer tracks it. */
+    /** Local zoom-pill/pan-handle transform, published on EVERY change for the graphicsLayer. */
     val userTransform: StateFlow<UserTransform> = _userTransform.asStateFlow()
 
     private var virtualX: Float = 0f
@@ -132,7 +132,7 @@ class RdpInputController(
         publishTransform()
     }
 
-    /** Local pinch/zoom factor; clamped to [1, MAX_ZOOM]. Publishes so graphicsLayer tracks it live. */
+    /** Local zoom-pill factor; clamped to [1, MAX_ZOOM]. Publishes so graphicsLayer tracks it live. */
     fun setUserZoom(z: Float) {
         userZoom = z.coerceIn(1f, MAX_ZOOM)
         clampPan()
@@ -176,9 +176,19 @@ class RdpInputController(
      * overflow: (zoom - 1) * size / 2.
      */
     private fun clampPan() {
-        val maxX = ((userZoom - 1f) * viewW / 2f).coerceAtLeast(0f)
-        val maxY = ((userZoom - 1f) * viewH / 2f).coerceAtLeast(0f)
-        userPanX = userPanX.coerceIn(-maxX, maxX)
+        val horizontalBounds = panBoundsForFittedImage(
+            viewSize = viewW,
+            fittedStart = viewportDx,
+            fittedSize = remoteWidth * viewportScale,
+            zoom = userZoom,
+        )
+        val verticalBounds = panBoundsForFittedImage(
+            viewSize = viewH,
+            fittedStart = viewportDy,
+            fittedSize = remoteHeight * viewportScale,
+            zoom = userZoom,
+        )
+        userPanX = userPanX.coerceIn(horizontalBounds.start, horizontalBounds.endInclusive)
         // When the soft keyboard occludes the bottom, the framebuffer is auto-lifted UP (offsetY, see
         // [autoLift]) which pushes its TOP off-screen. Allow extra DOWNWARD pan (positive panY) up to
         // that lift amount so the user can pull the picture back down and see the top — at zoom 1 maxY
@@ -187,7 +197,10 @@ class RdpInputController(
         // downward drag actually moves the picture instead of being cancelled by a growing auto-lift.
         // At panY == liftRoom: translationY = panY + offsetY = liftRoom + (-liftRoom) = 0 → fit origin.
         val liftRoom = -autoLift()
-        userPanY = userPanY.coerceIn(-maxY, maxY + liftRoom)
+        userPanY = userPanY.coerceIn(
+            verticalBounds.start,
+            verticalBounds.endInclusive + liftRoom,
+        )
     }
 
     private fun publishTransform() {
@@ -236,23 +249,19 @@ class RdpInputController(
     // TRACKPAD (mouse-emulation) gestures
     // ============================================================
 
-    fun tap(localX: Float, localY: Float, viewW: Int, viewH: Int) {
+    fun tap() {
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON1)
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.BUTTON1)
     }
 
-    fun longPress(localX: Float, localY: Float, viewW: Int, viewH: Int) {
-        rightClick(localX, localY)
-    }
-
     /** Right button click at the current virtual cursor. */
-    fun rightClick(localX: Float, localY: Float) {
+    fun rightClick() {
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON2)
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.BUTTON2)
     }
 
     /** Middle button click at the current virtual cursor. */
-    fun middleClick(localX: Float, localY: Float) {
+    fun middleClick() {
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON3)
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.BUTTON3)
     }
@@ -267,7 +276,7 @@ class RdpInputController(
      * view does NOT move where the next click lands (clicks use virtualX/Y in remote space), unlike
      * native touch where view-follow between a tap's down/up turned taps into drags.
      */
-    fun drag(dx: Float, dy: Float, localX: Float, localY: Float, viewW: Int, viewH: Int) {
+    fun drag(dx: Float, dy: Float) {
         val s = (viewportScale * userZoom).let { if (it > 0f) it else 1f }
         val accel = if (abs(dx) + abs(dy) > 25f) 1.6f else 1.0f
         virtualX = (virtualX + dx * accel / s).coerceIn(0f, remoteWidth - 1f)
@@ -432,7 +441,7 @@ class RdpInputController(
 
     /**
      * Convert a touch in view pixels into remote-framebuffer pixels, undoing BOTH the centred
-     * fit-to-view scale ([RdpSurface]) AND the local pinch/zoom-button transform (graphicsLayer,
+     * fit-to-view scale ([RdpSurface]) AND the local zoom-pill/pan-handle transform (graphicsLayer,
      * origin = view centre). The gesture modifier sits above graphicsLayer, so [localX]/[localY]
      * arrive as the actual on-screen finger position; we invert the layer transform to find which
      * displayed (and possibly magnified) framebuffer pixel is under the finger.
@@ -474,7 +483,21 @@ class RdpInputController(
     }
 }
 
-/** Local view transform applied by SessionScreen's graphicsLayer (pinch zoom + pan, in view px).
+internal fun panBoundsForFittedImage(
+    viewSize: Float,
+    fittedStart: Float,
+    fittedSize: Float,
+    zoom: Float,
+): ClosedFloatingPointRange<Float> {
+    if (viewSize <= 0f || fittedSize <= 0f || zoom <= 0f) return 0f..0f
+    val centre = viewSize / 2f
+    val transformedStart = centre + zoom * (fittedStart - centre)
+    val transformedEnd = centre + zoom * (fittedStart + fittedSize - centre)
+    if (transformedEnd - transformedStart <= viewSize) return 0f..0f
+    return (viewSize - transformedEnd)..(-transformedStart)
+}
+
+/** Local view transform applied by SessionScreen's graphicsLayer (control-driven zoom + pan, in view px).
  *  [offsetY] is the extra upward keyboard-lift translation (≤ 0), layered on top of [panY]. */
 data class UserTransform(
     val zoom: Float = 1f,

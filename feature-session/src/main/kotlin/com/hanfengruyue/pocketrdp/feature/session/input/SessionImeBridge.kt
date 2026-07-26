@@ -1,5 +1,6 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
+import android.view.KeyEvent
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,8 +27,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 
 /**
- * Soft-keyboard bridge: an invisible BasicTextField that accepts IME input and forwards each
- * codepoint as a one-shot Unicode key event to the RDP server.
+ * Soft-keyboard bridge: an invisible BasicTextField that accepts committed IME text and forwards
+ * it to [TextInputEncoder] through [onUnicodeText].
  *
  * Why not just `WindowInsetsController.show(ime())` and listen for KeyEvents? Because the
  * Android IME on most devices does NOT emit `KEYCODE_*` for letters/numbers/symbols — it
@@ -36,9 +37,9 @@ import androidx.compose.ui.unit.dp
  *
  * Two paths feed into the RDP wire protocol:
  *
- * 1. **Unicode path (default for text)** — IME commits a character via `onValueChange`. We
- *    diff against the previous buffer, then for each new codepoint call `sendUnicode(cp, true)`
- *    and `sendUnicode(cp, false)`. This carries Chinese/Emoji/diacritics correctly.
+ * 1. **Committed-text path** — IME commits text via `onValueChange`. We diff against the sentinel
+ *    buffer and pass the fresh text to [TextInputEncoder], which uses the scancode path for
+ *    printable ASCII and the guarded Unicode path for CJK, emoji and other non-ASCII text.
  *
  * 2. **VK path** — Physical keyboards (or IMEs that emit KEYCODE for non-letter keys like
  *    Backspace / Enter / arrows / function keys) raise `onPreviewKeyEvent`. We map the
@@ -51,6 +52,32 @@ import androidx.compose.ui.unit.dp
  * behaviour is predictable across vendors.
  */
 private const val SENTINEL = "​" // zero-width space
+private val RESET_VALUE = TextFieldValue(SENTINEL, selection = TextRange(SENTINEL.length))
+
+internal data class ImeEditOutcome(
+    val nextValue: TextFieldValue,
+    val committedText: String = "",
+    val backspace: Boolean = false,
+)
+
+internal fun processImeEdit(newValue: TextFieldValue): ImeEditOutcome {
+    // setComposingText is provisional (pinyin, kana, handwriting, etc.). Forwarding it would type
+    // every intermediate candidate. Preserve it until commitText clears the composition range.
+    if (newValue.composition != null) return ImeEditOutcome(nextValue = newValue)
+
+    if (newValue.text.isEmpty()) {
+        return ImeEditOutcome(nextValue = RESET_VALUE, backspace = true)
+    }
+
+    val fresh = if (newValue.text.startsWith(SENTINEL)) {
+        newValue.text.substring(SENTINEL.length)
+    } else {
+        // Some IMEs replace the selected sentinel instead of appending after it.
+        newValue.text
+    }
+    val clean = fresh.replace(SENTINEL, "")
+    return ImeEditOutcome(nextValue = RESET_VALUE, committedText = clean)
+}
 
 internal fun applyImeVisibility(
     visible: Boolean,
@@ -77,7 +104,7 @@ fun SessionImeBridge(
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    var buffer by remember { mutableStateOf(TextFieldValue(SENTINEL, selection = TextRange(SENTINEL.length))) }
+    var buffer by remember { mutableStateOf(RESET_VALUE) }
 
     LaunchedEffect(visible) {
         applyImeVisibility(
@@ -92,18 +119,15 @@ fun SessionImeBridge(
     BasicTextField(
         value = buffer,
         onValueChange = { new ->
-            // Diff: anything beyond the sentinel is fresh input. We don't try to interpret
-            // the composition (intermediate IME state); each invocation sends only the delta
-            // since the last reset, then snaps back to the sentinel so the next call sees a
-            // clean baseline.
-            val text = new.text
-            if (text.length > SENTINEL.length) {
-                val fresh = text.substring(SENTINEL.length)
-                // Strip any stray sentinel characters the IME may have copied into composition.
-                val clean = fresh.replace(SENTINEL, "")
-                if (clean.isNotEmpty()) onUnicodeText(clean)
+            val outcome = processImeEdit(new)
+            if (outcome.backspace) {
+                ScancodeMap.vkFor(KeyEvent.KEYCODE_DEL)?.let { backspaceVk ->
+                    onVkKey(backspaceVk, true)
+                    onVkKey(backspaceVk, false)
+                }
             }
-            buffer = TextFieldValue(SENTINEL, selection = TextRange(SENTINEL.length))
+            if (outcome.committedText.isNotEmpty()) onUnicodeText(outcome.committedText)
+            buffer = outcome.nextValue
         },
         modifier = Modifier
             .size(1.dp)

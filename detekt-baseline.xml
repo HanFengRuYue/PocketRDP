@@ -2,25 +2,43 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ComplexCondition:RdpClient.kt$RdpClient.&lt;no name provided&gt;$!r.isEmpty &amp;&amp; !(x &lt;= r.left &amp;&amp; y &lt;= r.top &amp;&amp; x + w &gt;= r.right &amp;&amp; y + h &gt;= r.bottom)</ID>
+    <ID>ComplexCondition:ConnectionEditViewModel.kt$ConnectionEditViewModel$s.isLoading || s.saving || s.failure == ConnectionEditFailure.LOAD_FAILED || s.failure == ConnectionEditFailure.NOT_FOUND</ID>
+    <ID>ComplexCondition:RdpClient.kt$RdpClient.&lt;no name provided&gt;$!r.isEmpty &amp;&amp; !(x &lt;= r.left &amp;&amp; y &lt;= r.top &amp;&amp; updateRight &gt;= r.right.toLong() &amp;&amp; updateBottom &gt;= r.bottom.toLong())</ID>
     <ID>ComplexCondition:RdpInputController.kt$RdpInputController$(userZoom &lt;= 1f &amp;&amp; !lifted) || viewW &lt;= 0f || viewH &lt;= 0f</ID>
     <ID>ComplexCondition:RdpSurface.kt$RdpSurface$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
-    <ID>ComplexCondition:SessionGestures.kt$!consumed &amp;&amp; !holdDragActive &amp;&amp; !longPressFired &amp;&amp; dur &lt; TAP_TIMEOUT_MS &amp;&amp; totalMove &lt; TAP_SLOP_PX</ID>
-    <ID>ComplexCondition:SessionScreen.kt$mode == InputMode.TRACKPAD &amp;&amp; current != null &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
-    <ID>ComplexCondition:SessionScreen.kt$state.status is SessionConnectionStatus.Connected &amp;&amp; state.filesRedirectEnabled &amp;&amp; !allFilesPromptShown &amp;&amp; !Environment.isExternalStorageManager()</ID>
+    <ID>ComplexCondition:SessionGestures.kt$gestureEndedNormally &amp;&amp; !consumed &amp;&amp; !holdDragActive &amp;&amp; !longPressFired &amp;&amp; dur &lt; TAP_TIMEOUT_MS &amp;&amp; maxPointerTravel &lt; TAP_SLOP_PX</ID>
+    <ID>ComplexCondition:SessionScreen.kt$!moveSelf &amp;&amp; !isDrag &amp;&amp; abs(totalDy) &gt; ZOOM_DRAG_SLOP_PX &amp;&amp; abs(totalDy) &gt;= abs(totalDx)</ID>
+    <ID>ComplexCondition:SessionScreen.kt$(state.allFilesAccessRequired || state.status is SessionConnectionStatus.Connected) &amp;&amp; state.filesRedirectEnabled &amp;&amp; !allFilesPromptShown &amp;&amp; !Environment.isExternalStorageManager()</ID>
+    <ID>ComplexCondition:SessionScreen.kt$containerColor.alpha &gt; 0f &amp;&amp; frame != null &amp;&amp; viewportSize.width &gt; 0 &amp;&amp; viewportSize.height &gt; 0</ID>
+    <ID>ComplexCondition:SessionScreen.kt$state.status is SessionConnectionStatus.Connected &amp;&amp; !notificationPromptShown &amp;&amp; Build.VERSION.SDK_INT &gt;= Build.VERSION_CODES.TIRAMISU &amp;&amp; ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED</ID>
     <ID>ComplexCondition:SessionScreen.kt$viewW &gt; 0f &amp;&amp; viewH &gt; 0f &amp;&amp; bmW &gt; 0f &amp;&amp; bmH &gt; 0f</ID>
+    <ID>ComplexCondition:SessionStatusBadges.kt$containerColor.alpha &gt; 0f &amp;&amp; frame != null &amp;&amp; frameImage != null &amp;&amp; viewportSize.width &gt; 0 &amp;&amp; viewportSize.height &gt; 0</ID>
     <ID>ComplexCondition:SessionViewModel.kt$SessionViewModel$pw &gt; 0 &amp;&amp; ph &gt; 0 &amp;&amp; (event.width - pw).absoluteValue &lt;= 8 &amp;&amp; (event.height - ph).absoluteValue &lt;= 8</ID>
     <ID>CyclomaticComplexMethod:Connection.kt$ConnectionEntity$override fun equals(other: Any?): Boolean</ID>
     <ID>CyclomaticComplexMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:ConnectionEditViewModel.kt$ConnectionEditViewModel$fun save()</ID>
+    <ID>CyclomaticComplexMethod:ConnectionRepository.kt$ConnectionRepository$suspend fun save( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, preferAvc420: Boolean, useGfx: Boolean, dynamicResolution: Boolean, dynamicResMax: Int, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, performanceFlags: Int, ): Long</ID>
     <ID>CyclomaticComplexMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, first: PointerInputChange, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
-    <ID>CyclomaticComplexMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, onDisconnect: () -&gt; Unit = onClose, toolbarAlpha: Float = CHROME_ALPHA, controlAlpha: Float = CHROME_ALPHA, cursorScale: Float = DEFAULT_SIMULATED_CURSOR_SCALE, viewModel: SessionViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:SessionScreen.kt$private fun Modifier.zoomPillGestures( controller: RdpInputController, containerSize: IntSize, pillSize: () -&gt; IntSize, handleOffset: () -&gt; Offset, setHandleOffset: (Offset) -&gt; Unit, setDragging: (Boolean) -&gt; Unit, setMovingSelf: (Boolean) -&gt; Unit, ): Modifier</ID>
+    <ID>CyclomaticComplexMethod:SessionViewModel.kt$SessionViewModel$private fun observeEvents()</ID>
+    <ID>LargeClass:SessionViewModel.kt$SessionViewModel : ViewModel</ID>
     <ID>LongMethod:ConnectionEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun ConnectionEditScreen( onClose: () -&gt; Unit, viewModel: ConnectionEditViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:RdpClient.kt$RdpClient$fun connect(params: RdpConnectionParams)</ID>
     <ID>LongMethod:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, first: PointerInputChange, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
-    <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, viewModel: SessionViewModel = hiltViewModel(), )</ID>
-    <ID>LongMethod:SessionStatusBadges.kt$@Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, fps: Int, controlLatencyMs: Int, presentLagMs: Int, networkRttMs: Int, latencyAccepted: Int, latencyDiscarded: Int, transport: RdpTransport, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionScreen.kt$@Composable private fun SessionToolbar( viewModel: SessionViewModel, state: SessionUiState, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, viewportSize: IntSize, viewportTopInRoot: Float, frameTick: State&lt;Long&gt;, transformState: State&lt;UserTransform&gt;, containerColor: Color, onBarHeightChanged: (Int) -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SessionScreen( connectionId: Long, onClose: () -&gt; Unit, onDisconnect: () -&gt; Unit = onClose, toolbarAlpha: Float = CHROME_ALPHA, controlAlpha: Float = CHROME_ALPHA, cursorScale: Float = DEFAULT_SIMULATED_CURSOR_SCALE, viewModel: SessionViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:SessionStatusBadges.kt$@Suppress("LongParameterList") // Compose title slot receives independently changing UI state values. @Composable fun SessionStatusTitle( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, fps: Int, controlLatencyMs: Int, presentLagMs: Int, networkRttMs: Int, latencyAccepted: Int, latencyDiscarded: Int, transport: RdpTransport, transportStats: RdpTransportStats, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, menuContainerColor: Color = Color.Black.copy(alpha = 0.7f), menuContentColor: Color = Color.White, glassBuffer: BitmapBuffer? = null, glassViewportSize: IntSize = IntSize.Zero, glassViewportPositionOnScreen: Offset = Offset.Zero, glassTransformState: State&lt;UserTransform&gt;? = null, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongMethod:SessionViewModel.kt$SessionViewModel$private fun launchConnect(id: Long)</ID>
+    <ID>LongMethod:SessionViewModel.kt$SessionViewModel$private fun observeEvents()</ID>
+    <ID>LongMethod:SettingsScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class) @Composable fun SettingsScreen( onClose: () -&gt; Unit, onOpenKeepAlive: () -&gt; Unit, onOpenLogs: () -&gt; Unit, viewModel: SettingsViewModel = hiltViewModel(), )</ID>
+    <ID>LongParameterList:ConnectionListScreen.kt$( items: List&lt;ConnectionEntity&gt;, padding: PaddingValues, loadThumbnail: suspend (Long) -&gt; Bitmap?, onEdit: (Long) -&gt; Unit, onConnect: (Long) -&gt; Unit, onDelete: (ConnectionEntity) -&gt; Unit, connectionRuntime: ConnectionRuntimeState, thumbnailRevision: Long, )</ID>
     <ID>LongParameterList:ConnectionRepository.kt$ConnectionRepository$( existing: ConnectionEntity?, name: String, host: String, port: Int, username: String, domain: String, plainPassword: String, colorDepth: Int, useH264: Boolean, preferAvc420: Boolean, useGfx: Boolean, dynamicResolution: Boolean, dynamicResMax: Int, useMultitransport: Boolean, redirectClipboard: Boolean, redirectFiles: Boolean, sharedFolderUri: String?, soundMode: Int, desktopScaleFactor: Int, customWidth: Int, customHeight: Int, defaultInputMode: Int, targetFrameRate: Int, performanceFlags: Int, )</ID>
-    <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, onFramePresented: (presentLagMs: Long) -&gt; Unit, )</ID>
-    <ID>LongParameterList:SessionStatusBadges.kt$( status: SessionConnectionStatus, connectionName: String, connectionId: Long, remoteWidth: Int, remoteHeight: Int, fps: Int, controlLatencyMs: Int, presentLagMs: Int, networkRttMs: Int, latencyAccepted: Int, latencyDiscarded: Int, transport: RdpTransport, host: String?, stickyModifierLabels: List&lt;String&gt;, lastError: String?, onErrorClick: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:RdpDriveRedirection.kt$( redirectFiles: Boolean, allFilesAccessGranted: Boolean, storageMounted: Boolean, externalStoragePath: String?, pathExists: (String) -&gt; Boolean, pathIsDirectory: (String) -&gt; Boolean, pathCanRead: (String) -&gt; Boolean, pathCanWrite: (String) -&gt; Boolean, )</ID>
+    <ID>LongParameterList:RdpDriveRedirectionTest.kt$RdpDriveRedirectionTest$( redirectFiles: Boolean = true, allFilesAccessGranted: Boolean = true, storageMounted: Boolean = true, externalStoragePath: String? = "/storage/emulated/0", pathExists: Boolean = true, pathIsDirectory: Boolean = true, pathCanRead: Boolean = true, pathCanWrite: Boolean = true, )</ID>
+    <ID>LongParameterList:SessionScreen.kt$( buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, viewportSize: IntSize, frameTick: State&lt;Long&gt;, transformState: State&lt;UserTransform&gt;, chromeTopPx: Float, containerColor: Color, edge: GlassChromeEdge, modifier: Modifier = Modifier, )</ID>
+    <ID>LongParameterList:SessionScreen.kt$( modifier: Modifier, controller: RdpInputController, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, remoteWidth: Int, remoteHeight: Int, mode: InputMode, onViewSizeChanged: (width: Int, height: Int) -&gt; Unit, targetFrameRate: Int, cursorScale: Float, onFramePresented: (presentLagMs: Long) -&gt; Unit, )</ID>
+    <ID>LongParameterList:SessionScreen.kt$( viewModel: SessionViewModel, state: SessionUiState, buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer, viewportSize: IntSize, viewportTopInRoot: Float, frameTick: State&lt;Long&gt;, transformState: State&lt;UserTransform&gt;, containerColor: Color, onBarHeightChanged: (Int) -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:SessionGestures.kt$while</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1080</ID>
     <ID>MagicNumber:ConnectionEditScreen.kt$1280</ID>
@@ -35,6 +53,8 @@
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$5</ID>
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$65535</ID>
     <ID>MagicNumber:ConnectionEditViewModel.kt$ConnectionEditViewModel$8192</ID>
+    <ID>MagicNumber:ConnectionRepository.kt$ConnectionRepository$300</ID>
+    <ID>MagicNumber:ConnectionRepository.kt$ConnectionRepository$65535</ID>
     <ID>MagicNumber:CredentialCipher.kt$CredentialCipher$256</ID>
     <ID>MagicNumber:LogScreen.kt$0xFFCC8800</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$0x100</ID>
@@ -42,11 +62,19 @@
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$1.6f</ID>
     <ID>MagicNumber:RdpInputController.kt$RdpInputController$25f</ID>
     <ID>MagicNumber:SessionGestures.kt$0.5f</ID>
-    <ID>MagicNumber:SessionScreen.kt$12f</ID>
+    <ID>MagicNumber:SessionScreen.kt$0.62f</ID>
+    <ID>MagicNumber:SessionScreen.kt$0.9f</ID>
+    <ID>MagicNumber:SessionScreen.kt$1.4f</ID>
+    <ID>MagicNumber:SessionScreen.kt$1.5f</ID>
+    <ID>MagicNumber:SessionScreen.kt$12</ID>
+    <ID>MagicNumber:SessionScreen.kt$5</ID>
+    <ID>MagicNumber:SessionScreen.kt$680</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0.72f</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFF43A047</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFF9E9E9E</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFFE53935</ID>
     <ID>MagicNumber:SessionStatusBadges.kt$0xFFFFB300</ID>
+    <ID>MagicNumber:SessionStatusBadges.kt$0xFFFFCDD2</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$1000L</ID>
     <ID>MagicNumber:SessionViewModel.kt$SessionViewModel$2000</ID>
@@ -56,16 +84,22 @@
     <ID>MatchingDeclarationName:Connection.kt$ConnectionEntity</ID>
     <ID>MatchingDeclarationName:ConnectionsNavigation.kt$ConnectionsRoutes</ID>
     <ID>MatchingDeclarationName:PocketRdpNavHost.kt$AppRoutes</ID>
+    <ID>MatchingDeclarationName:RdpDriveRedirection.kt$RdpDriveRedirectionPlan</ID>
     <ID>MatchingDeclarationName:SessionMetrics.kt$FpsCounter</ID>
+    <ID>MaxLineLength:ConnectionEditScreen.kt$RowLabel(Icons.Default.HighQuality, stringResource(R.string.connection_h264_tier), Modifier.weight(1f))</ID>
+    <ID>MaxLineLength:ConnectionEditScreen.kt$RowLabel(Icons.Default.TouchApp, stringResource(R.string.connection_default_input_mode), Modifier.weight(1f))</ID>
     <ID>MaxLineLength:ConnectionEditViewModel.kt$ConnectionEditViewModel$fun updateCustomHeight(value: String)</ID>
     <ID>MaxLineLength:ConnectionEditViewModel.kt$ConnectionEditViewModel$fun updateCustomWidth(value: String)</ID>
+    <ID>MaxLineLength:PocketLogger.kt$PocketLogger$Regex("""(?i)(\b(?:password|passwd|username|user|domain|host|endpoint|path)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)""")</ID>
     <ID>MaxLineLength:RdpClient.kt$RdpClient$PocketLogger.i(TAG, "FreeRDP native ready ver=${LibFreeRDP.freerdp_get_version()} h264=${LibFreeRDP.hasH264Support()}")</ID>
-    <ID>MaxLineLength:RdpClient.kt$RdpClient$PocketLogger.i(TAG, "connect() host=${params.host}:${params.port} user=${params.username} h264=${params.useH264} gfx=${params.useGfx} dynRes=${params.dynamicResolution}")</ID>
     <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override</ID>
     <ID>MaxLineLength:RdpClient.kt$RdpClient.&lt;no name provided&gt;$override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean</ID>
+    <ID>MaxLineLength:SessionScreen.kt$Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.session_cd_back))</ID>
+    <ID>MaxLineLength:SessionScreen.kt$Icon(Icons.Default.Close, contentDescription = stringResource(R.string.session_cd_disconnect))</ID>
+    <ID>MaxLineLength:SessionScreen.kt$Icon(Icons.Default.FullscreenExit, contentDescription = stringResource(R.string.session_cd_exit_fullscreen))</ID>
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard</ID>
     <ID>MaxLineLength:SessionScreen.kt$imageVector = if (state.mode == InputMode.TRACKPAD) Icons.Default.Mouse else Icons.Default.TouchApp</ID>
-    <ID>MaxLineLength:SessionStatusBadges.kt$text = { Text("粘滞修饰键：${stickyModifierLabels.joinToString("+")}", style = MaterialTheme.typography.bodySmall) }</ID>
+    <ID>MaxLineLength:SessionViewModel.kt$SessionViewModel$"folder redirection requested but MANAGE_EXTERNAL_STORAGE is not granted; waiting before connect"</ID>
     <ID>MaxLineLength:Type.kt$bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.5.sp)</ID>
     <ID>MaxLineLength:Type.kt$bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)</ID>
     <ID>MaxLineLength:Type.kt$displayLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 57.sp, lineHeight = 64.sp, letterSpacing = (-0.25).sp)</ID>
@@ -78,14 +112,17 @@
     <ID>MaxLineLength:Type.kt$titleMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = 0.15.sp)</ID>
     <ID>NestedBlockDepth:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitNativeTouchGesture( controller: RdpInputController, first: PointerInputChange, )</ID>
     <ID>NestedBlockDepth:SessionGestures.kt$private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture( controller: RdpInputController, first: PointerInputChange, lastSingleTapEndMs: Long, lastSingleTapX: Float, lastSingleTapY: Float, commitTap: (endMs: Long, x: Float, y: Float) -&gt; Unit, )</ID>
+    <ID>ReturnCount:RdpDriveRedirection.kt$fun planRdpDriveRedirection( redirectFiles: Boolean, allFilesAccessGranted: Boolean, storageMounted: Boolean, externalStoragePath: String?, pathExists: (String) -&gt; Boolean, pathIsDirectory: (String) -&gt; Boolean, pathCanRead: (String) -&gt; Boolean, pathCanWrite: (String) -&gt; Boolean, ): RdpDriveRedirectionPlan</ID>
+    <ID>ReturnCount:SessionScreen.kt$private fun parseToolbarChordAction(id: String): ToolbarActionSpec?</ID>
+    <ID>ReturnCount:SessionViewModel.kt$internal fun shouldLaunchConnect( current: SessionUiState, requestedConnectionId: Long, allowStoppedSessionRestart: Boolean = true, ): Boolean</ID>
     <ID>TooManyFunctions:ConnectionEditViewModel.kt$ConnectionEditViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:PocketLogger.kt$PocketLogger</ID>
     <ID>TooManyFunctions:RdpClient.kt$RdpClient</ID>
     <ID>TooManyFunctions:RdpInputController.kt$RdpInputController</ID>
+    <ID>TooManyFunctions:RdpSessionRegistry.kt$RdpSessionRegistry</ID>
     <ID>TooManyFunctions:SessionScreen.kt$com.hanfengruyue.pocketrdp.feature.session.SessionScreen.kt</ID>
+    <ID>TooManyFunctions:SessionStatusBadges.kt$com.hanfengruyue.pocketrdp.feature.session.ui.SessionStatusBadges.kt</ID>
     <ID>TooManyFunctions:SessionViewModel.kt$SessionViewModel : ViewModel</ID>
-    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$localX: Float</ID>
-    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$localY: Float</ID>
-    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$viewH: Int</ID>
-    <ID>UnusedParameter:RdpInputController.kt$RdpInputController$viewW: Int</ID>
+    <ID>TooManyFunctions:SettingsScreen.kt$com.hanfengruyue.pocketrdp.settings.SettingsScreen.kt</ID>
   </CurrentIssues>
 </SmellBaseline>

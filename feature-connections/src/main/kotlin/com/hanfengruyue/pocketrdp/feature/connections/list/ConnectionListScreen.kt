@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -69,7 +70,6 @@ import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 import com.hanfengruyue.pocketrdp.feature.connections.R
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 // Card geometry / styling tunables (kept as property declarations so detekt's MagicNumber rule,
 // which ignores property initializers, doesn't flag them).
@@ -107,6 +107,7 @@ fun ConnectionListScreen(
 ) {
     val viewModel: ConnectionListViewModel = hiltViewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val thumbnailRevision by viewModel.thumbnailRevision.collectAsStateWithLifecycle()
     // The kill hint is shown at most once per visit — track local dismissal here so we don't need a
     // separate dismiss callback param (keeps the parameter list under detekt's threshold).
     var keepAliveHintDismissed by remember { mutableStateOf(false) }
@@ -148,6 +149,7 @@ fun ConnectionListScreen(
                 onConnect = onConnect,
                 onDelete = viewModel::delete,
                 connectionRuntime = connectionRuntime,
+                thumbnailRevision = thumbnailRevision,
             )
         }
     }
@@ -242,6 +244,7 @@ private fun ConnectionList(
     onConnect: (Long) -> Unit,
     onDelete: (ConnectionEntity) -> Unit,
     connectionRuntime: ConnectionRuntimeState,
+    thumbnailRevision: Long,
 ) {
     // Bump on every ON_RESUME so cards reload their thumbnails when the user returns from a session
     // (the session just saved a fresh snapshot, but the DB row didn't change so the list flow won't
@@ -275,6 +278,7 @@ private fun ConnectionList(
                         onDelete = { onDelete(conn) },
                     ),
                     connectionRuntime = connectionRuntime,
+                    thumbnailRevision = thumbnailRevision,
                 )
             }
         }
@@ -304,9 +308,15 @@ private fun ConnectionCard(
     loadThumbnail: suspend (Long) -> Bitmap?,
     actions: ConnectionCardActions,
     connectionRuntime: ConnectionRuntimeState,
+    thumbnailRevision: Long,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
-    val diskThumbnail by produceState<Bitmap?>(initialValue = null, entity.id, refreshKey) {
+    val diskThumbnail by produceState<Bitmap?>(
+        initialValue = null,
+        entity.id,
+        refreshKey,
+        thumbnailRevision,
+    ) {
         value = loadThumbnail(entity.id)
     }
     val thumbnail = chooseConnectionThumbnail(connectionRuntime.liveThumbnails[entity.id], diskThumbnail)
@@ -324,7 +334,7 @@ private fun ConnectionCard(
                 thumbnail = thumbnail,
                 onConnect = actions.onConnect,
                 onEdit = actions.onEdit,
-                onDelete = { confirmDelete = true },
+                onDelete = { if (!isActive) confirmDelete = true },
                 isActive = isActive,
             )
         } else {
@@ -342,7 +352,10 @@ private fun ConnectionCard(
                 IconButton(onClick = actions.onEdit) {
                     Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
                 }
-                IconButton(onClick = { confirmDelete = true }) {
+                IconButton(
+                    onClick = { confirmDelete = true },
+                    enabled = !isActive,
+                ) {
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = stringResource(R.string.connection_action_delete),
@@ -353,7 +366,7 @@ private fun ConnectionCard(
         }
     }
 
-    if (confirmDelete) {
+    if (confirmDelete && !isActive) {
         DeleteConfirmDialog(
             name = entity.name.ifBlank { entity.host },
             onConfirm = { confirmDelete = false; actions.onDelete() },
@@ -418,7 +431,7 @@ private fun LandscapeConnectionCardContent(
                 IconButton(onClick = onEdit) {
                     Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
                 }
-                IconButton(onClick = onDelete) {
+                IconButton(onClick = onDelete, enabled = !isActive) {
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = stringResource(R.string.connection_action_delete),
@@ -575,6 +588,9 @@ private fun relativeLastUsed(ms: Long): String {
             val days = (diff / DAY_AGO).toInt()
             pluralStringResource(R.plurals.connection_last_used_days_ago, days, days)
         }
-        else -> SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(ms))
+        else -> {
+            val locale = LocalConfiguration.current.locales[0]
+            SimpleDateFormat("yyyy-MM-dd", locale).format(Date(ms))
+        }
     }
 }

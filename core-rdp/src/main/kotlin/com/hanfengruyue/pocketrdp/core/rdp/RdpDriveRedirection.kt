@@ -15,6 +15,7 @@ fun planRdpDriveRedirection(
     pathExists: (String) -> Boolean,
     pathIsDirectory: (String) -> Boolean,
     pathCanRead: (String) -> Boolean,
+    pathCanWrite: (String) -> Boolean,
 ): RdpDriveRedirectionPlan {
     if (!redirectFiles) return RdpDriveRedirectionPlan.Disabled
     if (!allFilesAccessGranted) return RdpDriveRedirectionPlan.NeedsAllFilesAccess
@@ -48,6 +49,11 @@ fun planRdpDriveRedirection(
     if (!pathCanRead(path)) {
         return RdpDriveRedirectionPlan.Unavailable(
             "folder redirection path is not readable by PocketRDP: $path",
+        )
+    }
+    if (!pathCanWrite(path)) {
+        return RdpDriveRedirectionPlan.Unavailable(
+            "folder redirection path is not writable by PocketRDP: $path",
         )
     }
 

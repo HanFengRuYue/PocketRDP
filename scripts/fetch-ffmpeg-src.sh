@@ -1,44 +1,67 @@
 #!/usr/bin/env bash
-# Pre-fetch FFmpeg n8.1 source into the cpp/external/ffmpeg SOURCE_DIR so the CMake
-# ExternalProject uses it directly (no fragile build-time GitHub download). Tries several mirrors.
-set -uo pipefail
-VER="n8.1"
-DEST="/mnt/d/Document/Git/PocketRDP/third_party/FreeRDP/client/Android/Studio/freeRDPCore/src/main/cpp/external/ffmpeg"
-TGZ="/tmp/ffmpeg-${VER}.tar.gz"
+# Pre-stage the pinned FFmpeg source so ExternalProject never depends on a mid-build download.
+set -euo pipefail
 
-if [ -f "$DEST/configure" ]; then
-    echo "FFmpeg source already present at $DEST"; exit 0
-fi
+VER="n8.1.2"
+EXPECTED_SHA256="9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$PROJECT_ROOT/third_party/FreeRDP/client/Android/Studio/freeRDPCore/src/main/cpp/external/ffmpeg"
+VERSION_MARKER="$DEST/.pocketrdp-source-version"
+CACHED_TGZ="$PROJECT_ROOT/.gradle/android-native-downloads/${VER}.tar.gz"
+DEST_PARENT="$(dirname "$DEST")"
+mkdir -p "$DEST_PARENT"
+WORK_DIR="$(mktemp -d "$DEST_PARENT/.ffmpeg-refresh.XXXXXX")"
+STAGE_DIR="$WORK_DIR/stage"
+BACKUP="$WORK_DIR/previous"
+TGZ="$WORK_DIR/ffmpeg-${VER}.tar.gz"
+mkdir -p "$STAGE_DIR"
+cleanup() {
+    # If the process is interrupted in the narrow window after moving the previous source aside
+    # but before publishing the verified stage, restore the last known-good tree. Otherwise the
+    # EXIT trap would delete the only backup together with WORK_DIR.
+    if [ ! -d "$DEST" ] && [ -d "$BACKUP" ]; then
+        mv "$BACKUP" "$DEST"
+    fi
+    rm -rf -- "$WORK_DIR"
+}
+trap cleanup EXIT
 
 URLS=(
     "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${VER}.tar.gz"
-    "https://mirror.ghproxy.com/https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${VER}.tar.gz"
     "https://ghfast.top/https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${VER}.tar.gz"
-    "https://gitee.com/mirrors/ffmpeg/repository/archive/${VER}.tar.gz"
 )
 
-ok=0
-for u in "${URLS[@]}"; do
-    echo "==== trying $u"
-    if curl -fL --connect-timeout 20 --retry 2 -o "$TGZ" "$u" && [ -s "$TGZ" ]; then
-        # sanity: is it a gzip tarball big enough to be FFmpeg (>5MB)?
-        sz=$(stat -c %s "$TGZ")
-        if [ "$sz" -gt 5000000 ]; then ok=1; echo "  downloaded $sz bytes"; break; fi
-        echo "  too small ($sz), trying next"
+downloaded=0
+if [ -f "$CACHED_TGZ" ] &&
+   [ "$(sha256sum "$CACHED_TGZ" | awk '{print $1}')" = "$EXPECTED_SHA256" ]; then
+    cp "$CACHED_TGZ" "$TGZ"
+    downloaded=1
+    echo "==== using verified native-source cache $CACHED_TGZ"
+fi
+for url in "${URLS[@]}"; do
+    [ "$downloaded" = 0 ] || break
+    echo "==== trying $url"
+    if curl -fL --connect-timeout 20 --retry 2 -o "$TGZ" "$url"; then
+        actual=$(sha256sum "$TGZ" | awk '{print $1}')
+        if [ "$actual" = "$EXPECTED_SHA256" ]; then
+            downloaded=1
+            break
+        fi
+        echo "  SHA-256 mismatch: expected $EXPECTED_SHA256, got $actual"
     fi
 done
-[ "$ok" = 1 ] || { echo "FATAL: all FFmpeg mirrors failed"; exit 1; }
+[ "$downloaded" = 1 ] || { echo "FATAL: no FFmpeg mirror produced the pinned archive"; exit 1; }
 
-mkdir -p "$DEST"
-# Extract: archive top dir is FFmpeg-n8.1/ (github) or ffmpeg-<hash>/ (gitee). Strip it.
-tar xzf "$TGZ" -C /tmp
-top=$(tar tzf "$TGZ" | head -1 | cut -d/ -f1)
-echo "==== extracting $top -> $DEST"
-cp -a "/tmp/$top/." "$DEST/"
-rm -rf "/tmp/$top" "$TGZ"
+tar xzf "$TGZ" --strip-components=1 -C "$STAGE_DIR"
+[ -f "$STAGE_DIR/configure" ] || { echo "FATAL: configure missing from archive"; exit 1; }
+printf '%s\n' "$VER" > "$STAGE_DIR/.pocketrdp-source-version"
 
-if [ -f "$DEST/configure" ]; then
-    echo "SUCCESS: FFmpeg source staged ($(du -sh "$DEST" | cut -f1))"
-else
-    echo "FATAL: configure not found after extract"; exit 1
+if [ -d "$DEST" ]; then mv "$DEST" "$BACKUP"; fi
+if ! mv "$STAGE_DIR" "$DEST"; then
+    if [ -d "$BACKUP" ]; then mv "$BACKUP" "$DEST"; fi
+    exit 1
 fi
+rm -rf -- "$BACKUP"
+rm -rf -- "$WORK_DIR"
+trap - EXIT
+echo "SUCCESS: FFmpeg $VER source staged ($(du -sh "$DEST" | cut -f1))"

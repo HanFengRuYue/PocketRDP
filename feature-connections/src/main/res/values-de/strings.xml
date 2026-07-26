@@ -77,13 +77,13 @@
     <string name="connection_custom_resolution_desc">Fixiert die Gegenseite auf gewählte Breite und Höhe. Deaktiviert dynamische Auflösung.</string>
     <string name="connection_width">Breite</string>
     <string name="connection_height">Höhe</string>
-    <string name="connection_multitransport_title">UDP-Multitransport</string>
-    <string name="connection_multitransport_desc">Server und Netzwerk müssen UDP am selben Port erlauben; fällt sonst auf TCP zurück.</string>
+    <string name="connection_multitransport_title">UDP-Multitransport (experimentell)</string>
+    <string name="connection_multitransport_desc">Das enthaltene FreeRDP 3.30 baut derzeit keinen UDP-Kanal auf. Lassen Sie dies deaktiviert; die Aktivierung handelt nur aus und fällt auf TCP zurück.</string>
     <string name="connection_section_redirection">Umleitung</string>
     <string name="connection_clipboard_title">Zwischenablage beidseitig synchronisieren</string>
     <string name="connection_clipboard_desc">Synchronisiert kopierten Text zwischen Telefon und PC. Bilder werden noch nicht unterstützt.</string>
     <string name="connection_files_title">Ordnerumleitung</string>
-    <string name="connection_files_desc">Zeigt Telefonspeicher auf dem PC als Laufwerk “PocketRDP”.</string>
+    <string name="connection_files_desc">Gibt dem Remote-PC über das Laufwerk „PocketRDP“ Lese- und Schreibzugriff auf den gesamten freigegebenen Telefonspeicher.</string>
     <string name="connection_audio_title">Remote-Audio</string>
     <string name="connection_audio_client">Auf Controller abspielen</string>
     <string name="connection_audio_server">Auf Remote-PC abspielen</string>
@@ -97,4 +97,10 @@
     <string name="connection_error_password_required">Passwort ist erforderlich</string>
     <string name="connection_error_custom_width_invalid">Benutzerdefinierte Breite muss 200-8192 sein</string>
     <string name="connection_error_custom_height_invalid">Benutzerdefinierte Höhe muss 200-8192 sein</string>
+    <string name="connection_files_permission_desc">Erteilen Sie zuerst den Zugriff auf alle Dateien, sonst wird das PocketRDP-Laufwerk auf dem Remotecomputer nicht angezeigt.</string>
+    <string name="connection_files_permission_action">Dateizugriff erlauben</string>
+    <string name="connection_error_load_failed">Die Verbindung konnte nicht geladen werden. Gehen Sie zurück und versuchen Sie es erneut.</string>
+    <string name="connection_error_not_found">Diese Verbindung ist nicht mehr vorhanden.</string>
+    <string name="connection_error_save_failed">Die Verbindung konnte nicht gespeichert werden. Versuchen Sie es erneut.</string>
+    <string name="connection_error_framebuffer_too_large">Die benutzerdefinierte Auflösung ist zu groß; sie darf 16,7 Millionen Pixel nicht überschreiten.</string>
 </resources>

@@ -21,6 +21,13 @@ enum class ConnectionEditError {
     PASSWORD_REQUIRED,
     CUSTOM_WIDTH_INVALID,
     CUSTOM_HEIGHT_INVALID,
+    FRAMEBUFFER_TOO_LARGE,
+}
+
+enum class ConnectionEditFailure {
+    LOAD_FAILED,
+    NOT_FOUND,
+    SAVE_FAILED,
 }
 
 data class ConnectionEditUiState(
@@ -51,7 +58,9 @@ data class ConnectionEditUiState(
     // — like preferAvc420 above — let new connections render uncapped at the phone's full resolution,
     // the second half of the same default-inconsistency 操控延迟 bug.
     val dynamicResMax: Int = 1080,
-    val useMultitransport: Boolean = true,
+    // FreeRDP 3.30's client handler currently rejects the UDP bootstrap request, so leave this
+    // experimental capability off unless a user explicitly wants to probe a future server/client.
+    val useMultitransport: Boolean = false,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,
     val sharedFolderUri: String? = null,
@@ -74,6 +83,7 @@ data class ConnectionEditUiState(
     val saving: Boolean = false,
     val saved: Boolean = false,
     val errors: List<ConnectionEditError> = emptyList(),
+    val failure: ConnectionEditFailure? = null,
 )
 
 @HiltViewModel
@@ -92,54 +102,68 @@ class ConnectionEditViewModel @Inject constructor(
         if (id == null || id <= 0L) {
             _state.update { it.copy(isLoading = false) }
         } else {
+            _state.update { it.copy(id = id) }
             viewModelScope.launch {
-                val entity = repository.findById(id)
-                existing = entity
-                if (entity != null) {
-                    _state.update {
-                        it.copy(
-                            isLoading = false,
-                            id = entity.id,
-                            name = entity.name,
-                            host = entity.host,
-                            port = entity.port.toString(),
-                            username = entity.username,
-                            domain = entity.domain,
-                            password = "",
-                            hasExistingPassword = entity.passwordCipher.isNotEmpty(),
-                            colorDepth = entity.colorDepth,
-                            useH264 = entity.useH264,
-                            preferAvc420 = entity.preferAvc420,
-                            useGfx = entity.useGfx,
-                            dynamicResolution = entity.dynamicResolution,
-                            dynamicResMax = entity.dynamicResMax,
-                            useMultitransport = entity.useMultitransport,
-                            redirectClipboard = entity.redirectClipboard,
-                            redirectFiles = entity.redirectFiles,
-                            sharedFolderUri = entity.sharedFolderUri,
-                            soundMode = entity.soundMode,
-                            desktopScaleFactor = entity.desktopScaleFactor,
-                            useCustomResolution = entity.customWidth > 0 && entity.customHeight > 0,
-                            customWidth = if (entity.customWidth > 0) entity.customWidth.toString() else "1920",
-                            customHeight = if (entity.customHeight > 0) entity.customHeight.toString() else "1080",
-                            defaultInputMode = entity.defaultInputMode,
-                            targetFrameRate = entity.targetFrameRate,
-                            performanceFlags = entity.performanceFlags,
-                        )
+                runCatching { repository.findById(id) }.onSuccess { entity ->
+                    existing = entity
+                    if (entity != null) {
+                        _state.update {
+                            it.copy(
+                                isLoading = false,
+                                id = entity.id,
+                                name = entity.name,
+                                host = entity.host,
+                                port = entity.port.toString(),
+                                username = entity.username,
+                                domain = entity.domain,
+                                password = "",
+                                hasExistingPassword = entity.passwordCipher.isNotEmpty(),
+                                colorDepth = entity.colorDepth,
+                                useH264 = entity.useH264,
+                                preferAvc420 = entity.preferAvc420,
+                                useGfx = entity.useGfx,
+                                dynamicResolution = entity.dynamicResolution,
+                                dynamicResMax = entity.dynamicResMax,
+                                useMultitransport = entity.useMultitransport,
+                                redirectClipboard = entity.redirectClipboard,
+                                redirectFiles = entity.redirectFiles,
+                                sharedFolderUri = entity.sharedFolderUri,
+                                soundMode = entity.soundMode,
+                                desktopScaleFactor = entity.desktopScaleFactor,
+                                useCustomResolution = entity.customWidth > 0 && entity.customHeight > 0,
+                                customWidth = if (entity.customWidth > 0) entity.customWidth.toString() else "1920",
+                                customHeight = if (entity.customHeight > 0) entity.customHeight.toString() else "1080",
+                                defaultInputMode = entity.defaultInputMode,
+                                targetFrameRate = entity.targetFrameRate,
+                                performanceFlags = entity.performanceFlags,
+                                failure = null,
+                            )
+                        }
+                    } else {
+                        _state.update {
+                            it.copy(isLoading = false, failure = ConnectionEditFailure.NOT_FOUND)
+                        }
                     }
-                } else {
-                    _state.update { it.copy(isLoading = false) }
+                }.onFailure {
+                    _state.update {
+                        it.copy(isLoading = false, failure = ConnectionEditFailure.LOAD_FAILED)
+                    }
                 }
             }
         }
     }
 
-    fun updateName(value: String) = _state.update { it.copy(name = value) }
-    fun updateHost(value: String) = _state.update { it.copy(host = value) }
+    fun updateName(value: String) =
+        _state.update { it.copy(name = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS)) }
+    fun updateHost(value: String) =
+        _state.update { it.copy(host = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS)) }
     fun updatePort(value: String) = _state.update { it.copy(port = value.filter { ch -> ch.isDigit() }.take(5)) }
-    fun updateUsername(value: String) = _state.update { it.copy(username = value) }
-    fun updateDomain(value: String) = _state.update { it.copy(domain = value) }
-    fun updatePassword(value: String) = _state.update { it.copy(password = value) }
+    fun updateUsername(value: String) =
+        _state.update { it.copy(username = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
+    fun updateDomain(value: String) =
+        _state.update { it.copy(domain = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
+    fun updatePassword(value: String) =
+        _state.update { it.copy(password = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
     fun updateColorDepth(value: Int) = _state.update { it.copy(colorDepth = value) }
     // H.264 (AVC444) can only run on the GFX/rdpgfx channel, so enabling it implicitly forces the
     // GFX pipeline on. Keep the persisted entity honest (no use_h264=true/use_gfx=false records) —
@@ -149,13 +173,18 @@ class ConnectionEditViewModel @Inject constructor(
     }
     /** Codec tier: false = 画质优先 (AVC444), true = 流畅优先 (AVC420). */
     fun updatePreferAvc420(value: Boolean) = _state.update { it.copy(preferAvc420 = value) }
-    fun toggleGfx(value: Boolean) = _state.update { it.copy(useGfx = value) }
+    fun toggleGfx(value: Boolean) = _state.update {
+        // AVC420/AVC444 are rdpgfx modes. Preserve the invariant even if this method is invoked
+        // outside the currently disabled UI switch (for example by a future automation/test).
+        it.copy(useGfx = value || it.useH264)
+    }
     fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
     fun updateDynamicResMax(value: Int) = _state.update { it.copy(dynamicResMax = value) }
     fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }
     fun toggleClipboard(value: Boolean) = _state.update { it.copy(redirectClipboard = value) }
     fun toggleFiles(value: Boolean) = _state.update { it.copy(redirectFiles = value) }
-    fun updateSharedFolder(uri: String?) = _state.update { it.copy(sharedFolderUri = uri) }
+    fun updateSharedFolder(uri: String?) =
+        _state.update { it.copy(sharedFolderUri = uri?.boundedUtf16(MAX_SHARED_FOLDER_URI_CHARS)) }
     fun updateSoundMode(value: Int) = _state.update { it.copy(soundMode = value) }
     fun updateScaleFactor(value: Int) = _state.update { it.copy(desktopScaleFactor = value) }
     fun updateFrameRate(value: Int) = _state.update { it.copy(targetFrameRate = value) }
@@ -180,6 +209,12 @@ class ConnectionEditViewModel @Inject constructor(
 
     fun save() {
         val s = _state.value
+        if (s.isLoading || s.saving ||
+            s.failure == ConnectionEditFailure.LOAD_FAILED ||
+            s.failure == ConnectionEditFailure.NOT_FOUND
+        ) {
+            return
+        }
         val errors = buildList {
             if (s.name.isBlank()) add(ConnectionEditError.NAME_REQUIRED)
             if (s.host.isBlank()) add(ConnectionEditError.HOST_REQUIRED)
@@ -192,45 +227,70 @@ class ConnectionEditViewModel @Inject constructor(
                 val h = s.customHeight.toIntOrNull()
                 if (w == null || w !in 200..8192) add(ConnectionEditError.CUSTOM_WIDTH_INVALID)
                 if (h == null || h !in 200..8192) add(ConnectionEditError.CUSTOM_HEIGHT_INVALID)
+                if (w != null && h != null && w.toLong() * h > MAX_FRAMEBUFFER_PIXELS) {
+                    add(ConnectionEditError.FRAMEBUFFER_TOO_LARGE)
+                }
             }
         }
         if (errors.isNotEmpty()) {
             _state.update { it.copy(errors = errors) }
             return
         }
-        _state.update { it.copy(saving = true, errors = emptyList()) }
+        _state.update { it.copy(saving = true, errors = emptyList(), failure = null) }
         viewModelScope.launch {
-            repository.save(
-                existing = existing,
-                name = s.name.trim(),
-                host = s.host.trim(),
-                port = s.port.toInt(),
-                username = s.username.trim(),
-                domain = s.domain.trim(),
-                plainPassword = s.password,
-                colorDepth = s.colorDepth,
-                useH264 = s.useH264,
-                preferAvc420 = s.preferAvc420,
-                useGfx = s.useGfx,
-                dynamicResolution = s.dynamicResolution,
-                // Persisted as-is; a stale cap (e.g. set, then custom-res enabled) is harmless because
-                // SessionViewModel only applies it when dynamic resolution is actually in effect.
-                dynamicResMax = s.dynamicResMax,
-                useMultitransport = s.useMultitransport,
-                redirectClipboard = s.redirectClipboard,
-                redirectFiles = s.redirectFiles,
-                sharedFolderUri = s.sharedFolderUri,
-                soundMode = s.soundMode,
-                desktopScaleFactor = s.desktopScaleFactor,
-                customWidth = if (s.useCustomResolution) s.customWidth.toIntOrNull() ?: 0 else 0,
-                customHeight = if (s.useCustomResolution) s.customHeight.toIntOrNull() ?: 0 else 0,
-                defaultInputMode = s.defaultInputMode,
-                targetFrameRate = s.targetFrameRate,
-                performanceFlags = s.performanceFlags,
-            )
-            _state.update { it.copy(saving = false, saved = true) }
+            runCatching {
+                repository.save(
+                    existing = existing,
+                    name = s.name.trim(),
+                    host = s.host.trim(),
+                    port = s.port.toInt(),
+                    username = s.username.trim(),
+                    domain = s.domain.trim(),
+                    plainPassword = s.password,
+                    colorDepth = s.colorDepth,
+                    useH264 = s.useH264,
+                    preferAvc420 = s.preferAvc420,
+                    useGfx = s.useGfx,
+                    dynamicResolution = s.dynamicResolution,
+                    // Persisted as-is; a stale cap (e.g. set, then custom-res enabled) is harmless because
+                    // SessionViewModel only applies it when dynamic resolution is actually in effect.
+                    dynamicResMax = s.dynamicResMax,
+                    useMultitransport = s.useMultitransport,
+                    redirectClipboard = s.redirectClipboard,
+                    redirectFiles = s.redirectFiles,
+                    sharedFolderUri = s.sharedFolderUri,
+                    soundMode = s.soundMode,
+                    desktopScaleFactor = s.desktopScaleFactor,
+                    customWidth = if (s.useCustomResolution) s.customWidth.toIntOrNull() ?: 0 else 0,
+                    customHeight = if (s.useCustomResolution) s.customHeight.toIntOrNull() ?: 0 else 0,
+                    defaultInputMode = s.defaultInputMode,
+                    targetFrameRate = s.targetFrameRate,
+                    performanceFlags = s.performanceFlags,
+                )
+            }.onSuccess {
+                _state.update { it.copy(saving = false, saved = true, failure = null) }
+            }.onFailure {
+                _state.update {
+                    it.copy(saving = false, failure = ConnectionEditFailure.SAVE_FAILED)
+                }
+            }
         }
     }
 
     fun consumeErrors() = _state.update { it.copy(errors = emptyList()) }
+
+    private companion object {
+        const val MAX_FRAMEBUFFER_PIXELS = 16_777_216L
+        const val MAX_CONNECTION_FIELD_CHARS = 1024
+        const val MAX_CREDENTIAL_FIELD_CHARS = 4096
+        const val MAX_SHARED_FOLDER_URI_CHARS = 8192
+    }
+}
+
+internal fun String.boundedUtf16(maxChars: Int): String {
+    require(maxChars >= 0) { "maxChars must be non-negative" }
+    if (length <= maxChars) return this
+    if (maxChars == 0) return ""
+    val end = if (this[maxChars - 1].isHighSurrogate()) maxChars - 1 else maxChars
+    return substring(0, end)
 }

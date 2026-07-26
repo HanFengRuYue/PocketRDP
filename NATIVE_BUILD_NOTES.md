@@ -1,73 +1,126 @@
-# Native (FreeRDP) Build Notes
+# Native (FreeRDP) build notes
 
-The Kotlin/UI side of PocketRDP is fully built. To produce a session that actually
-exchanges RDP wire bytes, the FreeRDP native libraries (`libfreerdp-android.so`,
-`libfreerdp3.so`, `libfreerdp-client3.so`, `libwinpr3.so`) must be compiled via
-the CMake superbuild in `third_party/FreeRDP`. This was attempted on Windows but
-hit several Windows-host-specific issues. The notes below capture exactly what
-was set up so it can be finished in 30–60 min next time (or done on Linux/WSL/CI).
+PocketRDP normally packages the committed native libraries from
+`core-rdp/src/main/jniLibs/`; a normal Windows Gradle build does not compile C/C++.
+Native rebuilding is supported only in WSL2 and is deliberately gated by
+`-PnativeAbi=<abi>`.
 
-## What's already in place on this machine
+## Pinned toolchain and sources
 
-| Component | Path |
-|---|---|
-| Android SDK | `%LOCALAPPDATA%\Android\Sdk` |
-| Platforms | `platforms;android-CinnamonBun-ext23` (API 37.1-beta3) + `android-36.1` |
-| NDK | `ndk\27.1.12297006` (fully installed; ~2.2 GB) |
-| CMake | `cmake\3.22.1` |
-| cmdline-tools | `cmdline-tools\latest` |
-| pkg-config | `%LOCALAPPDATA%\pkg-config\pkg-config-lite-0.28-1\bin\pkg-config.exe` (0.28) |
-| FreeRDP source | `third_party/FreeRDP` (git submodule, master / 3.x) |
-| Pre-downloaded deps | OpenSSL 3.6.2 (52 MB) + OpenH264 v2.6.0 (57 MB) + cJSON v1.7.19 + uriparser 1.0.0 were already in `core-rdp/.cxx/Debug/<hash>/arm64-v8a/<pkg>-prefix/src/` before .cxx was last cleaned |
-| `make.exe` | NDK 27 ships one at `ndk\27.1.12297006\prebuilt\windows-x86_64\bin\make.exe` |
-| `perl` 5.42.2 | Git for Windows at `C:\Program Files\Git\usr\bin\perl.exe` — **missing `Locale::Maketext::Simple`**, so OpenSSL's Configure fails |
+| Component | Pinned version |
+| --- | --- |
+| FreeRDP | Official `3.30.0` commit `6b107f0aadbabc47941c5a5b893b88c01792af6d` |
+| PocketRDP FreeRDP patch | `patches/freerdp/pocketrdp-3.30.patch` |
+| Android NDK | `29.0.14206865` |
+| CMake | `4.1.2` |
+| Android command-line tools | `15859902_latest` |
+| OpenSSL | `4.0.1` |
+| FFmpeg | `n8.1.2` |
+| cJSON | `1.7.19` |
+| uriparser | `1.0.2` |
 
-## What blocks `:core-rdp:externalNativeBuildDebug` on Windows
+The WSL scripts verify the NDK, CMake and command-line-tools archives with SHA-256.
+FreeRDP's `cmake/DepVersions.cmake` pins source archive hashes for its native
+dependencies. The dormant OpenH264 fallback is pinned to an immutable commit, not a
+movable tag.
 
-1. **`Locale::Maketext::Simple` not in Git's perl.** OpenSSL `Configure` (a perl
-   script) requires it. Fix: install Strawberry Perl portable
-   (https://strawberryperl.com) and put its `perl\bin` on PATH **before** the
-   Git one. Verify with `perl -MLocale::Maketext::Simple -e 1` (no output = OK).
-2. **`-E env "PATH=...:..."` uses Unix path separator.** Upstream FreeRDP's
-   `client/Android/cmake/External*.cmake` files set `PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH}`
-   with `:`. On Windows shells split this at `:` and the call fails with
-   `拒绝访问`. Fix: in each of `ExternalOpenSSL.cmake`, `ExternalOpenH264.cmake`,
-   `ExternalFFmpeg.cmake`, replace the `"PATH=...:$ENV{PATH}"` argument with
-   nothing (drop it — child process inherits parent PATH) OR change `:` to `;`.
-3. **GitHub Releases tarball downloads are flaky from current network.** Already
-   demonstrated: OpenSSL 52 MB pulls fine via `curl -L --retry 10` (24 MB/s here)
-   but CMake's `file(DOWNLOAD)` has no retry and aborts on first stall. Fix:
-   pre-stage tarballs into `.cxx/<hash>/<abi>/<pkg>-prefix/src/<file>.tar.gz`
-   with the exact filename CMake expects — CMake will verify SHA256 and skip the
-   download step.
-4. **OpenH264 uses GNU Make + perl + nasm.** The NDK 27 `make.exe` works, but
-   the OpenH264 makefile path was also hit by the `:` PATH separator bug. For
-   M2 verification we disabled OpenH264 (`-DWITH_OPENH264=OFF`) — FreeRDP falls
-   back to RFX / NSCodec, which still works with Windows 10/11 hosts though
-   without H.264/AVC 444 hardware acceleration. Re-enable later.
+## Recreate the patched FreeRDP tree
 
-## Recommended completion path
+After cloning and initializing submodules, keep the submodule at the official
+FreeRDP base and apply the tracked PocketRDP patch:
 
-**A. Local Windows finish (~1-2 hours):**
-1. Install Strawberry Perl Portable, prepend `<strawberry>\perl\bin` to User PATH.
-2. Apply the `:` → `;` (or "drop PATH=") patches to FreeRDP's `client/Android/cmake/External*.cmake`.
-3. Uncomment the `externalNativeBuild` block in `core-rdp/build.gradle.kts`.
-4. Pre-stage `openssl-3.6.2.tar.gz` and `v1.7.19.tar.gz` (cjson) and
-   `uriparser-1.0.0.tar.gz` to the matching `.cxx/<hash>/arm64-v8a/<pkg>-prefix/src/`.
-5. `./gradlew :core-rdp:externalNativeBuildDebug`.
+```powershell
+git submodule update --init third_party/FreeRDP
+.\scripts\apply-freerdp-patches.ps1
+```
 
-**B. WSL2 / Linux (~30 min, no Windows tooling issues):**
-- `apt install build-essential pkg-config perl nasm` then run the same Gradle
-  command — Linux has all of perl/make/pkg-config/path-sep correct out of the
-  box. This is the upstream "happy path".
+Use `-CheckOnly` to validate a clean official base without changing it. The helper
+refuses an unexpected FreeRDP commit or an unrelated dirty submodule.
+The WSL build driver invokes this helper automatically, so a clean checkout cannot
+silently rebuild the unpatched upstream JNI bridge.
 
-**C. GitHub Actions Ubuntu runner:**
-- Build `.so` files on CI, drop them into
-  `core-rdp/src/main/jniLibs/arm64-v8a/` as prebuilt artefacts, then the Gradle
-  build doesn't need any native toolchain at all on dev machines.
+## Build all four ABIs
 
-## Environment variables (already set in User PATH)
+Run from WSL2 Ubuntu at the repository root:
 
-- `%LOCALAPPDATA%\Android\Sdk\ndk\27.1.12297006\prebuilt\windows-x86_64\bin` (make.exe)
-- `%LOCALAPPDATA%\pkg-config\pkg-config-lite-0.28-1\bin` (pkg-config 0.28)
-- `C:\Program Files\Git\usr\bin` (perl 5.42.2 — needs Strawberry replacement for OpenSSL)
+```bash
+bash scripts/build-native-multiarch-in-wsl.sh \
+  arm64-v8a armeabi-v7a x86 x86_64
+```
+
+The script intentionally invokes Gradle once per ABI. OpenSSL and FFmpeg external
+projects share source trees and must not build concurrently. It:
+
+1. verifies or applies the exact audited FreeRDP patch;
+2. installs or verifies JDK 21, NDK 29, CMake 4.1.2 and Android API 37;
+3. verifies and reuses cached dependency archives;
+4. pre-stages the verified FFmpeg source;
+5. builds one ABI through `-PnativeAbi=<abi>`;
+6. stages all eight outputs from that invocation's active CMake configuration plus
+   the NDK's `libc++_shared.so`, and refuses an incomplete or mixed set;
+7. enforces the expected file count and ELF LOAD alignment; and
+8. restores the Windows `local.properties` through an exit trap.
+
+The former single-ABI command remains as a compatibility wrapper around the same
+validated multi-ABI driver:
+
+```bash
+bash scripts/build-native-in-wsl.sh
+```
+
+Do not attempt the native superbuild on Windows. OpenSSL's Perl/configure path model
+and FreeRDP's external-project environment are not supported there.
+
+## Shipped native stack
+
+Every ABI directory must contain exactly these nine files:
+
+```text
+libfreerdp-android.so
+libfreerdp3.so
+libfreerdp-client3.so
+libwinpr3.so
+libssl.so
+libcrypto.so
+libcjson.so
+liburiparser.so
+libc++_shared.so
+```
+
+H.264 uses Android MediaCodec first. A minimal FFmpeg H.264 decoder and swscale are
+linked statically into `libfreerdp3.so` as the fallback; there is no FFmpeg or
+OpenH264 shared library in the APK. Unused sensitive redirection clients
+(microphone, camera, printer, smart card, USB, serial, parallel, SSH agent and
+location) are compiled out.
+
+PocketRDP still enables the channels needed by its public features: graphics,
+dynamic display control, RDPEI touch, text clipboard, phone-storage drive
+redirection and remote audio playback.
+
+## 16 KB page-size requirement
+
+All 64-bit libraries (`arm64-v8a`, `x86_64`) must report `0x4000` LOAD alignment.
+The 32-bit ABIs may legitimately contain a mix of `0x4000` and `0x1000`.
+
+The requirement is enforced in three layers:
+
+- `core-rdp/build.gradle.kts`;
+- FreeRDP Android `ExternalDeps.cmake`; and
+- FreeRDP Android `ExternalFreeRDP.cmake`.
+
+Always inspect the post-strip libraries from the final APK as well as `jniLibs`;
+stale AGP merge outputs can otherwise hide a bad source artifact.
+
+## Windows packaging build
+
+Before invoking Gradle on Windows:
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+.\gradlew.bat :app:assembleDebug --no-configuration-cache --console=plain --no-daemon
+```
+
+If an interrupted WSL run leaves `local.properties` pointing at `/root/android-sdk`,
+restore the preserved `local.properties.windows-backup` before any Windows Gradle
+command.

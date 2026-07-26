@@ -23,7 +23,8 @@ import kotlinx.coroutines.delay
  *     server actually supports it. Otherwise the character is dropped (and logged, throttled)
  *     instead of killing the session.
  *
- * Iteration is by Unicode code point so astral-plane characters (emoji, rare CJK) survive.
+ * Iteration is by Unicode code point, then the RDP Unicode keyboard path emits its UTF-16 code
+ * units. The wire event carries one 16-bit unit, so astral characters require a surrogate pair.
  */
 object TextInputEncoder {
 
@@ -99,16 +100,17 @@ object TextInputEncoder {
                 if (shift) sendKey(ScancodeMap.VK.LSHIFT, false)
             }
             unicodeSupported -> {
-                sendUnicode(cp, true)
-                sendUnicode(cp, false)
+                Character.toChars(cp).forEach { codeUnit ->
+                    sendUnicode(codeUnit.code, true)
+                    sendUnicode(codeUnit.code, false)
+                }
             }
             else -> {
                 if (droppedNonAsciiLogCount < DROP_LOG_LIMIT) {
                     droppedNonAsciiLogCount++
                     PocketLogger.w(
                         TAG,
-                        "dropping non-ASCII input U+${cp.toString(16).uppercase()} — " +
-                            "server did not negotiate unicode keyboard input",
+                        "dropping unsupported non-ASCII input; server has no unicode keyboard input",
                     )
                 }
             }

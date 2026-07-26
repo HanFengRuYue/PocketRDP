@@ -108,4 +108,5 @@
         <item>Si existe Inicio automático o Segundo plano, actívalo para PocketRDP</item>
         <item>Bloquea PocketRDP en Recientes si el sistema lo permite</item>
     </string-array>
+    <string name="logs_export_failed">No se pudieron exportar los registros.</string>
 </resources>

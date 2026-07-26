@@ -29,8 +29,6 @@ import java.util.regex.Pattern;
 public class LibFreeRDP {
 
     private static final String TAG = "LibFreeRDP";
-    private static EventListener listener;
-    private static UIEventListener uiListener;
     private static boolean mHasH264 = false;
     private static final LongSparseArray<Boolean> mInstanceState = new LongSparseArray<>();
     private static final Map<Long, EventListener> eventListeners = new HashMap<>();
@@ -52,8 +50,9 @@ public class LibFreeRDP {
     private static boolean nativeReady = false;
 
     static {
-        // H.264 decode is provided by FFmpeg statically linked into libfreerdp3 (WITH_FFMPEG=ON,
-        // WITH_OPENH264=OFF), so there is no separate libopenh264.so to pre-load here.
+        // H.264 uses Android MediaCodec when available, with FFmpeg statically linked into
+        // libfreerdp3 as the software fallback (WITH_OPENH264=OFF). There is no separate
+        // libopenh264.so to pre-load here.
         try {
             System.loadLibrary("freerdp-android");
             String version = freerdp_get_jni_version();
@@ -77,11 +76,10 @@ public class LibFreeRDP {
             else throw new RuntimeException("Native library too old: " + version);
             nativeReady = true;
             Log.i(TAG, "Loaded FreeRDP " + version + ", H264=" + mHasH264);
-        } catch (Throwable e) {
-            // M2: native libs are not built yet (CMake superbuild deferred).
-            // Keep nativeReady=false so RdpClient can show a friendly "not ready" state
-            // instead of crashing the app on every connect.
-            Log.w(TAG, "Native FreeRDP library not available (M2 deferred): " + e);
+        } catch (LinkageError | RuntimeException e) {
+            // Keep nativeReady=false so a missing/incompatible packaged library produces a
+            // diagnostic UI state. Do not swallow fatal VM errors such as OutOfMemoryError.
+            Log.w(TAG, "Native FreeRDP library not available: " + e);
         }
     }
 
@@ -114,10 +112,9 @@ public class LibFreeRDP {
     // UDP transport counters/diagnostics:
     // [inBytes, outBytes, inPackets, outPackets, retransmits, failureStage, tunnelHr, socketError].
     private static native long[] freerdp_get_transport_stats(long inst);
+    public static native long freerdp_get_last_error_code(long inst);
     public static native String freerdp_get_last_error_string(long inst);
 
-    public static void setEventListener(EventListener l) { listener = l; }
-    public static void setUIEventListener(UIEventListener l) { uiListener = l; }
     public static void registerEventListener(long inst, EventListener l) {
         synchronized (eventListeners) { eventListeners.put(inst, l); }
     }
@@ -132,42 +129,58 @@ public class LibFreeRDP {
     }
     private static EventListener eventListenerFor(long inst) {
         synchronized (eventListeners) {
-            EventListener l = eventListeners.get(inst);
-            return l != null ? l : listener;
+            return eventListeners.get(inst);
         }
     }
     private static UIEventListener uiEventListenerFor(long inst) {
         synchronized (uiEventListeners) {
-            UIEventListener l = uiEventListeners.get(inst);
-            return l != null ? l : uiListener;
+            return uiEventListeners.get(inst);
         }
     }
 
     public static long newInstance(Context context) { return freerdp_new(context); }
 
     public static void freeInstance(long inst) {
+        final boolean active;
         synchronized (mInstanceState) {
-            if (mInstanceState.get(inst, false)) freerdp_disconnect(inst);
-            while (mInstanceState.get(inst, false)) {
-                try { mInstanceState.wait(); }
-                catch (InterruptedException ignored) { throw new RuntimeException(); }
-            }
+            active = mInstanceState.get(inst, false);
         }
+        // Never wait indefinitely for a callback to flip Java state. Native teardown aborts an
+        // in-progress handshake, waits for the worker with a bounded timeout, and safely defers the
+        // final free if a plugin is still stuck.
+        if (active) freerdp_disconnect(inst);
         freerdp_free(inst);
+        synchronized (mInstanceState) {
+            mInstanceState.remove(inst);
+            mInstanceState.notifyAll();
+        }
     }
 
     public static boolean connect(long inst) {
         synchronized (mInstanceState) {
             if (mInstanceState.get(inst, false)) throw new RuntimeException("already connected");
+            // freerdp_connect starts the native worker asynchronously. Mark the instance in-flight
+            // before JNI so an immediate disconnect/free cannot release it during the
+            // CreateThread -> OnPreConnect startup window.
+            mInstanceState.put(inst, true);
         }
-        return freerdp_connect(inst);
+        boolean started = freerdp_connect(inst);
+        if (!started) {
+            synchronized (mInstanceState) {
+                mInstanceState.put(inst, false);
+                mInstanceState.notifyAll();
+            }
+        }
+        return started;
     }
 
     public static boolean disconnect(long inst) {
+        final boolean active;
         synchronized (mInstanceState) {
-            if (mInstanceState.get(inst, false)) return freerdp_disconnect(inst);
-            return true;
+            active = mInstanceState.get(inst, false);
         }
+        // JNI may synchronously trigger callbacks that also acquire mInstanceState.
+        return !active || freerdp_disconnect(inst);
     }
 
     public static boolean cancelConnection(long inst) { return freerdp_disconnect(inst); }

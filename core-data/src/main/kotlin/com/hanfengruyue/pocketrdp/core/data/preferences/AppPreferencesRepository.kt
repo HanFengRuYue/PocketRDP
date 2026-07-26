@@ -52,10 +52,24 @@ class AppPreferencesRepository @Inject constructor(
                 themeMode = ThemeMode.entries.firstOrNull { it.value == prefs[KEY_THEME_MODE] }
                     ?: ThemeMode.SYSTEM,
                 languageTag = sanitizeLanguageTag(prefs[KEY_LANGUAGE_TAG]),
-                toolbarAlpha = (prefs[KEY_TOOLBAR_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
-                controlAlpha = (prefs[KEY_CONTROL_ALPHA] ?: DEFAULT_CHROME_ALPHA).coerceIn(MIN_ALPHA, MAX_ALPHA),
-                simulatedCursorScale = (prefs[KEY_SIMULATED_CURSOR_SCALE] ?: DEFAULT_SIMULATED_CURSOR_SCALE)
-                    .coerceIn(MIN_SIMULATED_CURSOR_SCALE, MAX_SIMULATED_CURSOR_SCALE),
+                toolbarAlpha = sanitizeFinitePreference(
+                    prefs[KEY_TOOLBAR_ALPHA],
+                    DEFAULT_CHROME_ALPHA,
+                    MIN_ALPHA,
+                    MAX_ALPHA,
+                ),
+                controlAlpha = sanitizeFinitePreference(
+                    prefs[KEY_CONTROL_ALPHA],
+                    DEFAULT_CHROME_ALPHA,
+                    MIN_ALPHA,
+                    MAX_ALPHA,
+                ),
+                simulatedCursorScale = sanitizeFinitePreference(
+                    prefs[KEY_SIMULATED_CURSOR_SCALE],
+                    DEFAULT_SIMULATED_CURSOR_SCALE,
+                    MIN_SIMULATED_CURSOR_SCALE,
+                    MAX_SIMULATED_CURSOR_SCALE,
+                ),
                 functionToolbarQuickIds = sanitizeFunctionToolbarQuickIds(
                     prefs[KEY_FUNCTION_TOOLBAR_QUICK_IDS]
                         ?.split(TOOLBAR_ID_SEPARATOR)
@@ -80,16 +94,32 @@ class AppPreferencesRepository @Inject constructor(
     }
 
     suspend fun setToolbarAlpha(alpha: Float) {
-        context.appPreferencesDataStore.edit { it[KEY_TOOLBAR_ALPHA] = alpha.coerceIn(MIN_ALPHA, MAX_ALPHA) }
+        context.appPreferencesDataStore.edit {
+            it[KEY_TOOLBAR_ALPHA] = sanitizeFinitePreference(
+                alpha,
+                DEFAULT_CHROME_ALPHA,
+                MIN_ALPHA,
+                MAX_ALPHA,
+            )
+        }
     }
 
     suspend fun setControlAlpha(alpha: Float) {
-        context.appPreferencesDataStore.edit { it[KEY_CONTROL_ALPHA] = alpha.coerceIn(MIN_ALPHA, MAX_ALPHA) }
+        context.appPreferencesDataStore.edit {
+            it[KEY_CONTROL_ALPHA] = sanitizeFinitePreference(
+                alpha,
+                DEFAULT_CHROME_ALPHA,
+                MIN_ALPHA,
+                MAX_ALPHA,
+            )
+        }
     }
 
     suspend fun setSimulatedCursorScale(scale: Float) {
         context.appPreferencesDataStore.edit {
-            it[KEY_SIMULATED_CURSOR_SCALE] = scale.coerceIn(
+            it[KEY_SIMULATED_CURSOR_SCALE] = sanitizeFinitePreference(
+                scale,
+                DEFAULT_SIMULATED_CURSOR_SCALE,
                 MIN_SIMULATED_CURSOR_SCALE,
                 MAX_SIMULATED_CURSOR_SCALE,
             )
@@ -162,3 +192,10 @@ private const val MAX_ALPHA = 1f
 const val DEFAULT_SIMULATED_CURSOR_SCALE = 1f
 const val MIN_SIMULATED_CURSOR_SCALE = 0.75f
 const val MAX_SIMULATED_CURSOR_SCALE = 2f
+
+internal fun sanitizeFinitePreference(
+    value: Float?,
+    default: Float,
+    minimum: Float,
+    maximum: Float,
+): Float = value?.takeIf(Float::isFinite)?.coerceIn(minimum, maximum) ?: default

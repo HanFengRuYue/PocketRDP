@@ -26,4 +26,15 @@ interface ConnectionDao {
 
     @Query("UPDATE connections SET cert_thumb_sha256 = :thumb WHERE id = :id")
     suspend fun setCertThumbprint(id: Long, thumb: String)
+
+    @Query(
+        """
+        UPDATE connections
+        SET password_cipher = :ciphertext,
+            password_iv = :iv,
+            password_aad_version = 1
+        WHERE id = :id AND password_aad_version = 0
+        """,
+    )
+    suspend fun upgradeLegacyCredentialBinding(id: Long, ciphertext: ByteArray, iv: ByteArray)
 }

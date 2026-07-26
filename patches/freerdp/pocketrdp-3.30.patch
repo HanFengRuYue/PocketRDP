@@ -1,0 +1,3575 @@
+diff --git a/channels/cliprdr/client/cliprdr_main.c b/channels/cliprdr/client/cliprdr_main.c
+index 9640a93c..e86a6b00 100644
+--- a/channels/cliprdr/client/cliprdr_main.c
++++ b/channels/cliprdr/client/cliprdr_main.c
+@@ -42,6 +42,8 @@
+ const char type_FileGroupDescriptorW[] = "FileGroupDescriptorW";
+ const char type_FileContents[] = "FileContents";
+ 
++#define POCKETRDP_CLIPRDR_MAX_PDU_BYTES ((1024u * 1024u) + 8u)
++
+ CliprdrClientContext* cliprdr_get_client_interface(cliprdrPlugin* cliprdr)
+ {
+ 	CliprdrClientContext* pInterface = nullptr;
+@@ -982,6 +984,15 @@ static VOID VCAPITYPE cliprdr_virtual_channel_open_event_ex(LPVOID lpUserParam,
+ 				WLog_Print(cliprdr->log, WLOG_ERROR, "error no match");
+ 				return;
+ 			}
++			/* PocketRDP only exposes text clipboard data and applies the same 1 MiB payload
++			 * ceiling in its Android callback. Reject an oversized fragmented PDU before
++			 * channel_client_post_message allocates a totalLength-sized reassembly buffer. */
++			if (totalLength > POCKETRDP_CLIPRDR_MAX_PDU_BYTES)
++			{
++				WLog_Print(cliprdr->log, WLOG_WARN,
++				           "dropping oversized clipboard PDU (%" PRIu32 " bytes)", totalLength);
++				return;
++			}
+ 			if ((error = channel_client_post_message(cliprdr->MsgsHandle, pData, dataLength,
+ 			                                         totalLength, dataFlags)))
+ 				WLog_Print(cliprdr->log, WLOG_ERROR, "failed with error %" PRIu32 "", error);
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt b/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt
+index 2add2262..79fcfce8 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt
+@@ -47,6 +47,9 @@ detect_ndk_host_platform(NDK_HOST_PLATFORM)
+ get_android_api_level(NDK_API_LEVEL)
+ 
+ include(ExternalDeps)
++
++# FreeRDP itself — DEPENDS on everything above.
++# Also defines IMPORTED targets: freerdp3-lib, freerdp-client3-lib, winpr3-lib
+ set(${MODULE_PREFIX}_SRCS
+     android_cliprdr.c
+     android_cliprdr.h
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_cliprdr.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_cliprdr.c
+index dc418542..6aa5cb07 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_cliprdr.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_cliprdr.c
+@@ -28,11 +28,17 @@
+ 
+ #include <freerdp/client/channels.h>
+ #include <freerdp/client/cliprdr.h>
++#include <freerdp/log.h>
+ 
+ #include "android_cliprdr.h"
+ #include "android_jni_utils.h"
+ #include "android_jni_callback.h"
+ 
++#define TAG CLIENT_TAG("android.cliprdr")
++#define ANDROID_CLIPBOARD_MAX_BYTES (1024u * 1024u)
++#define ANDROID_CLIPBOARD_MAX_FORMATS 4096u
++#define ANDROID_CLIPBOARD_MAX_FORMAT_NAME_BYTES 256u
++
+ UINT android_cliprdr_send_client_format_list(CliprdrClientContext* cliprdr)
+ {
+ 	UINT rc = ERROR_INTERNAL_ERROR;
+@@ -53,9 +59,11 @@ UINT android_cliprdr_send_client_format_list(CliprdrClientContext* cliprdr)
+ 
+ 	pFormatIds = nullptr;
+ 	numFormats = ClipboardGetFormatIds(afc->clipboard, &pFormatIds);
+-	formats = (CLIPRDR_FORMAT*)calloc(numFormats, sizeof(CLIPRDR_FORMAT));
++	if (numFormats > ANDROID_CLIPBOARD_MAX_FORMATS || (numFormats > 0 && !pFormatIds))
++		goto fail;
++	formats = numFormats > 0 ? (CLIPRDR_FORMAT*)calloc(numFormats, sizeof(CLIPRDR_FORMAT)) : nullptr;
+ 
+-	if (!formats)
++	if (numFormats > 0 && !formats)
+ 		goto fail;
+ 
+ 	for (UINT32 index = 0; index < numFormats; index++)
+@@ -67,6 +75,9 @@ UINT android_cliprdr_send_client_format_list(CliprdrClientContext* cliprdr)
+ 
+ 		if ((formatId > CF_MAX) && formatName)
+ 		{
++			if (strnlen(formatName, ANDROID_CLIPBOARD_MAX_FORMAT_NAME_BYTES + 1u) >
++			    ANDROID_CLIPBOARD_MAX_FORMAT_NAME_BYTES)
++				goto fail;
+ 			formats[index].formatName = _strdup(formatName);
+ 
+ 			if (!formats[index].formatName)
+@@ -84,11 +95,34 @@ UINT android_cliprdr_send_client_format_list(CliprdrClientContext* cliprdr)
+ 
+ 	rc = afc->cliprdr->ClientFormatList(afc->cliprdr, &formatList);
+ fail:
++	if (formats)
++	{
++		for (UINT32 index = 0; index < numFormats; index++)
++			free(formats[index].formatName);
++	}
+ 	free(pFormatIds);
+ 	free(formats);
+ 	return rc;
+ }
+ 
++static UINT32 android_cliprdr_preferred_text_format(const androidContext* afc)
++{
++	if (!afc || (afc->numServerFormats > 0 && !afc->serverFormats))
++		return 0;
++
++	BOOL hasAnsiText = FALSE;
++	for (UINT32 index = 0; index < afc->numServerFormats; index++)
++	{
++		const UINT32 formatId = afc->serverFormats[index].formatId;
++		if (formatId == CF_UNICODETEXT)
++			return CF_UNICODETEXT;
++		if (formatId == CF_TEXT)
++			hasAnsiText = TRUE;
++	}
++
++	return hasAnsiText ? CF_TEXT : 0;
++}
++
+ static UINT android_cliprdr_send_client_format_data_request(CliprdrClientContext* cliprdr,
+                                                             UINT32 formatId)
+ {
+@@ -103,17 +137,74 @@ static UINT android_cliprdr_send_client_format_data_request(CliprdrClientContext
+ 
+ 	if (!afc || !afc->clipboardRequestEvent || !cliprdr->ClientFormatDataRequest)
+ 		goto fail;
++	if (afc->clipboardRequestPending)
++		return ERROR_BUSY;
+ 
+ 	formatDataRequest.common.msgType = CB_FORMAT_DATA_REQUEST;
+ 	formatDataRequest.common.msgFlags = 0;
+ 	formatDataRequest.requestedFormatId = formatId;
+ 	afc->requestedFormatId = formatId;
++	afc->clipboardRequestPending = TRUE;
+ 	(void)ResetEvent(afc->clipboardRequestEvent);
+ 	rc = cliprdr->ClientFormatDataRequest(cliprdr, &formatDataRequest);
++	if (rc != CHANNEL_RC_OK)
++	{
++		afc->requestedFormatId = 0;
++		afc->clipboardRequestPending = FALSE;
++		(void)SetEvent(afc->clipboardRequestEvent);
++	}
+ fail:
+ 	return rc;
+ }
+ 
++static UINT android_cliprdr_request_preferred_text_format(CliprdrClientContext* cliprdr)
++{
++	if (!cliprdr)
++		return ERROR_INVALID_PARAMETER;
++
++	androidContext* afc = (androidContext*)cliprdr->custom;
++	if (!afc)
++		return ERROR_INVALID_PARAMETER;
++
++	/* CLIPRDR format-data responses carry no requested format ID, so never allow a second request
++	 * to overwrite the association. Collapse any number of newer lists into one refresh of the
++	 * latest stored list after the current response completes. */
++	if (afc->clipboardRequestPending)
++	{
++		afc->clipboardFormatListPending = TRUE;
++		return CHANNEL_RC_OK;
++	}
++
++	const UINT32 formatId = android_cliprdr_preferred_text_format(afc);
++	if (formatId == 0)
++		return CHANNEL_RC_OK;
++	return android_cliprdr_send_client_format_data_request(cliprdr, formatId);
++}
++
++static void android_cliprdr_complete_server_format_data_request(CliprdrClientContext* cliprdr)
++{
++	if (!cliprdr)
++		return;
++
++	androidContext* afc = (androidContext*)cliprdr->custom;
++	if (!afc)
++		return;
++
++	const BOOL requestLatest = afc->clipboardFormatListPending;
++	afc->requestedFormatId = 0;
++	afc->clipboardRequestPending = FALSE;
++	afc->clipboardFormatListPending = FALSE;
++	if (afc->clipboardRequestEvent)
++		(void)SetEvent(afc->clipboardRequestEvent);
++
++	if (requestLatest)
++	{
++		const UINT rc = android_cliprdr_request_preferred_text_format(cliprdr);
++		if (rc != CHANNEL_RC_OK)
++			WLog_WARN(TAG, "requesting the latest remote clipboard failed: %" PRIu32, rc);
++	}
++}
++
+ static UINT android_cliprdr_send_client_capabilities(CliprdrClientContext* cliprdr)
+ {
+ 	CLIPRDR_CAPABILITIES capabilities;
+@@ -204,8 +295,6 @@ static UINT android_cliprdr_server_capabilities(CliprdrClientContext* cliprdr,
+ static UINT android_cliprdr_server_format_list(CliprdrClientContext* cliprdr,
+                                                const CLIPRDR_FORMAT_LIST* formatList)
+ {
+-	UINT rc;
+-	CLIPRDR_FORMAT* format;
+ 	androidContext* afc;
+ 
+ 	if (!cliprdr || !formatList)
+@@ -227,7 +316,13 @@ static UINT android_cliprdr_server_format_list(CliprdrClientContext* cliprdr,
+ 	}
+ 
+ 	if (formatList->numFormats < 1)
+-		return CHANNEL_RC_OK;
++		return android_cliprdr_request_preferred_text_format(cliprdr);
++	if (!formatList->formats || formatList->numFormats > ANDROID_CLIPBOARD_MAX_FORMATS)
++	{
++		WLog_WARN(TAG, "remote clipboard format list rejected: %" PRIu32 " entries",
++		          formatList->numFormats);
++		return ERROR_INVALID_DATA;
++	}
+ 
+ 	afc->numServerFormats = formatList->numFormats;
+ 	afc->serverFormats = (CLIPRDR_FORMAT*)calloc(afc->numServerFormats, sizeof(CLIPRDR_FORMAT));
+@@ -242,53 +337,34 @@ static UINT android_cliprdr_server_format_list(CliprdrClientContext* cliprdr,
+ 
+ 		if (formatList->formats[index].formatName)
+ 		{
++			if (strnlen(formatList->formats[index].formatName,
++			            ANDROID_CLIPBOARD_MAX_FORMAT_NAME_BYTES + 1u) >
++			    ANDROID_CLIPBOARD_MAX_FORMAT_NAME_BYTES)
++			{
++				for (UINT32 cleanup = 0; cleanup < afc->numServerFormats; cleanup++)
++					free(afc->serverFormats[cleanup].formatName);
++				free(afc->serverFormats);
++				afc->serverFormats = nullptr;
++				afc->numServerFormats = 0;
++				return ERROR_INVALID_DATA;
++			}
+ 			afc->serverFormats[index].formatName = _strdup(formatList->formats[index].formatName);
+ 
+ 			if (!afc->serverFormats[index].formatName)
++			{
++				for (UINT32 cleanup = 0; cleanup < afc->numServerFormats; cleanup++)
++					free(afc->serverFormats[cleanup].formatName);
++				free(afc->serverFormats);
++				afc->serverFormats = nullptr;
++				afc->numServerFormats = 0;
+ 				return CHANNEL_RC_NO_MEMORY;
++			}
+ 		}
+ 	}
+ 
+-	/* Text formats take priority over image formats. Request the best available text format
+-	 * first; if none is found, fall back to image. */
+-	for (UINT32 index = 0; index < afc->numServerFormats; index++)
+-	{
+-		format = &(afc->serverFormats[index]);
+-
+-		if (format->formatId == CF_UNICODETEXT)
+-		{
+-			if ((rc = android_cliprdr_send_client_format_data_request(cliprdr, CF_UNICODETEXT)) !=
+-			    CHANNEL_RC_OK)
+-				return rc;
+-
+-			return CHANNEL_RC_OK;
+-		}
+-		else if (format->formatId == CF_TEXT)
+-		{
+-			if ((rc = android_cliprdr_send_client_format_data_request(cliprdr, CF_TEXT)) !=
+-			    CHANNEL_RC_OK)
+-				return rc;
+-
+-			return CHANNEL_RC_OK;
+-		}
+-	}
+-
+-	/* No text format found — request the first available image format. */
+-	for (UINT32 index = 0; index < afc->numServerFormats; index++)
+-	{
+-		format = &(afc->serverFormats[index]);
+-
+-		if (format->formatId == CF_DIB || format->formatId == CF_DIBV5)
+-		{
+-			if ((rc = android_cliprdr_send_client_format_data_request(cliprdr, format->formatId)) !=
+-			    CHANNEL_RC_OK)
+-				return rc;
+-
+-			break;
+-		}
+-	}
+-
+-	return CHANNEL_RC_OK;
++	/* PocketRDP's Java bridge supports text only. The helper scans the whole list so an ANSI
++	 * advertisement that happens to come first can never mask a later Unicode format. */
++	return android_cliprdr_request_preferred_text_format(cliprdr);
+ }
+ 
+ /**
+@@ -361,6 +437,13 @@ android_cliprdr_server_format_data_request(CliprdrClientContext* cliprdr,
+ 
+ 	formatId = formatDataRequest->requestedFormatId;
+ 	data = (BYTE*)ClipboardGetData(afc->clipboard, formatId, &size);
++	if (size > ANDROID_CLIPBOARD_MAX_BYTES)
++	{
++		WLog_WARN(TAG, "local clipboard payload rejected: %" PRIu32 " bytes exceeds cap", size);
++		free(data);
++		data = nullptr;
++		size = 0;
++	}
+ 	response.common.msgFlags = CB_RESPONSE_OK;
+ 	response.common.dataLen = size;
+ 	response.requestedFormatData = data;
+@@ -386,98 +469,78 @@ static UINT
+ android_cliprdr_server_format_data_response(CliprdrClientContext* cliprdr,
+                                             const CLIPRDR_FORMAT_DATA_RESPONSE* formatDataResponse)
+ {
+-	CLIPRDR_FORMAT* format = nullptr;
+-
+ 	if (!cliprdr || !formatDataResponse)
+ 		return ERROR_INVALID_PARAMETER;
+ 
+ 	androidContext* afc = (androidContext*)cliprdr->custom;
+-
+ 	if (!afc)
+ 		return ERROR_INVALID_PARAMETER;
+ 
+ 	freerdp* instance = ((rdpContext*)afc)->instance;
+-
+ 	if (!instance)
+ 		return ERROR_INVALID_PARAMETER;
+ 
+-	for (UINT32 index = 0; index < afc->numServerFormats; index++)
++	if (!afc->clipboardRequestPending)
+ 	{
+-		if (afc->requestedFormatId == afc->serverFormats[index].formatId)
+-			format = &(afc->serverFormats[index]);
++		WLog_WARN(TAG, "unsolicited remote clipboard response ignored");
++		return CHANNEL_RC_OK;
+ 	}
+ 
+-	if (!format)
++	const UINT32 formatId = afc->requestedFormatId;
++
++	/* A newer FormatList supersedes this response. Do not briefly publish stale clipboard data;
++	 * completion below immediately requests the preferred text format from the latest list. */
++	if (afc->clipboardFormatListPending)
++		goto complete;
++	if ((formatDataResponse->common.msgFlags & CB_RESPONSE_FAIL) != 0)
++		goto complete;
++	if (formatId != CF_TEXT && formatId != CF_UNICODETEXT)
+ 	{
+-		(void)SetEvent(afc->clipboardRequestEvent);
+-		return ERROR_INTERNAL_ERROR;
++		/* PocketRDP exposes text clipboard synchronization only. Do not decode unsolicited image
++		 * or custom payloads that have no Java consumer. */
++		goto complete;
+ 	}
+ 
+-	UINT32 formatId = format->formatId;
+-	if (format->formatName)
+-		formatId = ClipboardRegisterFormat(afc->clipboard, format->formatName);
+-
+-	uint32_t size = formatDataResponse->common.dataLen;
+-
+-	if (!ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size))
+-		return ERROR_INTERNAL_ERROR;
++	UINT32 size = formatDataResponse->common.dataLen;
++	if (size > ANDROID_CLIPBOARD_MAX_BYTES)
++	{
++		WLog_WARN(TAG, "remote clipboard payload rejected: %" PRIu32 " bytes exceeds cap", size);
++		goto complete;
++	}
+ 
+-	(void)SetEvent(afc->clipboardRequestEvent);
++	if ((size > 0 && !formatDataResponse->requestedFormatData) ||
++	    !ClipboardSetData(afc->clipboard, formatId, formatDataResponse->requestedFormatData, size))
++	{
++		WLog_WARN(TAG, "remote clipboard payload conversion failed (non-fatal)");
++		goto complete;
++	}
+ 
+-	switch (formatId)
++	JNIEnv* env = nullptr;
++	const UINT32 plainFormatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
++	char* data = (char*)ClipboardGetData(afc->clipboard, plainFormatId, &size);
++	if (data)
+ 	{
+-		case CF_TEXT:
+-		case CF_UNICODETEXT:
++		const jboolean attached = jni_attach_thread(&env);
++		if (env)
+ 		{
+-			JNIEnv* env = nullptr;
+-			UINT32 plainFormatId = ClipboardRegisterFormat(afc->clipboard, "text/plain");
+-			char* data = (char*)ClipboardGetData(afc->clipboard, plainFormatId, &size);
+-			if (!data)
+-				break;
+-			jboolean attached = jni_attach_thread(&env);
+ 			size = strnlen(data, size);
+-			jstring jdata = jniNewStringUTF(env, data, size);
+-			freerdp_callback("OnRemoteClipboardChanged", "(JLjava/lang/String;)V", (jlong)instance,
+-			                 jdata);
+-			(*env)->DeleteLocalRef(env, jdata);
+-			free(data);
+-
+-			if (attached == JNI_TRUE)
+-				jni_detach_thread();
+-		}
+-		break;
+-		case CF_DIB:
+-		case CF_DIBV5:
+-		{
+-			UINT32 pngFormatId = ClipboardRegisterFormat(afc->clipboard, "image/png");
+-			BYTE* pngData = (BYTE*)ClipboardGetData(afc->clipboard, pngFormatId, &size);
+-
+-			if (pngData)
++			jstring jdata = jniNewStringUTF(env, data, (int)size);
++			if (jdata && !(*env)->ExceptionCheck(env))
+ 			{
+-				JNIEnv* env = nullptr;
+-				jboolean attached = jni_attach_thread(&env);
+-				jbyteArray jpngData = (*env)->NewByteArray(env, (jsize)size);
+-
+-				if (jpngData)
+-				{
+-					(*env)->SetByteArrayRegion(env, jpngData, 0, (jsize)size,
+-					                           (const jbyte*)pngData);
+-					freerdp_callback("OnRemoteClipboardImageChanged", "(J[B)V", (jlong)instance,
+-					                 jpngData);
+-					(*env)->DeleteLocalRef(env, jpngData);
+-				}
+-
+-				free(pngData);
+-
+-				if (attached == JNI_TRUE)
+-					jni_detach_thread();
++				freerdp_callback("OnRemoteClipboardChanged", "(JLjava/lang/String;)V",
++				                 (jlong)instance, jdata);
++				(*env)->DeleteLocalRef(env, jdata);
+ 			}
++			if ((*env)->ExceptionCheck(env))
++				(*env)->ExceptionClear(env);
+ 		}
+-		break;
+-		default:
+-			break;
++		free(data);
++		if (attached == JNI_TRUE)
++			jni_detach_thread();
+ 	}
+ 
++complete:
++	android_cliprdr_complete_server_format_data_request(cliprdr);
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -528,6 +591,9 @@ BOOL android_cliprdr_init(androidContext* afc, CliprdrClientContext* cliprdr)
+ 
+ 	afc->cliprdr = cliprdr;
+ 	afc->clipboard = clipboard;
++	afc->requestedFormatId = 0;
++	afc->clipboardRequestPending = FALSE;
++	afc->clipboardFormatListPending = FALSE;
+ 	afc->clipboardRequestEvent = hevent;
+ 	cliprdr->custom = (void*)afc;
+ 	cliprdr->MonitorReady = android_cliprdr_monitor_ready;
+@@ -550,7 +616,19 @@ BOOL android_cliprdr_uninit(androidContext* afc, CliprdrClientContext* cliprdr)
+ 
+ 	cliprdr->custom = nullptr;
+ 	afc->cliprdr = nullptr;
+-	ClipboardDestroy(afc->clipboard);
+-	(void)CloseHandle(afc->clipboardRequestEvent);
++	for (UINT32 index = 0; index < afc->numServerFormats; index++)
++		free(afc->serverFormats[index].formatName);
++	free(afc->serverFormats);
++	afc->serverFormats = nullptr;
++	afc->numServerFormats = 0;
++	afc->requestedFormatId = 0;
++	afc->clipboardRequestPending = FALSE;
++	afc->clipboardFormatListPending = FALSE;
++	if (afc->clipboard)
++		ClipboardDestroy(afc->clipboard);
++	afc->clipboard = nullptr;
++	if (afc->clipboardRequestEvent)
++		(void)CloseHandle(afc->clipboardRequestEvent);
++	afc->clipboardRequestEvent = nullptr;
+ 	return TRUE;
+ }
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.c
+index c76f8e58..0031382c 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.c
+@@ -20,6 +20,7 @@
+ #include <freerdp/config.h>
+ 
+ #include <winpr/assert.h>
++#include <winpr/interlocked.h>
+ #include <winpr/wlog.h>
+ 
+ #include <freerdp/channels/disp.h>
+@@ -35,6 +36,7 @@ BOOL android_disp_init(androidContext* afc, DispClientContext* disp)
+ 	WINPR_ASSERT(disp);
+ 
+ 	afc->disp = disp;
++	(void)InterlockedExchange(&afc->dispReady, 1);
+ 	disp->custom = afc;
+ 
+ 	WLog_DBG(TAG, "disp channel connected");
+@@ -44,13 +46,24 @@ BOOL android_disp_init(androidContext* afc, DispClientContext* disp)
+ BOOL android_disp_uninit(androidContext* afc, DispClientContext* disp)
+ {
+ 	WINPR_ASSERT(afc);
+-	WINPR_UNUSED(disp);
+-
+-	afc->disp = nullptr;
++	if (afc->disp == disp)
++	{
++		/* Publish "not ready" before dropping the worker-owned pointer. JNI threads only inspect
++		 * this atomic readiness snapshot; they never dereference the channel context. */
++		(void)InterlockedExchange(&afc->dispReady, 0);
++		afc->disp = nullptr;
++	}
+ 	WLog_DBG(TAG, "disp channel disconnected");
+ 	return TRUE;
+ }
+ 
++BOOL android_disp_is_ready(androidContext* afc)
++{
++	if (!afc)
++		return FALSE;
++	return InterlockedCompareExchange(&afc->dispReady, 0, 0) != 0;
++}
++
+ BOOL android_disp_send_monitor_layout(androidContext* afc, UINT32 width, UINT32 height)
+ {
+ 	WINPR_ASSERT(afc);
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.h b/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.h
+index c58d3633..db7b64b8 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.h
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_disp.h
+@@ -27,6 +27,7 @@
+ 
+ FREERDP_LOCAL BOOL android_disp_init(androidContext* afc, DispClientContext* disp);
+ FREERDP_LOCAL BOOL android_disp_uninit(androidContext* afc, DispClientContext* disp);
++FREERDP_LOCAL BOOL android_disp_is_ready(androidContext* afc);
+ FREERDP_LOCAL BOOL android_disp_send_monitor_layout(androidContext* afc, UINT32 width,
+                                                     UINT32 height);
+ 
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.c
+index ae8aa240..dde444e4 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.c
+@@ -15,67 +15,257 @@
+ #include <winpr/crt.h>
+ 
+ #include <freerdp/freerdp.h>
++#include <freerdp/input.h>
+ #include <freerdp/log.h>
+ 
+ #define TAG CLIENT_TAG("android")
+ 
+ #include "android_freerdp.h"
+ #include "android_cliprdr.h"
++#include "android_disp.h"
+ 
+-BOOL android_push_event(freerdp* inst, ANDROID_EVENT* event)
++#define ANDROID_EVENT_QUEUE_CAPACITY 1024ull
++#define ANDROID_EVENT_CONTROL_RESERVE 512ull
++#define ANDROID_CLIPBOARD_MAX_BYTES (1024ull * 1024ull)
++
++static BOOL android_event_is_cursor_move(const ANDROID_EVENT* event)
+ {
+-	androidContext* aCtx = (androidContext*)inst->context;
++	if (!event || event->type != EVENT_TYPE_CURSOR)
++		return FALSE;
++	const ANDROID_EVENT_CURSOR* cursor = (const ANDROID_EVENT_CURSOR*)event;
++	return cursor->flags == PTR_FLAGS_MOVE;
++}
+ 
+-	if (aCtx->event_queue->count >= aCtx->event_queue->size)
++static BOOL android_event_is_release(const ANDROID_EVENT* event)
++{
++	if (!event)
++		return FALSE;
++
++	switch (event->type)
+ 	{
+-		size_t new_size = aCtx->event_queue->size;
+-		do
++		case EVENT_TYPE_KEY:
++		case EVENT_TYPE_KEY_UNICODE:
++			return (((const ANDROID_EVENT_KEY*)event)->flags & KBD_FLAGS_RELEASE) != 0;
++		case EVENT_TYPE_CURSOR:
+ 		{
+-			if (new_size >= SIZE_MAX - 128ull)
+-				return FALSE;
++			const UINT16 flags = ((const ANDROID_EVENT_CURSOR*)event)->flags;
++			const UINT16 buttons = PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3;
++			return (flags & buttons) != 0 && (flags & PTR_FLAGS_DOWN) == 0;
++		}
++		case EVENT_TYPE_TOUCH:
++			return ((const ANDROID_EVENT_TOUCH*)event)->action == ANDROID_TOUCH_UP;
++		case EVENT_TYPE_DISCONNECT:
++			return TRUE;
++		default:
++			return FALSE;
++	}
++}
+ 
+-			new_size += 128ull;
+-		} while (new_size <= aCtx->event_queue->count);
+-		void* new_events =
+-		    realloc((void*)aCtx->event_queue->events, sizeof(ANDROID_EVENT*) * new_size);
++static BOOL android_event_is_coalescible(const ANDROID_EVENT* event)
++{
++	if (!event)
++		return FALSE;
++	if (android_event_is_cursor_move(event) || event->type == EVENT_TYPE_CLIPBOARD ||
++	    event->type == EVENT_TYPE_MONITOR_LAYOUT)
++		return TRUE;
++	return event->type == EVENT_TYPE_TOUCH &&
++	       ((const ANDROID_EVENT_TOUCH*)event)->action == ANDROID_TOUCH_MOVE;
++}
+ 
+-		if (!new_events)
+-			return FALSE;
++static size_t android_event_queue_index(const ANDROID_EVENT_QUEUE* queue, size_t logical)
++{
++	return (queue->head + logical) % queue->capacity;
++}
+ 
+-		aCtx->event_queue->events = new_events;
+-		aCtx->event_queue->size = new_size;
+-	}
++static ANDROID_EVENT* android_event_queue_at(const ANDROID_EVENT_QUEUE* queue, size_t logical)
++{
++	return queue->events[android_event_queue_index(queue, logical)];
++}
+ 
+-	aCtx->event_queue->events[(aCtx->event_queue->count)++] = event;
+-	return SetEvent(aCtx->event_queue->isSet);
++static BOOL android_events_can_replace(const ANDROID_EVENT* queued, const ANDROID_EVENT* incoming)
++{
++	if (!queued || !incoming || queued->type != incoming->type)
++		return FALSE;
++
++	switch (incoming->type)
++	{
++		case EVENT_TYPE_CURSOR:
++			return android_event_is_cursor_move(queued) && android_event_is_cursor_move(incoming);
++		case EVENT_TYPE_TOUCH:
++		{
++			const ANDROID_EVENT_TOUCH* oldTouch = (const ANDROID_EVENT_TOUCH*)queued;
++			const ANDROID_EVENT_TOUCH* newTouch = (const ANDROID_EVENT_TOUCH*)incoming;
++			return oldTouch->action == ANDROID_TOUCH_MOVE &&
++			       newTouch->action == ANDROID_TOUCH_MOVE &&
++			       oldTouch->contactId == newTouch->contactId;
++		}
++		case EVENT_TYPE_CLIPBOARD:
++		case EVENT_TYPE_MONITOR_LAYOUT:
++			return TRUE;
++		default:
++			return FALSE;
++	}
+ }
+ 
+-static ANDROID_EVENT* android_peek_event(ANDROID_EVENT_QUEUE* queue)
++static BOOL android_events_are_duplicate_releases(const ANDROID_EVENT* queued,
++                                                  const ANDROID_EVENT* incoming)
+ {
+-	ANDROID_EVENT* event;
++	if (!android_event_is_release(queued) || !android_event_is_release(incoming) ||
++	    queued->type != incoming->type)
++		return FALSE;
+ 
+-	if (queue->count < 1)
+-		return nullptr;
++	switch (incoming->type)
++	{
++		case EVENT_TYPE_KEY:
++		case EVENT_TYPE_KEY_UNICODE:
++			return ((const ANDROID_EVENT_KEY*)queued)->scancode ==
++			       ((const ANDROID_EVENT_KEY*)incoming)->scancode;
++		case EVENT_TYPE_CURSOR:
++			return ((const ANDROID_EVENT_CURSOR*)queued)->flags ==
++			       ((const ANDROID_EVENT_CURSOR*)incoming)->flags;
++		case EVENT_TYPE_TOUCH:
++			return ((const ANDROID_EVENT_TOUCH*)queued)->contactId ==
++			       ((const ANDROID_EVENT_TOUCH*)incoming)->contactId;
++		case EVENT_TYPE_DISCONNECT:
++			return TRUE;
++		default:
++			return FALSE;
++	}
++}
+ 
+-	event = queue->events[0];
+-	return event;
++static void android_event_queue_remove(ANDROID_EVENT_QUEUE* queue, size_t logical)
++{
++	WINPR_ASSERT(queue);
++	WINPR_ASSERT(logical < queue->count);
++
++	const size_t removed = android_event_queue_index(queue, logical);
++	android_event_free(queue->events[removed]);
++	for (size_t pos = logical; pos + 1 < queue->count; pos++)
++	{
++		const size_t dst = android_event_queue_index(queue, pos);
++		const size_t src = android_event_queue_index(queue, pos + 1);
++		queue->events[dst] = queue->events[src];
++	}
++	queue->count--;
++	queue->tail = (queue->head + queue->count) % queue->capacity;
++	queue->events[queue->tail] = nullptr;
+ }
+ 
+-static ANDROID_EVENT* android_pop_event(ANDROID_EVENT_QUEUE* queue)
++BOOL android_push_event(freerdp* inst, ANDROID_EVENT* event)
+ {
+-	ANDROID_EVENT* event;
++	if (!inst || !inst->context || !event)
++		return FALSE;
+ 
+-	if (queue->count < 1)
+-		return nullptr;
++	androidContext* aCtx = (androidContext*)inst->context;
++	ANDROID_EVENT_QUEUE* queue = aCtx->event_queue;
++	if (!queue || !queue->lockInitialized)
++		return FALSE;
++
++	BOOL rc = FALSE;
++	EnterCriticalSection(&queue->lock);
++	if (queue->shuttingDown)
++		goto out;
++
++	/* Consecutive high-rate updates are losslessly represented by their newest value. Never
++	 * coalesce across a control event: clipboard then Ctrl+V ordering, button coordinates and touch
++	 * phases all depend on that boundary. */
++	if (queue->count > 0)
++	{
++		const size_t lastIndex = android_event_queue_index(queue, queue->count - 1);
++		ANDROID_EVENT* last = queue->events[lastIndex];
++		if (android_events_can_replace(last, event))
++		{
++			queue->events[lastIndex] = event;
++			android_event_free(last);
++			rc = TRUE;
++			goto signal;
++		}
++	}
++
++	/* Only a consecutive duplicate release carries no additional state. Searching the whole queue
++	 * is incorrect: RELEASE(A), DOWN(A), RELEASE(A) is a valid second key press, and dropping the
++	 * final release would leave the remote key held. */
++	if (android_event_is_release(event) && queue->count > 0)
++	{
++		ANDROID_EVENT* last = android_event_queue_at(queue, queue->count - 1);
++		if (android_events_are_duplicate_releases(last, event))
++		{
++			android_event_free(event);
++			rc = TRUE;
++			goto signal;
++		}
++	}
+ 
+-	event = queue->events[0];
+-	(queue->count)--;
++	const BOOL protectedEvent = android_event_is_release(event);
++	const size_t normalLimit = queue->capacity - ANDROID_EVENT_CONTROL_RESERVE;
++	if (!protectedEvent && queue->count >= normalLimit)
++		goto out;
+ 
+-	for (size_t i = 0; i < queue->count; i++)
++	if (queue->count >= queue->capacity)
+ 	{
+-		queue->events[i] = queue->events[i + 1];
++		/* Release/disconnect events have priority. Evict the oldest move/clipboard first, then a
++		 * non-release control. With duplicate release suppression, the reserved half is larger
++		 * than the finite keyboard/button/touch state that can require release. */
++		size_t victim = SIZE_MAX;
++		for (size_t pos = 0; pos < queue->count; pos++)
++		{
++			if (android_event_is_coalescible(android_event_queue_at(queue, pos)))
++			{
++				victim = pos;
++				break;
++			}
++		}
++		if (victim == SIZE_MAX)
++		{
++			for (size_t pos = 0; pos < queue->count; pos++)
++			{
++				if (!android_event_is_release(android_event_queue_at(queue, pos)))
++				{
++					victim = pos;
++					break;
++				}
++			}
++		}
++		if (victim == SIZE_MAX)
++			goto out;
++		android_event_queue_remove(queue, victim);
+ 	}
+ 
++	queue->events[queue->tail] = event;
++	queue->tail = (queue->tail + 1) % queue->capacity;
++	queue->count++;
++	rc = TRUE;
++
++signal:
++	if (!SetEvent(queue->isSet))
++	{
++		/* The event remains queued: a transient signal failure must not silently discard a key-up.
++		 * The FreeRDP loop will either observe the manual-reset event or teardown the queue. */
++		WLog_WARN(TAG, "failed to signal Android input queue");
++	}
++out:
++	LeaveCriticalSection(&queue->lock);
++	return rc;
++}
++
++static ANDROID_EVENT* android_pop_event(ANDROID_EVENT_QUEUE* queue)
++{
++	ANDROID_EVENT* event = nullptr;
++	EnterCriticalSection(&queue->lock);
++	if (queue->count > 0)
++	{
++		event = queue->events[queue->head];
++		queue->events[queue->head] = nullptr;
++		queue->head = (queue->head + 1) % queue->capacity;
++		queue->count--;
++		if (queue->count == 0)
++		{
++			queue->head = 0;
++			queue->tail = 0;
++			(void)ResetEvent(queue->isSet);
++		}
++	}
++	LeaveCriticalSection(&queue->lock);
+ 	return event;
+ }
+ 
+@@ -89,13 +279,11 @@ static BOOL android_process_event(ANDROID_EVENT_QUEUE* queue, freerdp* inst)
+ 	context = inst->context;
+ 	WINPR_ASSERT(context);
+ 
+-	while (android_peek_event(queue))
++	ANDROID_EVENT* event = nullptr;
++	while ((event = android_pop_event(queue)) != nullptr)
+ 	{
+ 		BOOL rc = FALSE;
+ 		androidContext* afc = (androidContext*)context;
+-		ANDROID_EVENT* event = android_pop_event(queue);
+-
+-		WINPR_ASSERT(event);
+ 
+ 		switch (event->type)
+ 		{
+@@ -103,8 +291,12 @@ static BOOL android_process_event(ANDROID_EVENT_QUEUE* queue, freerdp* inst)
+ 			{
+ 				ANDROID_EVENT_KEY* key_event = (ANDROID_EVENT_KEY*)event;
+ 
+-				rc = freerdp_input_send_keyboard_event(context->input, key_event->flags,
+-				                                       key_event->scancode);
++				if (!freerdp_input_send_keyboard_event(context->input, key_event->flags,
++				                                       key_event->scancode))
++					WLog_WARN(TAG, "send keyboard event failed (non-fatal, keeping session)");
++
++				/* A rejected input PDU must NOT tear down the whole session. */
++				rc = TRUE;
+ 			}
+ 			break;
+ 
+@@ -112,8 +304,13 @@ static BOOL android_process_event(ANDROID_EVENT_QUEUE* queue, freerdp* inst)
+ 			{
+ 				ANDROID_EVENT_KEY* key_event = (ANDROID_EVENT_KEY*)event;
+ 
+-				rc = freerdp_input_send_unicode_keyboard_event(context->input, key_event->flags,
+-				                                               key_event->scancode);
++				if (!freerdp_input_send_unicode_keyboard_event(context->input, key_event->flags,
++				                                               key_event->scancode))
++					WLog_WARN(TAG, "send unicode keyboard event failed (non-fatal) — server may "
++					               "not have negotiated unicode input");
++
++				/* A rejected input PDU must NOT tear down the whole session. */
++				rc = TRUE;
+ 			}
+ 			break;
+ 
+@@ -121,8 +318,52 @@ static BOOL android_process_event(ANDROID_EVENT_QUEUE* queue, freerdp* inst)
+ 			{
+ 				ANDROID_EVENT_CURSOR* cursor_event = (ANDROID_EVENT_CURSOR*)event;
+ 
+-				rc = freerdp_input_send_mouse_event(context->input, cursor_event->flags,
+-				                                    cursor_event->x, cursor_event->y);
++				if (!freerdp_input_send_mouse_event(context->input, cursor_event->flags,
++				                                    cursor_event->x, cursor_event->y))
++					WLog_WARN(TAG, "send mouse event failed (non-fatal, keeping session)");
++
++				/* A rejected input PDU must NOT tear down the whole session. */
++				rc = TRUE;
++			}
++			break;
++
++			case EVENT_TYPE_TOUCH:
++			{
++				ANDROID_EVENT_TOUCH* touch_event = (ANDROID_EVENT_TOUCH*)event;
++				RdpeiClientContext* rdpei = afc->rdpei;
++
++				if (rdpei)
++				{
++					INT32 contactId = 0;
++					UINT trc = CHANNEL_RC_OK;
++
++					switch (touch_event->action)
++					{
++						case ANDROID_TOUCH_DOWN:
++							trc = rdpei->TouchBegin(rdpei, touch_event->contactId, touch_event->x,
++							                        touch_event->y, &contactId);
++							break;
++
++						case ANDROID_TOUCH_MOVE:
++							trc = rdpei->TouchUpdate(rdpei, touch_event->contactId, touch_event->x,
++							                         touch_event->y, &contactId);
++							break;
++
++						case ANDROID_TOUCH_UP:
++							trc = rdpei->TouchEnd(rdpei, touch_event->contactId, touch_event->x,
++							                      touch_event->y, &contactId);
++							break;
++
++						default:
++							break;
++					}
++
++					if (trc != CHANNEL_RC_OK)
++						WLog_WARN(TAG, "rdpei touch event failed (non-fatal, keeping session)");
++				}
++
++				/* Dropped silently when the rdpei channel isn't up — never tear down the session. */
++				rc = TRUE;
+ 			}
+ 			break;
+ 
+@@ -130,15 +371,46 @@ static BOOL android_process_event(ANDROID_EVENT_QUEUE* queue, freerdp* inst)
+ 			{
+ 				ANDROID_EVENT_CLIPBOARD* clipboard_event = (ANDROID_EVENT_CLIPBOARD*)event;
+ 				const char* mimeType = clipboard_event->mimeType;
+-				UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, mimeType);
+-				UINT32 size = clipboard_event->data_length;
++				if (!afc->clipboard || !mimeType)
++				{
++					WLog_WARN(TAG, "clipboard event dropped before cliprdr initialization");
++					rc = TRUE;
++					break;
++				}
++
++				const UINT32 formatId = ClipboardRegisterFormat(afc->clipboard, mimeType);
++				const UINT32 size = clipboard_event->data_length;
+ 
+ 				if (size)
+-					ClipboardSetData(afc->clipboard, formatId, clipboard_event->data, size);
++				{
++					if (!ClipboardSetData(afc->clipboard, formatId, clipboard_event->data, size))
++						WLog_WARN(TAG, "clipboard conversion failed (non-fatal)");
++				}
+ 				else
+ 					ClipboardEmpty(afc->clipboard);
+ 
+-				rc = (android_cliprdr_send_client_format_list(afc->cliprdr) == CHANNEL_RC_OK);
++				/* Clipboard push must be NON-FATAL: the cliprdr channel may not be up yet, or the
++					 * server may have declined clipboard redirection (afc->cliprdr == NULL). Log and
++					 * keep the session instead of returning FALSE and breaking the main loop, exactly
++					 * like the TOUCH/KEY cases (field bug: 手机端复制后连接几秒内断开, same fatal-on-
++					 * failure class as the old unicode-key disconnect). */
++				if (afc->cliprdr &&
++				    android_cliprdr_send_client_format_list(afc->cliprdr) != CHANNEL_RC_OK)
++					WLog_WARN(TAG, "cliprdr format-list send failed (non-fatal, keeping session)");
++				rc = TRUE;
++			}
++			break;
++
++			case EVENT_TYPE_MONITOR_LAYOUT:
++			{
++				const ANDROID_EVENT_MONITOR_LAYOUT* layout =
++				    (const ANDROID_EVENT_MONITOR_LAYOUT*)event;
++				if (!android_disp_send_monitor_layout(afc, layout->width, layout->height))
++					WLog_WARN(TAG, "monitor-layout event could not be sent (non-fatal)");
++
++				/* The channel may close between JNI's readiness check and worker dispatch. The
++				 * caller retries until OnGraphicsResize, so a failed send is non-fatal. */
++				rc = TRUE;
+ 			}
+ 			break;
+ 
+@@ -185,9 +457,6 @@ BOOL android_check_handle(freerdp* inst)
+ 
+ 	if (WaitForSingleObject(aCtx->event_queue->isSet, 0) == WAIT_OBJECT_0)
+ 	{
+-		if (!ResetEvent(aCtx->event_queue->isSet))
+-			return FALSE;
+-
+ 		if (!android_process_event(aCtx->event_queue, inst))
+ 			return FALSE;
+ 	}
+@@ -252,6 +521,45 @@ static void android_event_cursor_free(ANDROID_EVENT_CURSOR* event)
+ 	free(event);
+ }
+ 
++ANDROID_EVENT_TOUCH* android_event_touch_new(int contactId, int x, int y, int action)
++{
++	ANDROID_EVENT_TOUCH* event = (ANDROID_EVENT_TOUCH*)calloc(1, sizeof(ANDROID_EVENT_TOUCH));
++
++	if (!event)
++		return nullptr;
++
++	event->type = EVENT_TYPE_TOUCH;
++	event->contactId = contactId;
++	event->x = x;
++	event->y = y;
++	event->action = action;
++	return event;
++}
++
++static void android_event_touch_free(ANDROID_EVENT_TOUCH* event)
++{
++	free(event);
++}
++
++ANDROID_EVENT_MONITOR_LAYOUT* android_event_monitor_layout_new(UINT32 width, UINT32 height)
++{
++	ANDROID_EVENT_MONITOR_LAYOUT* event =
++	    (ANDROID_EVENT_MONITOR_LAYOUT*)calloc(1, sizeof(ANDROID_EVENT_MONITOR_LAYOUT));
++
++	if (!event)
++		return nullptr;
++
++	event->type = EVENT_TYPE_MONITOR_LAYOUT;
++	event->width = width;
++	event->height = height;
++	return event;
++}
++
++static void android_event_monitor_layout_free(ANDROID_EVENT_MONITOR_LAYOUT* event)
++{
++	free(event);
++}
++
+ ANDROID_EVENT* android_event_disconnect_new(void)
+ {
+ 	ANDROID_EVENT* event;
+@@ -272,8 +580,15 @@ static void android_event_disconnect_free(ANDROID_EVENT* event)
+ ANDROID_EVENT_CLIPBOARD* android_event_clipboard_new(const void* data, size_t data_length,
+                                                      const char* mimeType)
+ {
+-	ANDROID_EVENT_CLIPBOARD* event;
+-	event = (ANDROID_EVENT_CLIPBOARD*)calloc(1, sizeof(ANDROID_EVENT_CLIPBOARD));
++	if (!mimeType || strnlen(mimeType, 65) > 64)
++		return nullptr;
++	const BOOL isText = strcmp(mimeType, "text/plain") == 0;
++	if ((data_length > 0 && !data) || data_length > ANDROID_CLIPBOARD_MAX_BYTES ||
++	    (isText && data_length == ANDROID_CLIPBOARD_MAX_BYTES))
++		return nullptr;
++
++	ANDROID_EVENT_CLIPBOARD* event =
++	    (ANDROID_EVENT_CLIPBOARD*)calloc(1, sizeof(ANDROID_EVENT_CLIPBOARD));
+ 
+ 	if (!event)
+ 		return nullptr;
+@@ -289,7 +604,6 @@ ANDROID_EVENT_CLIPBOARD* android_event_clipboard_new(const void* data, size_t da
+ 
+ 	if (data && data_length > 0)
+ 	{
+-		const BOOL isText = !mimeType || strcmp(mimeType, "text/plain") == 0;
+ 		/* Text data needs a null terminator; image data is stored as-is. */
+ 		event->data = isText ? calloc(data_length + 1, sizeof(char)) : malloc(data_length);
+ 
+@@ -301,7 +615,7 @@ ANDROID_EVENT_CLIPBOARD* android_event_clipboard_new(const void* data, size_t da
+ 		}
+ 
+ 		memcpy(event->data, data, data_length);
+-		event->data_length = isText ? data_length + 1 : data_length;
++		event->data_length = (UINT32)(isText ? data_length + 1 : data_length);
+ 	}
+ 
+ 	return event;
+@@ -329,22 +643,28 @@ BOOL android_event_queue_init(freerdp* inst)
+ 		return FALSE;
+ 	}
+ 
+-	queue->size = 16;
++	queue->capacity = ANDROID_EVENT_QUEUE_CAPACITY;
+ 	queue->count = 0;
++	queue->head = 0;
++	queue->tail = 0;
++	InitializeCriticalSection(&queue->lock);
++	queue->lockInitialized = TRUE;
+ 	queue->isSet = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+ 
+ 	if (!queue->isSet)
+ 	{
++		DeleteCriticalSection(&queue->lock);
+ 		free(queue);
+ 		return FALSE;
+ 	}
+ 
+-	queue->events = (ANDROID_EVENT**)calloc(queue->size, sizeof(ANDROID_EVENT*));
++	queue->events = (ANDROID_EVENT**)calloc(queue->capacity, sizeof(ANDROID_EVENT*));
+ 
+ 	if (!queue->events)
+ 	{
+ 		WLog_ERR(TAG, "android_event_queue_init: memory allocation failed");
+ 		(void)CloseHandle(queue->isSet);
++		DeleteCriticalSection(&queue->lock);
+ 		free(queue);
+ 		return FALSE;
+ 	}
+@@ -363,23 +683,39 @@ void android_event_queue_uninit(freerdp* inst)
+ 
+ 	aCtx = (androidContext*)inst->context;
+ 	queue = aCtx->event_queue;
++	aCtx->event_queue = nullptr;
+ 
+ 	if (queue)
+ 	{
++		ANDROID_EVENT** events = nullptr;
++		size_t count = 0;
++		size_t capacity = 0;
++		size_t head = 0;
++		EnterCriticalSection(&queue->lock);
++		queue->shuttingDown = TRUE;
++		events = queue->events;
++		count = queue->count;
++		capacity = queue->capacity;
++		head = queue->head;
++		queue->events = nullptr;
++		queue->capacity = 0;
++		queue->count = 0;
++		queue->head = 0;
++		queue->tail = 0;
++		LeaveCriticalSection(&queue->lock);
++
++		for (size_t x = 0; x < count; x++)
++			android_event_free(events[(head + x) % capacity]);
++		free(events);
++
+ 		if (queue->isSet)
+ 		{
+ 			(void)CloseHandle(queue->isSet);
+ 			queue->isSet = nullptr;
+ 		}
+ 
+-		if (queue->events)
+-		{
+-			free(queue->events);
+-			queue->events = nullptr;
+-			queue->size = 0;
+-			queue->count = 0;
+-		}
+-
++		if (queue->lockInitialized)
++			DeleteCriticalSection(&queue->lock);
+ 		free(queue);
+ 	}
+ }
+@@ -403,6 +739,10 @@ void android_event_free(ANDROID_EVENT* event)
+ 			android_event_cursor_free((ANDROID_EVENT_CURSOR*)event);
+ 			break;
+ 
++		case EVENT_TYPE_TOUCH:
++			android_event_touch_free((ANDROID_EVENT_TOUCH*)event);
++			break;
++
+ 		case EVENT_TYPE_DISCONNECT:
+ 			android_event_disconnect_free((ANDROID_EVENT*)event);
+ 			break;
+@@ -411,6 +751,10 @@ void android_event_free(ANDROID_EVENT* event)
+ 			android_event_clipboard_free((ANDROID_EVENT_CLIPBOARD*)event);
+ 			break;
+ 
++		case EVENT_TYPE_MONITOR_LAYOUT:
++			android_event_monitor_layout_free((ANDROID_EVENT_MONITOR_LAYOUT*)event);
++			break;
++
+ 		default:
+ 			break;
+ 	}
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.h b/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.h
+index ea986246..98263ffc 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.h
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_event.h
+@@ -13,12 +13,20 @@
+ #define FREERDP_CLIENT_ANDROID_EVENT_H
+ #include <freerdp/freerdp.h>
+ #include <freerdp/api.h>
++#include <winpr/synch.h>
+ 
+ #define EVENT_TYPE_KEY 1
+ #define EVENT_TYPE_CURSOR 2
+ #define EVENT_TYPE_DISCONNECT 3
+ #define EVENT_TYPE_KEY_UNICODE 4
+ #define EVENT_TYPE_CLIPBOARD 5
++#define EVENT_TYPE_TOUCH 6
++#define EVENT_TYPE_MONITOR_LAYOUT 7
++
++/* Touch contact lifecycle, mirrored in Kotlin RdpTouchAction. */
++#define ANDROID_TOUCH_DOWN 0
++#define ANDROID_TOUCH_MOVE 1
++#define ANDROID_TOUCH_UP 2
+ 
+ typedef struct
+ {
+@@ -44,16 +52,37 @@ typedef struct
+ {
+ 	int type;
+ 	void* data;
+-	int data_length;
++	UINT32 data_length;
+ 	char* mimeType;
+ } ANDROID_EVENT_CLIPBOARD;
+ 
+ typedef struct
+ {
+-	int size;
+-	int count;
++	int type;
++	int contactId; /* RDPEI externalId — tracks one finger across down/move/up */
++	int x;
++	int y;
++	int action; /* ANDROID_TOUCH_DOWN / _MOVE / _UP */
++} ANDROID_EVENT_TOUCH;
++
++typedef struct
++{
++	int type;
++	UINT32 width;
++	UINT32 height;
++} ANDROID_EVENT_MONITOR_LAYOUT;
++
++typedef struct
++{
++	size_t capacity;
++	size_t count;
++	size_t head;
++	size_t tail;
+ 	HANDLE isSet;
+ 	ANDROID_EVENT** events;
++	CRITICAL_SECTION lock;
++	BOOL lockInitialized;
++	BOOL shuttingDown;
+ } ANDROID_EVENT_QUEUE;
+ 
+ FREERDP_LOCAL BOOL android_push_event(freerdp* inst, ANDROID_EVENT* event);
+@@ -64,6 +93,9 @@ FREERDP_LOCAL BOOL android_check_handle(freerdp* inst);
+ FREERDP_LOCAL ANDROID_EVENT_KEY* android_event_key_new(int flags, UINT16 scancode);
+ FREERDP_LOCAL ANDROID_EVENT_KEY* android_event_unicodekey_new(UINT16 flags, UINT16 key);
+ FREERDP_LOCAL ANDROID_EVENT_CURSOR* android_event_cursor_new(UINT16 flags, UINT16 x, UINT16 y);
++FREERDP_LOCAL ANDROID_EVENT_TOUCH* android_event_touch_new(int contactId, int x, int y, int action);
++FREERDP_LOCAL ANDROID_EVENT_MONITOR_LAYOUT* android_event_monitor_layout_new(UINT32 width,
++                                                                            UINT32 height);
+ FREERDP_LOCAL ANDROID_EVENT* android_event_disconnect_new(void);
+ FREERDP_LOCAL ANDROID_EVENT_CLIPBOARD*
+ android_event_clipboard_new(const void* data, size_t data_length, const char* mimeType);
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
+index 2e1f1c0d..cdf34f9f 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
+@@ -24,7 +24,10 @@
+ 
+ #include <winpr/assert.h>
+ #include <winpr/image.h>
++#include <winpr/string.h>
+ 
++#include <freerdp/freerdp.h>
++#include <freerdp/crypto/certificate.h>
+ #include <freerdp/graphics.h>
+ #include <freerdp/codec/rfx.h>
+ #include <freerdp/gdi/gdi.h>
+@@ -58,6 +61,16 @@
+ #endif
+ 
+ #define TAG CLIENT_TAG("android")
++#define ANDROID_FRAMEBUFFER_MAX_DIMENSION 8192u
++#define ANDROID_FRAMEBUFFER_MAX_PIXELS 16777216ull
++#define ANDROID_CURSOR_MAX_DIMENSION 512u
++#define ANDROID_CLIPBOARD_MAX_UTF16_CHARS (256u * 1024u)
++#define ANDROID_CLIPBOARD_MAX_UTF8_BYTES (1024u * 1024u)
++#define ANDROID_X509_MAX_PEM_BYTES (1024u * 1024u)
++#define ANDROID_COMMAND_LINE_MAX_ARGS 512
++#define ANDROID_COMMAND_LINE_MAX_UTF16_CHARS (16u * 1024u)
++#define ANDROID_COMMAND_LINE_MAX_UTF8_BYTES (1024u * 1024u)
++#define ANDROID_NATIVE_SHUTDOWN_WAIT_MS 15000u
+ 
+ /* Defines the JNI version supported by this library. */
+ #define FREERDP_JNI_VERSION FREERDP_VERSION_FULL
+@@ -71,7 +84,6 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+ static void android_OnChannelConnectedEventHandler(void* context,
+                                                    const ChannelConnectedEventArgs* e)
+ {
+-	rdpSettings* settings;
+ 	androidContext* afc;
+ 
+ 	if (!context || !e)
+@@ -81,19 +93,28 @@ static void android_OnChannelConnectedEventHandler(void* context,
+ 	}
+ 
+ 	afc = (androidContext*)context;
+-	settings = afc->common.context.settings;
+ 
+ 	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
+ 	{
+-		android_cliprdr_init(afc, (CliprdrClientContext*)e->pInterface);
++		if (!android_cliprdr_init(afc, (CliprdrClientContext*)e->pInterface))
++			WLog_ERR(TAG, "failed to initialize cliprdr channel");
+ 	}
+ 	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+ 	{
+-		android_disp_init(afc, (DispClientContext*)e->pInterface);
++		if (!android_disp_init(afc, (DispClientContext*)e->pInterface))
++			WLog_ERR(TAG, "failed to initialize display-control channel");
+ 	}
+ 	else if (strcmp(e->name, RAIL_SVC_CHANNEL_NAME) == 0)
+ 	{
+-		android_rail_init(afc, (RailClientContext*)e->pInterface);
++		if (!android_rail_init(afc, (RailClientContext*)e->pInterface))
++			WLog_ERR(TAG, "failed to initialize rail channel");
++	}
++	else if (strcmp(e->name, RDPEI_DVC_CHANNEL_NAME) == 0)
++	{
++		/* Native multi-touch: stash the rdpei client context so freerdp_send_touch can drive
++		 * TouchBegin/Update/End. The plugin self-initialises; we only need the handle. */
++		afc->rdpei = (RdpeiClientContext*)e->pInterface;
++		WLog_DBG(TAG, "rdpei channel connected");
+ 	}
+ 	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+ 	{
+@@ -109,7 +130,6 @@ static void android_OnChannelConnectedEventHandler(void* context,
+ static void android_OnChannelDisconnectedEventHandler(void* context,
+                                                       const ChannelDisconnectedEventArgs* e)
+ {
+-	rdpSettings* settings;
+ 	androidContext* afc;
+ 
+ 	if (!context || !e)
+@@ -119,7 +139,6 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
+ 	}
+ 
+ 	afc = (androidContext*)context;
+-	settings = afc->common.context.settings;
+ 
+ 	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
+ 	{
+@@ -133,6 +152,11 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
+ 	{
+ 		android_rail_uninit(afc, (RailClientContext*)e->pInterface);
+ 	}
++	else if (strcmp(e->name, RDPEI_DVC_CHANNEL_NAME) == 0)
++	{
++		afc->rdpei = nullptr;
++		WLog_DBG(TAG, "rdpei channel disconnected");
++	}
+ 	else
+ 		freerdp_client_OnChannelDisconnectedEventHandler(context, e);
+ }
+@@ -201,6 +225,13 @@ static BOOL android_end_paint(rdpContext* context)
+ 	return TRUE;
+ }
+ 
++static BOOL android_framebuffer_dimensions_safe(UINT32 width, UINT32 height)
++{
++	return width > 0 && height > 0 && width <= ANDROID_FRAMEBUFFER_MAX_DIMENSION &&
++	       height <= ANDROID_FRAMEBUFFER_MAX_DIMENSION &&
++	       (UINT64)width * (UINT64)height <= ANDROID_FRAMEBUFFER_MAX_PIXELS;
++}
++
+ static BOOL android_desktop_resize(rdpContext* context)
+ {
+ 	WINPR_ASSERT(context);
+@@ -210,6 +241,14 @@ static BOOL android_desktop_resize(rdpContext* context)
+ 	const UINT32 width = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+ 	const UINT32 height = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+ 
++	if (!android_framebuffer_dimensions_safe(width, height))
++	{
++		WLog_ERR(TAG, "rejecting unsafe framebuffer dimensions %" PRIu32 "x%" PRIu32, width,
++		         height);
++		freerdp_set_last_error_log(context, FREERDP_ERROR_CONNECT_FAILED);
++		return FALSE;
++	}
++
+ 	if (context->gdi && !gdi_resize(context->gdi, width, height))
+ 		return FALSE;
+ 
+@@ -228,6 +267,19 @@ static BOOL android_pre_connect(freerdp* instance)
+ 	if (!settings)
+ 		return FALSE;
+ 
++	((androidContext*)instance->context)->multitransportRequested =
++	    freerdp_settings_get_bool(settings, FreeRDP_SupportMultitransport);
++
++	/* Always route the full X.509 chain through PocketRDP's pin/TOFU callback. The legacy
++	 * VerifyCertificateEx callback only runs for certificates that fail CA validation, which lets
++	 * a CA-valid replacement bypass an existing application pin. */
++	if (!freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE) ||
++	    !freerdp_settings_set_bool(settings, FreeRDP_ExternalCertificateManagement, TRUE))
++	{
++		WLog_ERR(TAG, "failed to enable external certificate verification");
++		return FALSE;
++	}
++
+ 	int rc = PubSub_SubscribeChannelConnected(instance->context->pubSub,
+ 	                                          android_OnChannelConnectedEventHandler);
+ 
+@@ -267,7 +319,16 @@ static BOOL android_Pointer_New(rdpContext* context, rdpPointer* pointer)
+ 	if (!ptr)
+ 		return FALSE;
+ 
+-	ptr->size = 4ULL * pointer->width * pointer->height;
++	if (pointer->width == 0 || pointer->height == 0 ||
++	    pointer->width > ANDROID_CURSOR_MAX_DIMENSION ||
++	    pointer->height > ANDROID_CURSOR_MAX_DIMENSION)
++	{
++		WLog_WARN(TAG, "rejecting unsafe cursor dimensions %" PRIu32 "x%" PRIu32,
++		          pointer->width, pointer->height);
++		return FALSE;
++	}
++
++	ptr->size = 4ull * pointer->width * pointer->height;
+ 	ptr->data = winpr_aligned_malloc(ptr->size, 16);
+ 	if (!ptr->data)
+ 		return FALSE;
+@@ -311,7 +372,7 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
+ 	JNIEnv* env = nullptr;
+ 	jboolean attached = jni_attach_thread(&env);
+ 
+-	if (!gJavaActivityClass || !gOnPointerSetMethod)
++	if (!env || !gJavaActivityClass || !gOnPointerSetMethod)
+ 		goto done;
+ 
+ 	jintArray pixels = (*env)->NewIntArray(env, nPixels);
+@@ -323,6 +384,11 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
+ 	                             (jlong)context->instance, pixels, (jint)pointer->width,
+ 	                             (jint)pointer->height, (jint)pointer->xPos, (jint)pointer->yPos);
+ 	(*env)->DeleteLocalRef(env, pixels);
++	if ((*env)->ExceptionCheck(env))
++	{
++		WLog_ERR(TAG, "Java exception in OnPointerSet");
++		(*env)->ExceptionClear(env);
++	}
+ done:
+ 	if (attached)
+ 		jni_detach_thread();
+@@ -364,15 +430,19 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+ 
+ 	const UINT32 width = surface->mappedWidth ? surface->mappedWidth : surface->width;
+ 	const UINT32 height = surface->mappedHeight ? surface->mappedHeight : surface->height;
+-	if (width == 0 || height == 0)
++	if (!android_framebuffer_dimensions_safe(width, height))
++	{
++		WLog_WARN(TAG, "RAIL surface rejected: unsafe dimensions %" PRIu32 "x%" PRIu32, width,
++		          height);
+ 		return CHANNEL_RC_OK;
++	}
+ 
+ 	JNIEnv* env = nullptr;
+ 	jboolean attached = jni_attach_thread(&env);
+-	if (!gJavaActivityClass || !gOnRailWindowUpdateMethod)
++	if (!env || !gJavaActivityClass || !gOnRailWindowUpdateMethod)
+ 		goto done;
+ 
+-	const jsize nPixels = (jsize)(width * height);
++	const jsize nPixels = (jsize)((UINT64)width * height);
+ 	jintArray pixels = (*env)->NewIntArray(env, nPixels);
+ 	if (!pixels)
+ 		goto done;
+@@ -400,6 +470,11 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+ 	(*env)->CallStaticVoidMethod(env, gJavaActivityClass, gOnRailWindowUpdateMethod, (jlong)inst,
+ 	                             (jlong)surface->windowId, (jint)width, (jint)height, pixels);
+ 	(*env)->DeleteLocalRef(env, pixels);
++	if ((*env)->ExceptionCheck(env))
++	{
++		WLog_ERR(TAG, "Java exception in OnRailWindowUpdate");
++		(*env)->ExceptionClear(env);
++	}
+ done:
+ 	if (attached)
+ 		jni_detach_thread();
+@@ -449,6 +524,16 @@ static BOOL android_post_connect(freerdp* instance)
+ 	                                  ANDROID_EXPERIMENTAL_CAMERA))
+ 		return FALSE;
+ 
++	const UINT32 desktopWidth = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
++	const UINT32 desktopHeight = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
++	if (!android_framebuffer_dimensions_safe(desktopWidth, desktopHeight))
++	{
++		WLog_ERR(TAG, "rejecting unsafe initial framebuffer dimensions %" PRIu32 "x%" PRIu32,
++		         desktopWidth, desktopHeight);
++		freerdp_set_last_error_log(instance->context, FREERDP_ERROR_CONNECT_FAILED);
++		return FALSE;
++	}
++
+ 	if (!gdi_init(instance, PIXEL_FORMAT_RGBX32))
+ 		return FALSE;
+ 
+@@ -458,6 +543,21 @@ static BOOL android_post_connect(freerdp* instance)
+ 	update->BeginPaint = android_begin_paint;
+ 	update->EndPaint = android_end_paint;
+ 	update->DesktopResize = android_desktop_resize;
++
++	/* Force-enable Unicode keyboard input regardless of what the server advertised in its input
++	 * capability set. Real Windows hosts accept TS_UNICODE_KEYBOARD_EVENT (mstsc itself relies on
++	 * it for IME / CJK typing), but many servers do NOT set INPUT_FLAG_UNICODE in their Demand
++	 * Active caps, so rdp_read_input_capability_set() downgrades FreeRDP_UnicodeInput to FALSE and
++	 * libfreerdp/core/input.c then refuses to send ANY Unicode key — which is exactly why typing
++	 * Chinese in the app did nothing while ASCII (the scancode path) worked. This runs AFTER the
++	 * capability exchange (post_connect), so it overrides that downgrade. A server that genuinely
++	 * cannot handle Unicode just drops the PDU; android_process_event() already treats a failed
++	 * unicode-key send as NON-FATAL (EVENT_TYPE_KEY_UNICODE -> rc = TRUE), so this can never tear
++	 * the session down. It also flips freerdp_is_unicode_input_supported() to TRUE, so the Kotlin
++	 * TextInputEncoder takes the unicode path for CJK instead of silently dropping the characters. */
++	if (!freerdp_settings_set_bool(settings, FreeRDP_UnicodeInput, TRUE))
++		WLog_WARN(TAG, "could not force-enable Unicode keyboard input");
++
+ 	freerdp_callback("OnSettingsChanged", "(JIII)V", (jlong)instance,
+ 	                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+ 	                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
+@@ -486,29 +586,59 @@ static void android_post_final_disconnect(freerdp* instance)
+ static BOOL android_authenticate_int(freerdp* instance, char** username, char** password,
+                                      char** domain, const char* cb_name)
+ {
+-	JNIEnv* env;
++	JNIEnv* env = nullptr;
+ 	jboolean attached = jni_attach_thread(&env);
++	if (!env || !username || !password || !domain)
++	{
++		if (attached == JNI_TRUE)
++			jni_detach_thread();
++		return FALSE;
++	}
++
+ 	jobject jstr1 = create_string_builder(env, *username);
+ 	jobject jstr2 = create_string_builder(env, *domain);
+ 	jobject jstr3 = create_string_builder(env, *password);
+-	jboolean res;
+-	res = freerdp_callback_bool_result(cb_name,
+-	                                   "(JLjava/lang/StringBuilder;"
+-	                                   "Ljava/lang/StringBuilder;"
+-	                                   "Ljava/lang/StringBuilder;)Z",
+-	                                   (jlong)instance, jstr1, jstr2, jstr3);
++	jboolean res = JNI_FALSE;
++	if (jstr1 && jstr2 && jstr3 && !(*env)->ExceptionCheck(env))
++	{
++		res = freerdp_callback_bool_result(cb_name,
++		                                  "(JLjava/lang/StringBuilder;"
++		                                  "Ljava/lang/StringBuilder;"
++		                                  "Ljava/lang/StringBuilder;)Z",
++		                                  (jlong)instance, jstr1, jstr2, jstr3);
++	}
+ 
+ 	if (res == JNI_TRUE)
+ 	{
+-		// read back string values
+-		free(*username);
+-		*username = get_string_from_string_builder(env, jstr1);
+-		free(*domain);
+-		*domain = get_string_from_string_builder(env, jstr2);
+-		free(*password);
+-		*password = get_string_from_string_builder(env, jstr3);
++		char* newUsername = get_string_from_string_builder(env, jstr1);
++		char* newDomain = get_string_from_string_builder(env, jstr2);
++		char* newPassword = get_string_from_string_builder(env, jstr3);
++		if (!newUsername || !newDomain || !newPassword)
++		{
++			free(newUsername);
++			free(newDomain);
++			free(newPassword);
++			res = JNI_FALSE;
++		}
++		else
++		{
++			free(*username);
++			*username = newUsername;
++			free(*domain);
++			*domain = newDomain;
++			free(*password);
++			*password = newPassword;
++		}
+ 	}
+ 
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
++	if (jstr1)
++		(*env)->DeleteLocalRef(env, jstr1);
++	if (jstr2)
++		(*env)->DeleteLocalRef(env, jstr2);
++	if (jstr3)
++		(*env)->DeleteLocalRef(env, jstr3);
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+ 
+@@ -538,26 +668,37 @@ static DWORD android_verify_certificate_ex(freerdp* instance, const char* host,
+                                            const char* common_name, const char* subject,
+                                            const char* issuer, const char* fingerprint, DWORD flags)
+ {
+-	WLog_DBG(TAG, "Certificate details [%s:%" PRIu16 ":", host, port);
+-	WLog_DBG(TAG, "\tSubject: %s", subject);
+-	WLog_DBG(TAG, "\tIssuer: %s", issuer);
+-	WLog_DBG(TAG, "\tThumbprint: %s", fingerprint);
+-	WLog_DBG(TAG,
+-	         "The above X.509 certificate could not be verified, possibly because you do not have "
+-	         "the CA certificate in your certificate store, or the certificate has expired."
+-	         "Please look at the OpenSSL documentation on how to add a private CA to the store.\n");
+-	JNIEnv* env;
++	JNIEnv* env = nullptr;
+ 	jboolean attached = jni_attach_thread(&env);
+-	jstring jstr0 = (*env)->NewStringUTF(env, host);
+-	jstring jstr1 = (*env)->NewStringUTF(env, common_name);
+-	jstring jstr2 = (*env)->NewStringUTF(env, subject);
+-	jstring jstr3 = (*env)->NewStringUTF(env, issuer);
+-	jstring jstr4 = (*env)->NewStringUTF(env, fingerprint);
+-	jint res = freerdp_callback_int_result("OnVerifyCertificateEx",
+-	                                       "(JLjava/lang/String;JLjava/lang/String;Ljava/lang/"
+-	                                       "String;Ljava/lang/String;Ljava/lang/String;J)I",
+-	                                       (jlong)instance, jstr0, (jlong)port, jstr1, jstr2, jstr3,
+-	                                       jstr4, (jlong)flags);
++	if (!env)
++		return 0;
++
++	jstring jstr0 = jniNewStringUTF(env, host ? host : "", -1);
++	jstring jstr1 = jniNewStringUTF(env, common_name ? common_name : "", -1);
++	jstring jstr2 = jniNewStringUTF(env, subject ? subject : "", -1);
++	jstring jstr3 = jniNewStringUTF(env, issuer ? issuer : "", -1);
++	jstring jstr4 = jniNewStringUTF(env, fingerprint ? fingerprint : "", -1);
++	jint res = 0;
++	if (jstr0 && jstr1 && jstr2 && jstr3 && jstr4 && !(*env)->ExceptionCheck(env))
++	{
++		res = freerdp_callback_int_result("OnVerifyCertificateEx",
++		                                  "(JLjava/lang/String;JLjava/lang/String;Ljava/lang/"
++		                                  "String;Ljava/lang/String;Ljava/lang/String;J)I",
++		                                  (jlong)instance, jstr0, (jlong)port, jstr1, jstr2, jstr3,
++		                                  jstr4, (jlong)flags);
++	}
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
++	if (jstr0)
++		(*env)->DeleteLocalRef(env, jstr0);
++	if (jstr1)
++		(*env)->DeleteLocalRef(env, jstr1);
++	if (jstr2)
++		(*env)->DeleteLocalRef(env, jstr2);
++	if (jstr3)
++		(*env)->DeleteLocalRef(env, jstr3);
++	if (jstr4)
++		(*env)->DeleteLocalRef(env, jstr4);
+ 
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+@@ -571,23 +712,41 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
+                                                    const char* old_subject, const char* old_issuer,
+                                                    const char* old_fingerprint, DWORD flags)
+ {
+-	JNIEnv* env;
++	JNIEnv* env = nullptr;
+ 	jboolean attached = jni_attach_thread(&env);
+-	jstring jhost = (*env)->NewStringUTF(env, host);
+-	jstring jstr0 = (*env)->NewStringUTF(env, common_name);
+-	jstring jstr1 = (*env)->NewStringUTF(env, subject);
+-	jstring jstr2 = (*env)->NewStringUTF(env, issuer);
+-	jstring jstr3 = (*env)->NewStringUTF(env, new_fingerprint);
+-	jstring jstr4 = (*env)->NewStringUTF(env, old_subject);
+-	jstring jstr5 = (*env)->NewStringUTF(env, old_issuer);
+-	jstring jstr6 = (*env)->NewStringUTF(env, old_fingerprint);
+-	jint res =
+-	    freerdp_callback_int_result("OnVerifyChangedCertificateEx",
+-	                                "(JLjava/lang/String;JLjava/lang/String;Ljava/lang/"
+-	                                "String;Ljava/lang/String;Ljava/lang/String;"
+-	                                "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)I",
+-	                                (jlong)instance, jhost, (jlong)port, jstr0, jstr1, jstr2, jstr3,
+-	                                jstr4, jstr5, jstr6, (jlong)flags);
++	if (!env)
++		return 0;
++	jstring refs[8] = {
++		jniNewStringUTF(env, host ? host : "", -1),
++		jniNewStringUTF(env, common_name ? common_name : "", -1),
++		jniNewStringUTF(env, subject ? subject : "", -1),
++		jniNewStringUTF(env, issuer ? issuer : "", -1),
++		jniNewStringUTF(env, new_fingerprint ? new_fingerprint : "", -1),
++		jniNewStringUTF(env, old_subject ? old_subject : "", -1),
++		jniNewStringUTF(env, old_issuer ? old_issuer : "", -1),
++		jniNewStringUTF(env, old_fingerprint ? old_fingerprint : "", -1),
++	};
++	jint res = 0;
++	BOOL valid = !(*env)->ExceptionCheck(env);
++	for (size_t x = 0; x < ARRAYSIZE(refs); x++)
++		valid = valid && refs[x] != nullptr;
++	if (valid)
++	{
++		res = freerdp_callback_int_result(
++		    "OnVerifyChangedCertificateEx",
++		    "(JLjava/lang/String;JLjava/lang/String;Ljava/lang/"
++		    "String;Ljava/lang/String;Ljava/lang/String;"
++		    "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)I",
++		    (jlong)instance, refs[0], (jlong)port, refs[1], refs[2], refs[3], refs[4], refs[5],
++		    refs[6], refs[7], (jlong)flags);
++	}
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
++	for (size_t x = 0; x < ARRAYSIZE(refs); x++)
++	{
++		if (refs[x])
++			(*env)->DeleteLocalRef(env, refs[x]);
++	}
+ 
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+@@ -595,6 +754,39 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
+ 	return res;
+ }
+ 
++static int android_verify_x509_certificate(freerdp* instance, const BYTE* data, size_t length,
++                                           const char* hostname, UINT16 port, DWORD flags)
++{
++	if (!instance || !data || length == 0 || length > ANDROID_X509_MAX_PEM_BYTES)
++		return 0;
++
++	char* pem = (char*)calloc(length + 1ull, sizeof(char));
++	if (!pem)
++		return 0;
++	memcpy(pem, data, length);
++
++	rdpCertificate* cert = freerdp_certificate_new_from_pem(pem);
++	free(pem);
++	if (!cert)
++		return 0;
++
++	char* commonName = freerdp_certificate_get_common_name(cert, nullptr);
++	char* subject = freerdp_certificate_get_subject(cert);
++	char* issuer = freerdp_certificate_get_issuer(cert);
++	char* fingerprint = freerdp_certificate_get_fingerprint(cert);
++
++	const DWORD result = android_verify_certificate_ex(
++	    instance, hostname, port, commonName ? commonName : "", subject ? subject : "",
++	    issuer ? issuer : "", fingerprint ? fingerprint : "", flags);
++
++	free(commonName);
++	free(subject);
++	free(issuer);
++	free(fingerprint);
++	freerdp_certificate_free(cert);
++	return (int)result;
++}
++
+ static int android_freerdp_run(freerdp* instance)
+ {
+ 	WINPR_ASSERT(instance);
+@@ -703,6 +895,39 @@ fail:
+ 	return status;
+ }
+ 
++typedef struct
++{
++	freerdp* instance;
++	HANDLE worker;
++} androidDeferredFree;
++
++static void android_finalize_instance(freerdp* instance, HANDLE worker)
++{
++	if (!instance || !instance->context)
++		return;
++
++	androidContext* ctx = (androidContext*)instance->context;
++	ctx->thread = nullptr;
++	if (worker)
++		(void)CloseHandle(worker);
++	freerdp_client_context_free(instance->context);
++}
++
++static DWORD WINAPI android_deferred_free_thread(LPVOID param)
++{
++	androidDeferredFree* deferred = (androidDeferredFree*)param;
++	if (!deferred)
++		return ERROR_INVALID_PARAMETER;
++
++	const DWORD status = WaitForSingleObject(deferred->worker, INFINITE);
++	if (status == WAIT_OBJECT_0)
++		android_finalize_instance(deferred->instance, deferred->worker);
++	else
++		WLog_ERR(TAG, "deferred native cleanup wait failed; leaking context to avoid use-after-free");
++	free(deferred);
++	return status;
++}
++
+ static BOOL android_client_new(freerdp* instance, rdpContext* context)
+ {
+ 	WINPR_ASSERT(instance);
+@@ -718,6 +943,7 @@ static BOOL android_client_new(freerdp* instance, rdpContext* context)
+ 	instance->AuthenticateEx = android_authenticate_ex;
+ 	instance->VerifyCertificateEx = android_verify_certificate_ex;
+ 	instance->VerifyChangedCertificateEx = android_verify_changed_certificate_ex;
++	instance->VerifyX509Certificate = android_verify_x509_certificate;
+ 	instance->LogonErrorInfo = nullptr;
+ 	return TRUE;
+ }
+@@ -751,16 +977,20 @@ static int RdpClientEntry(RDP_CLIENT_ENTRY_POINTS* pEntryPoints)
+ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1new(
+     JNIEnv* env, jclass cls, jobject context)
+ {
+-	jclass contextClass;
+-	jclass fileClass;
+-	jobject filesDirObj;
+-	jmethodID getFilesDirID;
+-	jmethodID getAbsolutePathID;
+-	jstring path;
+-	const char* raw;
+-	char* envStr;
+-	RDP_CLIENT_ENTRY_POINTS clientEntryPoints;
+-	rdpContext* ctx;
++	WINPR_UNUSED(cls);
++	if (!env || !context)
++		return (jlong)0;
++
++	jclass contextClass = nullptr;
++	jclass fileClass = nullptr;
++	jobject filesDirObj = nullptr;
++	jmethodID getFilesDirID = nullptr;
++	jmethodID getAbsolutePathID = nullptr;
++	jstring path = nullptr;
++	char* envStr = nullptr;
++	rdpContext* ctx = nullptr;
++	jlong result = 0;
++	RDP_CLIENT_ENTRY_POINTS clientEntryPoints = WINPR_C_ARRAY_INIT;
+ #if defined(WITH_GPROF)
+ 	setenv("CPUPROFILE_FREQUENCY", "200", 1);
+ 	monstartup("libfreerdp-android.so");
+@@ -772,7 +1002,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+ 	{
+ 		WLog_FATAL(TAG, "Failed to load class references %s=%p, %s=%p", JAVA_CONTEXT_CLASS,
+ 		           (void*)contextClass, JAVA_FILE_CLASS, (void*)fileClass);
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+ 	getFilesDirID =
+@@ -781,7 +1011,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+ 	if (!getFilesDirID)
+ 	{
+ 		WLog_FATAL(TAG, "Failed to find method ID getFilesDir ()L" JAVA_FILE_CLASS ";");
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+ 	getAbsolutePathID =
+@@ -790,57 +1020,60 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+ 	if (!getAbsolutePathID)
+ 	{
+ 		WLog_FATAL(TAG, "Failed to find method ID getAbsolutePath ()Ljava/lang/String;");
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+ 	filesDirObj = (*env)->CallObjectMethod(env, context, getFilesDirID);
+ 
+-	if (!filesDirObj)
++	if (!filesDirObj || (*env)->ExceptionCheck(env))
+ 	{
+ 		WLog_FATAL(TAG, "Failed to call getFilesDir");
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+ 	path = (*env)->CallObjectMethod(env, filesDirObj, getAbsolutePathID);
+ 
+-	if (!path)
++	if (!path || (*env)->ExceptionCheck(env))
+ 	{
+ 		WLog_FATAL(TAG, "Failed to call getAbsolutePath");
+-		return (jlong) nullptr;
+-	}
+-
+-	raw = (*env)->GetStringUTFChars(env, path, 0);
+-
+-	if (!raw)
+-	{
+-		WLog_FATAL(TAG, "Failed to get C string from java string");
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+-	envStr = _strdup(raw);
+-	(*env)->ReleaseStringUTFChars(env, path, raw);
+-
++	envStr = jniStringToUtf8(env, path, nullptr);
+ 	if (!envStr)
+ 	{
+-		WLog_FATAL(TAG, "_strdup(%s) failed", raw);
+-		return (jlong) nullptr;
++		WLog_FATAL(TAG, "Failed to convert files directory to UTF-8");
++		goto fail;
+ 	}
+ 
+-	if (setenv("HOME", _strdup(envStr), 1) != 0)
++	if (setenv("HOME", envStr, 1) != 0)
+ 	{
+ 		char ebuffer[256] = WINPR_C_ARRAY_INIT;
+ 		WLog_FATAL(TAG, "Failed to set environment HOME=%s %s [%d]", envStr,
+ 		           winpr_strerror(errno, ebuffer, sizeof(ebuffer)), errno);
+-		return (jlong) nullptr;
++		goto fail;
+ 	}
+ 
+ 	RdpClientEntry(&clientEntryPoints);
+ 	ctx = freerdp_client_context_new(&clientEntryPoints);
+ 
+ 	if (!ctx)
+-		return (jlong) nullptr;
++		goto fail;
+ 
+-	return (jlong)ctx->instance;
++	result = (jlong)ctx->instance;
++fail:
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
++	free(envStr);
++	if (path)
++		(*env)->DeleteLocalRef(env, path);
++	if (filesDirObj)
++		(*env)->DeleteLocalRef(env, filesDirObj);
++	if (fileClass)
++		(*env)->DeleteLocalRef(env, fileClass);
++	if (contextClass)
++		(*env)->DeleteLocalRef(env, contextClass);
++	return result;
+ }
+ 
+ JNIEXPORT void JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1free(
+@@ -849,7 +1082,45 @@ JNIEXPORT void JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_
+ 	freerdp* inst = (freerdp*)instance;
+ 
+ 	if (inst)
+-		freerdp_client_context_free(inst->context);
++	{
++		androidContext* ctx = (androidContext*)inst->context;
++		if (inst->context)
++			(void)freerdp_abort_connect_context(inst->context);
++
++		/* Never release a context while its worker can still execute callbacks. A bounded wait
++		 * prevents an unresponsive server/plugin from hanging the Java cleanup thread forever. */
++		if (ctx && ctx->thread)
++		{
++			const DWORD status = WaitForSingleObject(ctx->thread, ANDROID_NATIVE_SHUTDOWN_WAIT_MS);
++			if (status == WAIT_TIMEOUT)
++			{
++				androidDeferredFree* deferred =
++				    (androidDeferredFree*)calloc(1, sizeof(androidDeferredFree));
++				if (deferred)
++				{
++					deferred->instance = inst;
++					deferred->worker = ctx->thread;
++					HANDLE reaper =
++					    CreateThread(nullptr, 0, android_deferred_free_thread, deferred, 0, nullptr);
++					if (reaper)
++					{
++						WLog_WARN(TAG, "native worker did not stop within timeout; cleanup deferred");
++						(void)CloseHandle(reaper);
++						return;
++					}
++					free(deferred);
++				}
++				WLog_ERR(TAG, "could not start deferred cleanup; leaking context to avoid use-after-free");
++				return;
++			}
++			if (status != WAIT_OBJECT_0)
++			{
++				WLog_ERR(TAG, "native worker wait failed; leaking context to avoid use-after-free");
++				return;
++			}
++		}
++		android_finalize_instance(inst, ctx ? ctx->thread : nullptr);
++	}
+ 
+ #if defined(WITH_GPROF)
+ 	moncleanup();
+@@ -861,13 +1132,31 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1last_1error_1stri
+                                                                                    jclass cls,
+                                                                                    jlong instance)
+ {
++	WINPR_UNUSED(cls);
++	if (!env)
++		return nullptr;
++	freerdp* inst = (freerdp*)instance;
++
++	if (!inst || !inst->context)
++		return jniNewStringUTF(env, "", 0);
++
++	return jniNewStringUTF(
++	    env, freerdp_get_last_error_string(freerdp_get_last_error(inst->context)), -1);
++}
++
++JNIEXPORT jlong JNICALL
++Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1last_1error_1code(JNIEnv* env,
++                                                                                 jclass cls,
++                                                                                 jlong instance)
++{
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+ 
+ 	if (!inst || !inst->context)
+-		return (*env)->NewStringUTF(env, "");
++		return 0;
+ 
+-	return (*env)->NewStringUTF(
+-	    env, freerdp_get_last_error_string(freerdp_get_last_error(inst->context)));
++	return (jlong)freerdp_get_last_error(inst->context);
+ }
+ 
+ JNIEXPORT jboolean JNICALL
+@@ -875,36 +1164,53 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1parse_1arguments(JNIEn
+                                                                            jlong instance,
+                                                                            jobjectArray arguments)
+ {
++	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+-	int count;
+-	char** argv;
+-	DWORD status;
+ 
+-	if (!inst || !inst->context)
++	if (!env || !inst || !inst->context || !arguments)
+ 		return JNI_FALSE;
+ 
+-	count = (*env)->GetArrayLength(env, arguments);
+-	argv = calloc(count, sizeof(char*));
+-
++	const jsize count = (*env)->GetArrayLength(env, arguments);
++	if (count < 1 || count > ANDROID_COMMAND_LINE_MAX_ARGS)
++		return JNI_FALSE;
++	char** argv = (char**)calloc((size_t)count + 1ull, sizeof(char*));
+ 	if (!argv)
+-		return JNI_TRUE;
++		return JNI_FALSE;
+ 
+-	for (int i = 0; i < count; i++)
++	jboolean result = JNI_FALSE;
++	size_t totalArgBytes = 0;
++	for (jsize i = 0; i < count; i++)
+ 	{
+ 		jstring str = (jstring)(*env)->GetObjectArrayElement(env, arguments, i);
+-		const char* raw = (*env)->GetStringUTFChars(env, str, 0);
+-		argv[i] = _strdup(raw);
+-		(*env)->ReleaseStringUTFChars(env, str, raw);
++		size_t argLength = 0;
++		if (!str || (*env)->ExceptionCheck(env))
++			goto fail;
++		const jsize utf16Length = (*env)->GetStringLength(env, str);
++		if ((*env)->ExceptionCheck(env) || utf16Length < 0 ||
++		    (size_t)utf16Length > ANDROID_COMMAND_LINE_MAX_UTF16_CHARS)
++		{
++			(*env)->DeleteLocalRef(env, str);
++			goto fail;
++		}
++		argv[i] = jniStringToUtf8(env, str, &argLength);
++		(*env)->DeleteLocalRef(env, str);
++		if (!argv[i] || argLength > ANDROID_COMMAND_LINE_MAX_UTF8_BYTES ||
++		    totalArgBytes > ANDROID_COMMAND_LINE_MAX_UTF8_BYTES - argLength)
++			goto fail;
++		totalArgBytes += argLength;
+ 	}
+ 
+-	status =
++	const DWORD status =
+ 	    freerdp_client_settings_parse_command_line(inst->context->settings, count, argv, FALSE);
++	result = (status == 0) ? JNI_TRUE : JNI_FALSE;
+ 
+-	for (int i = 0; i < count; i++)
++fail:
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
++	for (jsize i = 0; i < count; i++)
+ 		free(argv[i]);
+-
+ 	free(argv);
+-	return (status == 0) ? JNI_TRUE : JNI_FALSE;
++	return result;
+ }
+ 
+ JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1connect(
+@@ -932,31 +1238,32 @@ JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_free
+ JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1disconnect(
+     JNIEnv* env, jclass cls, jlong instance)
+ {
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+ 
+-	if (!inst || !inst->context || !cls || !env)
++	if (!inst || !inst->context)
+ 	{
+-		WLog_FATAL(TAG, "(env=%p, cls=%p, instance=%" PRId64, (void*)env, (void*)cls,
+-		           (int64_t)instance);
++		WLog_WARN(TAG, "disconnect called without a live native context");
+ 		return JNI_FALSE;
+ 	}
+ 
+-	androidContext* ctx = (androidContext*)inst->context;
++	/* Abort a handshake before queueing the normal event: before the main loop starts there is no
++	 * consumer for the Android event handle, so event-only cancellation can hang indefinitely. */
++	const BOOL aborted = freerdp_abort_connect_context(inst->context);
+ 	ANDROID_EVENT* event = (ANDROID_EVENT*)android_event_disconnect_new();
+ 
+ 	if (!event)
+-		return JNI_FALSE;
++		return aborted ? JNI_TRUE : JNI_FALSE;
+ 
++	BOOL queued = TRUE;
+ 	if (!android_push_event(inst, event))
+ 	{
+ 		android_event_free((ANDROID_EVENT*)event);
+-		return JNI_FALSE;
++		queued = FALSE;
+ 	}
+ 
+-	if (!freerdp_abort_connect_context(inst->context))
+-		return JNI_FALSE;
+-
+-	return JNI_TRUE;
++	return (aborted || queued) ? JNI_TRUE : JNI_FALSE;
+ }
+ 
+ JNIEXPORT jboolean JNICALL
+@@ -966,28 +1273,38 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1update_1graphics(JNIEn
+                                                                            jint y, jint width,
+                                                                            jint height)
+ {
++	WINPR_UNUSED(cls);
+ 	UINT32 DstFormat;
+ 	jboolean rc;
+ 	int ret;
+-	void* pixels;
+-	AndroidBitmapInfo info;
++	void* pixels = nullptr;
++	AndroidBitmapInfo info = WINPR_C_ARRAY_INIT;
+ 	freerdp* inst = (freerdp*)instance;
+-	rdpGdi* gdi;
+ 
+-	if (!env || !cls || !inst)
++	if (!env || !inst || !inst->context || !bitmap)
+ 	{
+-		WLog_FATAL(TAG, "(env=%p, cls=%p, instance=%" PRId64, (void*)env, (void*)cls,
+-		           (int64_t)instance);
++		WLog_WARN(TAG, "updateGraphics called with an invalid native instance or bitmap");
+ 		return JNI_FALSE;
+ 	}
+ 
+-	gdi = inst->context->gdi;
++	rdpGdi* gdi = inst->context->gdi;
++	if (!gdi || !gdi->primary_buffer || width <= 0 || height <= 0 || x < 0 || y < 0 ||
++	    (INT64)x + width > gdi->width || (INT64)y + height > gdi->height)
++	{
++		WLog_WARN(TAG, "updateGraphics rejected out-of-bounds source rectangle");
++		return JNI_FALSE;
++	}
+ 
+ 	if ((ret = AndroidBitmap_getInfo(env, bitmap, &info)) < 0)
+ 	{
+ 		WLog_FATAL(TAG, "AndroidBitmap_getInfo() failed ! error=%d", ret);
+ 		return JNI_FALSE;
+ 	}
++	if ((UINT64)x + (UINT32)width > info.width || (UINT64)y + (UINT32)height > info.height)
++	{
++		WLog_WARN(TAG, "updateGraphics rejected out-of-bounds destination rectangle");
++		return JNI_FALSE;
++	}
+ 
+ 	if ((ret = AndroidBitmap_lockPixels(env, bitmap, &pixels)) < 0)
+ 	{
+@@ -1037,10 +1354,16 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
+                                                                            jint keycode,
+                                                                            jboolean down)
+ {
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	DWORD scancode;
+ 	ANDROID_EVENT* event;
+ 	freerdp* inst = (freerdp*)instance;
++	if (!inst || !inst->context || keycode < 0 || keycode > 0x1FF)
++		return JNI_FALSE;
+ 	scancode = GetVirtualScanCodeFromVirtualKeyCode(keycode, 4);
++	if ((scancode & 0xFFu) == 0)
++		return JNI_FALSE;
+ 	int flags = (down == JNI_TRUE) ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
+ 	flags |= (scancode & KBDEXT) ? KBD_FLAGS_EXTENDED : 0;
+ 	event = (ANDROID_EVENT*)android_event_key_new(flags, scancode & 0xFF);
+@@ -1054,7 +1377,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
+ 		return JNI_FALSE;
+ 	}
+ 
+-	WLog_DBG(TAG, "send_key_event: %" PRIu32 ", %d", scancode, flags);
++	WLog_DBG(TAG, "keyboard event queued");
+ 	return JNI_TRUE;
+ }
+ 
+@@ -1062,8 +1385,12 @@ JNIEXPORT jboolean JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1unicodekey_1event(
+     JNIEnv* env, jclass cls, jlong instance, jint keycode, jboolean down)
+ {
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	ANDROID_EVENT* event;
+ 	freerdp* inst = (freerdp*)instance;
++	if (!inst || !inst->context || keycode < 0 || keycode > UINT16_MAX)
++		return JNI_FALSE;
+ 	UINT16 flags = (down == JNI_TRUE) ? 0 : KBD_FLAGS_RELEASE;
+ 	event = (ANDROID_EVENT*)android_event_unicodekey_new(flags, keycode);
+ 
+@@ -1076,7 +1403,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1unicodekey_1even
+ 		return JNI_FALSE;
+ 	}
+ 
+-	WLog_DBG(TAG, "send_unicodekey_event: %d", keycode);
++	WLog_DBG(TAG, "unicode keyboard event queued");
+ 	return JNI_TRUE;
+ }
+ 
+@@ -1084,6 +1411,8 @@ JNIEXPORT jboolean JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1is_1unicode_1input_1supported(
+     JNIEnv* env, jclass cls, jlong instance)
+ {
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+ 
+ 	if (!inst || !inst->context || !inst->context->settings)
+@@ -1099,8 +1428,13 @@ JNIEXPORT jboolean JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1cursor_1event(
+     JNIEnv* env, jclass cls, jlong instance, jint x, jint y, jint flags)
+ {
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
+ 	ANDROID_EVENT* event;
+ 	freerdp* inst = (freerdp*)instance;
++	if (!inst || !inst->context || x < 0 || x > UINT16_MAX || y < 0 || y > UINT16_MAX ||
++	    flags < 0 || flags > UINT16_MAX)
++		return JNI_FALSE;
+ 	event = (ANDROID_EVENT*)android_event_cursor_new(flags, x, y);
+ 
+ 	if (!event)
+@@ -1138,13 +1472,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1data(
+ {
+ 	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+-	const char* data = jdata != nullptr ? (*env)->GetStringUTFChars(env, jdata, nullptr) : nullptr;
+-	const size_t data_length = data ? (*env)->GetStringUTFLength(env, jdata) : 0;
+-	jboolean ret = android_push_clipboard_event(inst, data, data_length, "text/plain");
+-	WLog_DBG(TAG, "send_clipboard_data: (%s)", data);
++	if (!inst || !inst->context || !env || !jdata)
++		return JNI_FALSE;
+ 
+-	if (data)
+-		(*env)->ReleaseStringUTFChars(env, jdata, data);
++	const jsize utf16Length = (*env)->GetStringLength(env, jdata);
++	if (utf16Length < 0 || (size_t)utf16Length > ANDROID_CLIPBOARD_MAX_UTF16_CHARS)
++		return JNI_FALSE;
++	size_t dataLength = 0;
++	char* data = jniStringToUtf8(env, jdata, &dataLength);
++	if (!data || dataLength >= ANDROID_CLIPBOARD_MAX_UTF8_BYTES)
++	{
++		free(data);
++		return JNI_FALSE;
++	}
++
++	const jboolean ret = android_push_clipboard_event(inst, data, dataLength, "text/plain");
++	if (ret == JNI_TRUE)
++		WLog_DBG(TAG, "clipboard event queued (%" PRIuz " bytes)", dataLength);
++	free(data);
+ 
+ 	return ret;
+ }
+@@ -1168,16 +1513,23 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1image
+ {
+ 	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+-	jsize data_length = (*env)->GetArrayLength(env, jdata);
++	if (!env || !inst || !inst->context || !jdata || !jmimeType)
++		return JNI_FALSE;
++
++	const jsize data_length = (*env)->GetArrayLength(env, jdata);
++	if (data_length <= 0 || (size_t)data_length > ANDROID_CLIPBOARD_MAX_UTF8_BYTES)
++		return JNI_FALSE;
+ 	jbyte* data = (*env)->GetByteArrayElements(env, jdata, nullptr);
+-	const char* mimeType = jmimeType ? (*env)->GetStringUTFChars(env, jmimeType, nullptr) : nullptr;
++	char* mimeType = jniStringToUtf8(env, jmimeType, nullptr);
+ 	jboolean ret = JNI_FALSE;
+-	if (android_is_image_mime_supported(mimeType))
++	if (data && android_is_image_mime_supported(mimeType))
+ 		ret = android_push_clipboard_event(inst, data, (size_t)data_length, mimeType);
+ 
+-	if (mimeType)
+-		(*env)->ReleaseStringUTFChars(env, jmimeType, mimeType);
+-	(*env)->ReleaseByteArrayElements(env, jdata, data, JNI_ABORT);
++	free(mimeType);
++	if (data)
++		(*env)->ReleaseByteArrayElements(env, jdata, data, JNI_ABORT);
++	if ((*env)->ExceptionCheck(env))
++		(*env)->ExceptionClear(env);
+ 	return ret;
+ }
+ 
+@@ -1189,18 +1541,100 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1monitor_1layout(
+ 	WINPR_UNUSED(cls);
+ 	freerdp* inst = (freerdp*)instance;
+ 
+-	if (!inst || !inst->context)
++	if (!inst || !inst->context || !android_framebuffer_dimensions_safe((UINT32)width, (UINT32)height))
+ 		return JNI_FALSE;
+ 
+ 	androidContext* afc = (androidContext*)inst->context;
+-	return android_disp_send_monitor_layout(afc, (UINT32)width, (UINT32)height) ? JNI_TRUE
+-	                                                                            : JNI_FALSE;
++	if (!android_disp_is_ready(afc))
++		return JNI_FALSE;
++
++	ANDROID_EVENT_MONITOR_LAYOUT* event =
++	    android_event_monitor_layout_new((UINT32)width, (UINT32)height);
++	if (!event)
++		return JNI_FALSE;
++	if (!android_push_event(inst, (ANDROID_EVENT*)event))
++	{
++		android_event_free((ANDROID_EVENT*)event);
++		return JNI_FALSE;
++	}
++
++	/* TRUE means the display channel was ready at enqueue time and the worker queue accepted the
++	 * request. SessionViewModel still waits for OnGraphicsResize before considering it delivered. */
++	return JNI_TRUE;
++}
++
++JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1touch(
++    JNIEnv* env, jclass cls, jlong instance, jint contactId, jint x, jint y, jint action)
++{
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
++	ANDROID_EVENT* event;
++	freerdp* inst = (freerdp*)instance;
++	if (!inst || !inst->context || contactId < 0 || contactId > 9 || x < 0 || y < 0 ||
++	    x >= (jint)ANDROID_FRAMEBUFFER_MAX_DIMENSION ||
++	    y >= (jint)ANDROID_FRAMEBUFFER_MAX_DIMENSION ||
++	    (action != ANDROID_TOUCH_DOWN && action != ANDROID_TOUCH_MOVE &&
++	     action != ANDROID_TOUCH_UP))
++		return JNI_FALSE;
++	event = (ANDROID_EVENT*)android_event_touch_new(contactId, x, y, action);
++
++	if (!event)
++		return JNI_FALSE;
++
++	if (!android_push_event(inst, event))
++	{
++		android_event_free(event);
++		return JNI_FALSE;
++	}
++
++	WLog_DBG(TAG, "send_touch: id=%d (%d, %d) action=%d", contactId, x, y, action);
++	return JNI_TRUE;
++}
++
++/*
++ * Upstream FreeRDP 3.30's client responds E_ABORT to RDPEMT requests. The audited build omits the
++ * old out-of-tree UDP implementation and reports TCP fallback whenever multitransport was requested.
++ */
++JNIEXPORT jint JNICALL
++Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1transport_1info(JNIEnv* env,
++                                                                              jclass cls,
++                                                                              jlong instance)
++{
++	WINPR_UNUSED(env);
++	WINPR_UNUSED(cls);
++	freerdp* inst = (freerdp*)instance;
++
++	if (!inst || !inst->context || !inst->context->settings)
++		return -1;
++
++	rdpSettings* settings = inst->context->settings;
++	const androidContext* afc = (const androidContext*)inst->context;
++	const UINT32 proto = freerdp_settings_get_uint32(settings, FreeRDP_SelectedProtocol);
++	const jint requested = afc->multitransportRequested ? 0x200 : 0;
++	const jint fallback = afc->multitransportRequested ? 0x100 : 0;
++	return (jint)(0x01 | fallback | requested | ((proto & 0x0Fu) << 4));
++}
++
++JNIEXPORT jlongArray JNICALL
++Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1transport_1stats(JNIEnv* env,
++                                                                                jclass cls,
++                                                                                jlong instance)
++{
++	WINPR_UNUSED(cls);
++	freerdp* inst = (freerdp*)instance;
++	if (!env || !inst || !inst->context)
++		return nullptr;
++
++	/* The audited build removes PocketRDP's unsafe out-of-tree UDP transport. Preserve the stable
++	 * Java diagnostics shape until upstream exposes transport counters. */
++	return (*env)->NewLongArray(env, 8);
+ }
+ 
+ JNIEXPORT jstring JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1jni_1version(JNIEnv* env, jclass cls)
+ {
+-	return (*env)->NewStringUTF(env, FREERDP_JNI_VERSION);
++	WINPR_UNUSED(cls);
++	return jniNewStringUTF(env, FREERDP_JNI_VERSION, -1);
+ }
+ 
+ JNIEXPORT jboolean JNICALL
+@@ -1226,21 +1660,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1has_1camera_1redirecti
+ JNIEXPORT jstring JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1version(JNIEnv* env, jclass cls)
+ {
+-	return (*env)->NewStringUTF(env, freerdp_get_version_string());
++	WINPR_UNUSED(cls);
++	return jniNewStringUTF(env, freerdp_get_version_string(), -1);
+ }
+ 
+ JNIEXPORT jstring JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1build_1revision(JNIEnv* env,
+                                                                                jclass cls)
+ {
+-	return (*env)->NewStringUTF(env, freerdp_get_build_revision());
++	WINPR_UNUSED(cls);
++	return jniNewStringUTF(env, freerdp_get_build_revision(), -1);
+ }
+ 
+ JNIEXPORT jstring JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1build_1config(JNIEnv* env,
+                                                                              jclass cls)
+ {
+-	return (*env)->NewStringUTF(env, freerdp_get_build_config());
++	WINPR_UNUSED(cls);
++	return jniNewStringUTF(env, freerdp_get_build_config(), -1);
+ }
+ 
+ jint JNI_OnLoad(JavaVM* vm, void* reserved)
+@@ -1273,8 +1710,25 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
+ 
+ 	/* create global reference for class */
+ 	gJavaActivityClass = (*env)->NewGlobalRef(env, activityClass);
++	(*env)->DeleteLocalRef(env, activityClass);
++	if (!gJavaActivityClass)
++	{
++		WLog_FATAL(TAG, "failed to create global class reference");
++		if ((*env)->ExceptionCheck(env))
++			(*env)->ExceptionClear(env);
++		return JNI_ERR;
++	}
+ 	gOnPointerSetMethod =
+ 	    (*env)->GetStaticMethodID(env, gJavaActivityClass, "OnPointerSet", "(J[IIIII)V");
++	if (!gOnPointerSetMethod)
++	{
++		WLog_FATAL(TAG, "required OnPointerSet callback not found");
++		if ((*env)->ExceptionCheck(env))
++			(*env)->ExceptionClear(env);
++		(*env)->DeleteGlobalRef(env, gJavaActivityClass);
++		gJavaActivityClass = nullptr;
++		return JNI_ERR;
++	}
+ 	gOnRailWindowUpdateMethod =
+ 	    (*env)->GetStaticMethodID(env, gJavaActivityClass, "OnRailWindowUpdate", "(JJII[I)V");
+ 	if (!gOnRailWindowUpdateMethod)
+@@ -1283,7 +1737,14 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
+ 		WLog_WARN(TAG, "OnRailWindowUpdate method not found, RAIL window display disabled");
+ 	}
+ 	g_JavaVm = vm;
+-	return init_callback_environment(vm, env);
++	const jint result = init_callback_environment(vm, env);
++	if (result == JNI_ERR)
++	{
++		(*env)->DeleteGlobalRef(env, gJavaActivityClass);
++		gJavaActivityClass = nullptr;
++		g_JavaVm = nullptr;
++	}
++	return result;
+ }
+ 
+ void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved)
+@@ -1299,4 +1760,9 @@ void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved)
+ 
+ 	if (gJavaActivityClass)
+ 		(*env)->DeleteGlobalRef(env, gJavaActivityClass);
++	gJavaActivityClass = nullptr;
++	gOnPointerSetMethod = nullptr;
++	gOnRailWindowUpdateMethod = nullptr;
++	uninit_callback_environment(env);
++	g_JavaVm = nullptr;
+ }
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.h b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.h
+index a72a7050..b3d215d4 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.h
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.h
+@@ -20,6 +20,7 @@
+ #include <freerdp/client/cliprdr.h>
+ #include <freerdp/client/disp.h>
+ #include <freerdp/client/rail.h>
++#include <freerdp/client/rdpei.h>
+ 
+ #include "android_event.h"
+ 
+@@ -31,19 +32,24 @@ typedef struct
+ 	HANDLE thread;
+ 
+ 	BOOL is_connected;
++	BOOL multitransportRequested;
+ 
+ 	BOOL clipboardSync;
+ 	wClipboard* clipboard;
+ 	UINT32 numServerFormats;
+ 	UINT32 requestedFormatId;
++	BOOL clipboardRequestPending;
++	BOOL clipboardFormatListPending;
+ 	HANDLE clipboardRequestEvent;
+ 	CLIPRDR_FORMAT* serverFormats;
+ 	CliprdrClientContext* cliprdr;
+ 	UINT32 clipboardCapabilities;
+ 
+ 	DispClientContext* disp;
++	LONG volatile dispReady;
+ 	RailClientContext* rail;
+ 	BOOL railExecSent;
++	RdpeiClientContext* rdpei;
+ } androidContext;
+ 
+ #endif /* FREERDP_CLIENT_ANDROID_FREERDP_H */
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.c
+index 9d964fcf..95f8d64f 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.c
+@@ -24,11 +24,17 @@ static jobject jLibFreeRDPObject;
+ 
+ static const char* jLibFreeRDPPath = JAVA_LIBFREERDP_CLASS;
+ 
+-static void jni_load_class(JNIEnv* env, const char* path, jobject* objptr)
++static BOOL jni_load_class(JNIEnv* env, const char* path, jobject* objptr)
+ {
+-	jclass class;
+-	jmethodID method;
+-	jobject object;
++	jclass class = nullptr;
++	jmethodID method = nullptr;
++	jobject object = nullptr;
++	BOOL rc = FALSE;
++
++	if (!env || !path || !objptr)
++		return FALSE;
++	*objptr = nullptr;
++
+ 	WLog_DBG(TAG, "jni_load_class: %s", path);
+ 	class = (*env)->FindClass(env, path);
+ 
+@@ -55,54 +61,92 @@ static void jni_load_class(JNIEnv* env, const char* path, jobject* objptr)
+ 	}
+ 
+ 	(*objptr) = (*env)->NewGlobalRef(env, object);
++	rc = *objptr != nullptr;
+ finish:
+-
+-	while (0)
+-		;
++	if ((*env)->ExceptionCheck(env))
++	{
++		WLog_ERR(TAG, "jni_load_class: Java exception while loading %s", path);
++		(*env)->ExceptionClear(env);
++	}
++	if (object)
++		(*env)->DeleteLocalRef(env, object);
++	if (class)
++		(*env)->DeleteLocalRef(env, class);
++	return rc;
+ }
+ 
+ jint init_callback_environment(JavaVM* vm, JNIEnv* env)
+ {
++	if (!vm || !env)
++		return JNI_ERR;
+ 	jVM = vm;
+-	jni_load_class(env, jLibFreeRDPPath, &jLibFreeRDPObject);
+-	return JNI_VERSION_1_6;
++	return jni_load_class(env, jLibFreeRDPPath, &jLibFreeRDPObject) ? JNI_VERSION_1_6 : JNI_ERR;
++}
++
++void uninit_callback_environment(JNIEnv* env)
++{
++	if (env && jLibFreeRDPObject)
++		(*env)->DeleteGlobalRef(env, jLibFreeRDPObject);
++	jLibFreeRDPObject = nullptr;
++	jVM = nullptr;
+ }
+ 
+ /* attach current thread to jvm */
+ jboolean jni_attach_thread(JNIEnv** env)
+ {
+-	if ((*jVM)->GetEnv(jVM, (void**)env, JNI_VERSION_1_4) != JNI_OK)
++	if (!env)
++		return JNI_FALSE;
++	*env = nullptr;
++	if (!jVM)
++		return JNI_FALSE;
++
++	const jint getEnvStatus = (*jVM)->GetEnv(jVM, (void**)env, JNI_VERSION_1_6);
++	if (getEnvStatus == JNI_OK)
++		return JNI_FALSE;
++	if (getEnvStatus != JNI_EDETACHED)
+ 	{
+-		WLog_DBG(TAG, "android_java_callback: attaching current thread");
+-		(*jVM)->AttachCurrentThread(jVM, env, nullptr);
+-
+-		if ((*jVM)->GetEnv(jVM, (void**)env, JNI_VERSION_1_4) != JNI_OK)
+-		{
+-			WLog_ERR(TAG, "android_java_callback: failed to obtain current JNI environment");
+-		}
+-
+-		return JNI_TRUE;
++		WLog_ERR(TAG, "android_java_callback: GetEnv failed with %d", getEnvStatus);
++		return JNI_FALSE;
+ 	}
+ 
+-	return JNI_FALSE;
++	WLog_DBG(TAG, "android_java_callback: attaching current thread");
++	if ((*jVM)->AttachCurrentThread(jVM, env, nullptr) != JNI_OK || !*env)
++	{
++		WLog_ERR(TAG, "android_java_callback: failed to attach current thread");
++		*env = nullptr;
++		return JNI_FALSE;
++	}
++	return JNI_TRUE;
+ }
+ 
+ /* attach current thread to JVM */
+ void jni_detach_thread()
+ {
+-	(*jVM)->DetachCurrentThread(jVM);
++	if (jVM)
++		(*jVM)->DetachCurrentThread(jVM);
++}
++
++static void jni_clear_callback_exception(JNIEnv* env, const char* callback)
++{
++	if (env && (*env)->ExceptionCheck(env))
++	{
++		WLog_ERR(TAG, "Java exception in callback %s; clearing it to keep the native worker valid",
++		         callback ? callback : "<unknown>");
++		(*env)->ExceptionClear(env);
++	}
+ }
+ 
+ /* callback with void result */
+ static void java_callback_void(jobject obj, const char* callback, const char* signature,
+                                va_list args)
+ {
+-	jclass jObjClass;
+-	jmethodID jCallback;
+-	jboolean attached;
+-	JNIEnv* env;
++	jclass jObjClass = nullptr;
++	jmethodID jCallback = nullptr;
++	JNIEnv* env = nullptr;
+ 	WLog_DBG(TAG, "java_callback: %s (%s)", callback, signature);
+-	attached = jni_attach_thread(&env);
++	const jboolean attached = jni_attach_thread(&env);
++	if (!env || !obj)
++		goto finish;
+ 	jObjClass = (*env)->GetObjectClass(env, obj);
+ 
+ 	if (!jObjClass)
+@@ -121,7 +165,9 @@ static void java_callback_void(jobject obj, const char* callback, const char* si
+ 
+ 	(*env)->CallStaticVoidMethodV(env, jObjClass, jCallback, args);
+ finish:
+-
++	jni_clear_callback_exception(env, callback);
++	if (env && jObjClass)
++		(*env)->DeleteLocalRef(env, jObjClass);
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+ }
+@@ -130,13 +176,14 @@ finish:
+ static jboolean java_callback_bool(jobject obj, const char* callback, const char* signature,
+                                    va_list args)
+ {
+-	jclass jObjClass;
+-	jmethodID jCallback;
+-	jboolean attached;
++	jclass jObjClass = nullptr;
++	jmethodID jCallback = nullptr;
+ 	jboolean res = JNI_FALSE;
+-	JNIEnv* env;
++	JNIEnv* env = nullptr;
+ 	WLog_DBG(TAG, "java_callback: %s (%s)", callback, signature);
+-	attached = jni_attach_thread(&env);
++	const jboolean attached = jni_attach_thread(&env);
++	if (!env || !obj)
++		goto finish;
+ 	jObjClass = (*env)->GetObjectClass(env, obj);
+ 
+ 	if (!jObjClass)
+@@ -155,7 +202,9 @@ static jboolean java_callback_bool(jobject obj, const char* callback, const char
+ 
+ 	res = (*env)->CallStaticBooleanMethodV(env, jObjClass, jCallback, args);
+ finish:
+-
++	jni_clear_callback_exception(env, callback);
++	if (env && jObjClass)
++		(*env)->DeleteLocalRef(env, jObjClass);
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+ 
+@@ -166,13 +215,14 @@ finish:
+ static jint java_callback_int(jobject obj, const char* callback, const char* signature,
+                               va_list args)
+ {
+-	jclass jObjClass;
+-	jmethodID jCallback;
+-	jboolean attached;
+-	jint res = -1;
+-	JNIEnv* env;
++	jclass jObjClass = nullptr;
++	jmethodID jCallback = nullptr;
++	jint res = 0;
++	JNIEnv* env = nullptr;
+ 	WLog_DBG(TAG, "java_callback: %s (%s)", callback, signature);
+-	attached = jni_attach_thread(&env);
++	const jboolean attached = jni_attach_thread(&env);
++	if (!env || !obj)
++		goto finish;
+ 	jObjClass = (*env)->GetObjectClass(env, obj);
+ 
+ 	if (!jObjClass)
+@@ -191,7 +241,9 @@ static jint java_callback_int(jobject obj, const char* callback, const char* sig
+ 
+ 	res = (*env)->CallStaticIntMethodV(env, jObjClass, jCallback, args);
+ finish:
+-
++	jni_clear_callback_exception(env, callback);
++	if (env && jObjClass)
++		(*env)->DeleteLocalRef(env, jObjClass);
+ 	if (attached == JNI_TRUE)
+ 		jni_detach_thread();
+ 
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.h b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.h
+index 861e40d2..79d53671 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.h
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_callback.h
+@@ -18,6 +18,7 @@
+ #include <freerdp/api.h>
+ 
+ FREERDP_LOCAL jint init_callback_environment(JavaVM* vm, JNIEnv* env);
++FREERDP_LOCAL void uninit_callback_environment(JNIEnv* env);
+ FREERDP_LOCAL jboolean jni_attach_thread(JNIEnv** env);
+ FREERDP_LOCAL void jni_detach_thread(void);
+ FREERDP_LOCAL void freerdp_callback(const char* callback, const char* signature, ...);
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.c
+index 0a21510e..ff1f3d56 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.c
+@@ -15,6 +15,7 @@
+ #include <locale.h>
+ #include <freerdp/channels/channels.h>
+ #include <freerdp/log.h>
++#include <winpr/string.h>
+ 
+ #include "android_jni_callback.h"
+ 
+@@ -30,6 +31,11 @@ JavaVM* getJavaVM()
+ JNIEnv* getJNIEnv()
+ {
+ 	JNIEnv* env = nullptr;
++	if (!g_JavaVm)
++	{
++		WLog_ERR(TAG, "JavaVM is not initialized");
++		return nullptr;
++	}
+ 	if ((*g_JavaVm)->GetEnv(g_JavaVm, (void**)&env, JNI_VERSION_1_4) != JNI_OK)
+ 	{
+ 		WLog_FATAL(TAG, "Failed to obtain JNIEnv");
+@@ -40,24 +46,31 @@ JNIEnv* getJNIEnv()
+ 
+ jobject create_string_builder(JNIEnv* env, char* initialStr)
+ {
+-	jclass cls;
+-	jmethodID methodId;
+-	jobject obj;
++	jclass cls = nullptr;
++	jmethodID methodId = nullptr;
++	jobject obj = nullptr;
++	jstring jstr = nullptr;
++
++	if (!env)
++		return nullptr;
+ 
+ 	// get class
+ 	cls = (*env)->FindClass(env, "java/lang/StringBuilder");
+ 	if (!cls)
+-		return nullptr;
++		goto fail;
+ 
+ 	if (initialStr)
+ 	{
+ 		// get method id for constructor
+ 		methodId = (*env)->GetMethodID(env, cls, "<init>", "(Ljava/lang/String;)V");
+ 		if (!methodId)
+-			return nullptr;
++			goto fail;
+ 
+-		// create string that holds our initial string
+-		jstring jstr = (*env)->NewStringUTF(env, initialStr);
++		// FreeRDP strings are standard UTF-8. NewStringUTF consumes JNI modified UTF-8 and
++		// corrupts supplementary characters, so convert explicitly.
++		jstr = jniNewStringUTF(env, initialStr, -1);
++		if (!jstr)
++			goto fail;
+ 
+ 		// construct new StringBuilder
+ 		obj = (*env)->NewObject(env, cls, methodId, jstr);
+@@ -67,125 +80,139 @@ jobject create_string_builder(JNIEnv* env, char* initialStr)
+ 		// get method id for constructor
+ 		methodId = (*env)->GetMethodID(env, cls, "<init>", "()V");
+ 		if (!methodId)
+-			return nullptr;
++			goto fail;
+ 
+ 		// construct new StringBuilder
+ 		obj = (*env)->NewObject(env, cls, methodId);
+ 	}
+ 
++fail:
++	if (jstr)
++		(*env)->DeleteLocalRef(env, jstr);
++	if (cls)
++		(*env)->DeleteLocalRef(env, cls);
+ 	return obj;
+ }
+ 
+ char* get_string_from_string_builder(JNIEnv* env, jobject strBuilder)
+ {
+-	jclass cls;
+-	jmethodID methodId;
+-	jstring strObj;
+-	const char* native_str;
+-	char* result;
++	jclass cls = nullptr;
++	jmethodID methodId = nullptr;
++	jstring strObj = nullptr;
++	char* result = nullptr;
++
++	if (!env || !strBuilder)
++		return nullptr;
+ 
+ 	// get class
+ 	cls = (*env)->FindClass(env, "java/lang/StringBuilder");
+ 	if (!cls)
+-		return nullptr;
++		goto fail;
+ 
+ 	// get method id for constructor
+ 	methodId = (*env)->GetMethodID(env, cls, "toString", "()Ljava/lang/String;");
+ 	if (!methodId)
+-		return nullptr;
++		goto fail;
+ 
+ 	// get jstring representation of our buffer
+ 	strObj = (*env)->CallObjectMethod(env, strBuilder, methodId);
++	if (!strObj || (*env)->ExceptionCheck(env))
++		goto fail;
+ 
+-	// read string
+-	native_str = (*env)->GetStringUTFChars(env, strObj, nullptr);
+-	if (!native_str)
+-		return nullptr;
+-	result = _strdup(native_str);
+-	(*env)->ReleaseStringUTFChars(env, strObj, native_str);
++	result = jniStringToUtf8(env, strObj, nullptr);
+ 
++fail:
++	if (strObj)
++		(*env)->DeleteLocalRef(env, strObj);
++	if (cls)
++		(*env)->DeleteLocalRef(env, cls);
+ 	return result;
+ }
+ 
+-jstring jniNewStringUTF(JNIEnv* env, const char* in, int len)
++static jchar* jniCopyStringChars(JNIEnv* env, jstring input, jsize* length)
+ {
+-	jstring out = nullptr;
+-	jchar* unicode = nullptr;
+-	jint result_size = 0;
+-	unsigned char* utf8 = (unsigned char*)in;
++	if (!env || !input || !length)
++		return nullptr;
+ 
+-	if (!in)
+-	{
++	*length = (*env)->GetStringLength(env, input);
++	if (*length < 0)
+ 		return nullptr;
+-	}
+-	if (len < 0)
+-		len = strlen(in);
+ 
+-	unicode = (jchar*)malloc(sizeof(jchar) * (len + 1));
+-	if (!unicode)
+-	{
++	const jchar* chars = (*env)->GetStringChars(env, input, nullptr);
++	if (!chars)
+ 		return nullptr;
+-	}
+ 
+-	for (jint i = 0; i < len; i++)
++	jchar* copy = (jchar*)calloc((size_t)*length + 1ull, sizeof(jchar));
++	if (copy)
+ 	{
+-		unsigned char one = utf8[i];
+-		switch (one >> 4)
++		for (jsize x = 0; x < *length; x++)
+ 		{
+-			case 0x00:
+-			case 0x01:
+-			case 0x02:
+-			case 0x03:
+-			case 0x04:
+-			case 0x05:
+-			case 0x06:
+-			case 0x07:
+-				unicode[result_size++] = one;
+-				break;
+-			case 0x08:
+-			case 0x09:
+-			case 0x0a:
+-			case 0x0b:
+-				// case 0x0f:
+-				/*
+-				 * Bit pattern 10xx or 1111, which are illegal start bytes.
+-				 * Note: 1111 is valid for normal UTF-8, but not the
+-				 * modified UTF-8 used here.
+-				 */
+-				break;
+-			case 0x0f:
+-			case 0x0e:
+-				// Bit pattern 111x, so there are two additional bytes.
+-				if (i < (len - 2))
+-				{
+-					unsigned char two = utf8[i + 1];
+-					unsigned char three = utf8[i + 2];
+-					if ((two & 0xc0) == 0x80 && (three & 0xc0) == 0x80)
+-					{
+-						i += 2;
+-						unicode[result_size++] =
+-						    ((one & 0x0f) << 12) | ((two & 0x3f) << 6) | (three & 0x3f);
+-					}
+-				}
+-				break;
+-			case 0x0c:
+-			case 0x0d:
+-				// Bit pattern 110x, so there is one additional byte.
+-				if (i < (len - 1))
+-				{
+-					unsigned char two = utf8[i + 1];
+-					if ((two & 0xc0) == 0x80)
+-					{
+-						i += 1;
+-						unicode[result_size++] = ((one & 0x1f) << 6) | (two & 0x3f);
+-					}
+-				}
++			/* Embedded NUL cannot be represented by the NUL-terminated WinPR conversion API.
++			 * Reject instead of silently truncating a credential, command-line argument or
++			 * clipboard payload. */
++			if (chars[x] == 0)
++			{
++				free(copy);
++				copy = nullptr;
+ 				break;
++			}
++			copy[x] = chars[x];
+ 		}
+ 	}
+ 
+-	out = (*env)->NewString(env, unicode, result_size);
+-	free(unicode);
++	(*env)->ReleaseStringChars(env, input, chars);
++	return copy;
++}
++
++char* jniStringToUtf8(JNIEnv* env, jstring input, size_t* length)
++{
++	jsize utf16Length = 0;
++	jchar* utf16 = jniCopyStringChars(env, input, &utf16Length);
++	if (!utf16)
++		return nullptr;
++
++	size_t utf8Length = 0;
++	char* result = ConvertWCharToUtf8Alloc((const WCHAR*)utf16, &utf8Length);
++	free(utf16);
++	if (length)
++		*length = result ? utf8Length : 0;
++	return result;
++}
++
++jstring jniNewStringUTF(JNIEnv* env, const char* in, int len)
++{
++	if (!env || !in)
++		return nullptr;
++
++	if (len < 0)
++	{
++		const size_t inputLength = strlen(in);
++		if (inputLength > INT32_MAX)
++			return nullptr;
++		len = (int)inputLength;
++	}
++	else if (memchr(in, '\0', (size_t)len) != nullptr)
++	{
++		/* The conversion API is NUL-terminated. Reject embedded NUL instead of returning
++		 * a silently truncated Java string. */
++		return nullptr;
++	}
++
++	char* terminated = (char*)calloc((size_t)len + 1ull, sizeof(char));
++	if (!terminated)
++		return nullptr;
++	memcpy(terminated, in, (size_t)len);
++
++	size_t utf16Length = 0;
++	WCHAR* utf16 = ConvertUtf8ToWCharAlloc(terminated, &utf16Length);
++	free(terminated);
++	if (!utf16 || utf16Length > INT32_MAX)
++	{
++		free(utf16);
++		return nullptr;
++	}
+ 
++	jstring out = (*env)->NewString(env, (const jchar*)utf16, (jsize)utf16Length);
++	free(utf16);
+ 	return out;
+ }
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.h b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.h
+index 0ac804d3..bfa9b464 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.h
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_jni_utils.h
+@@ -25,6 +25,7 @@ extern "C"
+ 
+ 	FREERDP_LOCAL char* get_string_from_string_builder(JNIEnv* env, jobject strBuilder);
+ 	FREERDP_LOCAL jobject create_string_builder(JNIEnv* env, char* initialStr);
++	FREERDP_LOCAL char* jniStringToUtf8(JNIEnv* env, jstring input, size_t* length);
+ 	FREERDP_LOCAL jstring jniNewStringUTF(JNIEnv* env, const char* in, int len);
+ 
+ 	FREERDP_LOCAL extern JavaVM* g_JavaVm;
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_rail.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_rail.c
+index 160ba989..af29e3f7 100644
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_rail.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_rail.c
+@@ -22,6 +22,7 @@
+ #include "android_rail.h"
+ 
+ #define TAG CLIENT_TAG("android.rail")
++#define ANDROID_RAIL_MAX_WINDOW_IDS 4096u
+ 
+ static BOOL android_rail_monitored_desktop(rdpContext* context, const WINDOW_ORDER_INFO* orderInfo,
+                                            const MONITORED_DESKTOP_ORDER* monitoredDesktop)
+@@ -57,15 +58,23 @@ static BOOL android_rail_monitored_desktop(rdpContext* context, const WINDOW_ORD
+ 	const BOOL hasZOrder = (flags & WINDOW_ORDER_FIELD_DESKTOP_ZORDER) && monitoredDesktop &&
+ 	                       monitoredDesktop->numWindowIds > 0 && monitoredDesktop->windowIds;
+ 	const BOOL hasActive = (flags & WINDOW_ORDER_FIELD_DESKTOP_ACTIVE_WND) && monitoredDesktop;
++	const BOOL safeZOrder =
++	    hasZOrder && monitoredDesktop->numWindowIds <= ANDROID_RAIL_MAX_WINDOW_IDS;
++	if (hasZOrder && !safeZOrder)
++	{
++		WLog_WARN(TAG, "ignoring oversized RAIL z-order list: %" PRIu32 " window ids",
++		          monitoredDesktop->numWindowIds);
++	}
+ 
+-	if (hasZOrder || hasActive)
++	if (safeZOrder || hasActive)
+ 	{
+ 		JNIEnv* env = nullptr;
+ 		jboolean attached = jni_attach_thread(&env);
+ 		if (env)
+ 		{
+ 			jlongArray arr = nullptr;
+-			if (hasZOrder)
++			BOOL zOrderReady = !safeZOrder;
++			if (safeZOrder)
+ 			{
+ 				const jsize n = (jsize)monitoredDesktop->numWindowIds;
+ 				arr = (*env)->NewLongArray(env, n);
+@@ -77,12 +86,18 @@ static BOOL android_rail_monitored_desktop(rdpContext* context, const WINDOW_ORD
+ 						for (jsize i = 0; i < n; i++)
+ 							tmp[i] = (jlong)monitoredDesktop->windowIds[i];
+ 						(*env)->ReleaseLongArrayElements(env, arr, tmp, 0);
++						zOrderReady = TRUE;
+ 					}
+ 				}
+ 			}
++			if ((*env)->ExceptionCheck(env))
++				(*env)->ExceptionClear(env);
+ 			const jlong activeWindowId = hasActive ? (jlong)monitoredDesktop->activeWindowId : 0;
+-			freerdp_callback("OnRailMonitoredDesktop", "(J[JJ)V", (jlong)context->instance, arr,
+-			                 activeWindowId);
++			if (zOrderReady)
++			{
++				freerdp_callback("OnRailMonitoredDesktop", "(J[JJ)V", (jlong)context->instance, arr,
++				                 activeWindowId);
++			}
+ 			if (arr)
+ 				(*env)->DeleteLocalRef(env, arr);
+ 		}
+diff --git a/client/Android/cmake/ExternalCJSON.cmake b/client/Android/cmake/ExternalCJSON.cmake
+index 11dac921..3eb648f0 100644
+--- a/client/Android/cmake/ExternalCJSON.cmake
++++ b/client/Android/cmake/ExternalCJSON.cmake
+@@ -4,6 +4,7 @@ include(DepVersions)
+ ExternalProject_Add(
+   cjson DOWNLOAD_EXTRACT_TIMESTAMP OFF SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/cjson
+   URL https://github.com/DaveGamble/cJSON/archive/refs/tags/${CJSON_VERSION}.tar.gz URL_HASH ${CJSON_HASH}
++  TIMEOUT 60 INACTIVITY_TIMEOUT 30
+   LIST_SEPARATOR | CMAKE_ARGS ${ANDROID_CMAKE_ARGS} -DENABLE_CJSON_TEST:BOOL=OFF -DENABLE_HIDDEN_SYMBOLS:BOOL=OFF
+                               -DENABLE_CJSON_UNINSTALL:BOOL=OFF -DCMAKE_POLICY_VERSION_MINIMUM:STRING=3.5
+ )
+diff --git a/client/Android/cmake/ExternalDeps.cmake b/client/Android/cmake/ExternalDeps.cmake
+index 16081ae2..c88e48ec 100644
+--- a/client/Android/cmake/ExternalDeps.cmake
++++ b/client/Android/cmake/ExternalDeps.cmake
+@@ -21,8 +21,13 @@ set(ANDROID_CMAKE_ARGS
+     -DANDROID_ABI:STRING=${CMAKE_ANDROID_ARCH_ABI}
+     -DANDROID_PLATFORM:STRING=android-${NDK_API_LEVEL}
+     -DANDROID_STL:STRING=c++_shared
++    -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES:BOOL=ON
+     -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
++    -DCMAKE_POLICY_VERSION_MINIMUM:STRING=3.5
+     -DCMAKE_MAKE_PROGRAM:FILEPATH=${CMAKE_MAKE_PROGRAM}
++    -DCMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,-z,max-page-size=16384
++    -DCMAKE_MODULE_LINKER_FLAGS:STRING=-Wl,-z,max-page-size=16384
++    -DCMAKE_EXE_LINKER_FLAGS:STRING=-Wl,-z,max-page-size=16384
+     -DBUILD_SHARED_LIBS:BOOL=ON
+     -DCMAKE_INSTALL_PREFIX:PATH=${DEPS_INSTALL_DIR}
+     -DCMAKE_INSTALL_LIBDIR:STRING=${CMAKE_INSTALL_LIBDIR}
+diff --git a/client/Android/cmake/ExternalFFmpeg.cmake b/client/Android/cmake/ExternalFFmpeg.cmake
+index c66c0a27..0292524f 100644
+--- a/client/Android/cmake/ExternalFFmpeg.cmake
++++ b/client/Android/cmake/ExternalFFmpeg.cmake
+@@ -17,7 +17,14 @@ elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+   set(FFMPEG_CLANG_TARGET "armv7a-linux-androideabi${NDK_API_LEVEL}")
+ elseif(ANDROID_ABI STREQUAL "x86_64")
+   set(FFMPEG_ARCH "x86_64")
+-  list(APPEND FFMPEG_EXTRA_ARGS "--cpu=x86-64;--disable-neon;--enable-asm;--enable-inline-asm") # x86_64
++  # FFmpeg x86 asm contains non-PIC relocations that cannot be linked into libfreerdp3.so.
++  list(APPEND FFMPEG_EXTRA_ARGS "--cpu=x86-64;--disable-neon;--disable-asm;--disable-inline-asm")
++  # ASM OFF for x86_64: FFmpeg's hand-written x86 asm (libavutil/x86/x86inc.asm) references
++  # global constants (ff_pw_1, ff_pw_4, …) with R_X86_64_PC32 relocations. Our static FFmpeg
++  # links INTO the PIC shared lib libfreerdp3.so, and ld.lld rejects PC32 against preemptible
++  # globals there ("relocation R_X86_64_PC32 cannot be used against symbol 'ff_pw_1'; recompile
++  # with -fPIC"), even with --enable-pic. Same fix as x86 (FFmpeg #4928): software decode only.
++  # x86_64 is overwhelmingly emulators, so losing SIMD on the H.264 software path is acceptable.
+   set(FFMPEG_LDFLAGS "-march=x86-64")
+   set(FFMPEG_BIGENDIAN "")
+   set(FFMPEG_CLANG_TARGET "x86_64-linux-android${NDK_API_LEVEL}")
+@@ -35,6 +42,7 @@ elseif(ANDROID_ABI STREQUAL "riscv64")
+ else()
+   message(FATAL_ERROR "ExternalFFmpeg: unsupported ABI '${ANDROID_ABI}'")
+ endif()
++string(APPEND FFMPEG_LDFLAGS " -Wl,-z,max-page-size=16384")
+ 
+ set(NDK_TOOLCHAIN_BIN "${NDK_ROOT}/toolchains/llvm/prebuilt/${NDK_HOST_PLATFORM}/bin")
+ set(NDK_SYSROOT "${NDK_ROOT}/toolchains/llvm/prebuilt/${NDK_HOST_PLATFORM}/sysroot")
+@@ -51,13 +59,16 @@ else()
+   set(FFMPEG_BIGENDIAN_ENV "")
+ endif()
+ 
+-if("openh264" IN_LIST ANDROID_NATIVE_DEPS)
+-  list(APPEND FFMPEG_EXTRA_ARGS --enable-libopenh264)
+-endif()
+-if("opus" IN_LIST ANDROID_NATIVE_DEPS)
+-  list(APPEND FFMPEG_EXTRA_ARGS --enable-libopus)
+-endif()
+-
++# PocketRDP AVC444 experiment (2026-05): minimal STATIC FFmpeg = H.264 software decoder + swscale
++# only. Rationale:
++#  - STATIC (--disable-shared --enable-static): a shared FFmpeg bakes versioned SONAMEs
++#    (libavcodec.so.61) into libfreerdp3 as DT_NEEDED, which Android can't package; static links it
++#    straight into libfreerdp3.so (PIC), no extra .so, no soname problem. The 16 KB page alignment
++#    then comes for free from libfreerdp3's own link flags.
++#  - No libopus / libopenh264 / mediacodec / audio: this build runs with WITH_OPENH264=OFF, so the
++#    openh264 + opus ExternalProjects don't exist (DEPENDS removed). We only need FFmpeg's native
++#    software h264 decoder + swscale to test whether FFmpeg's decode/stride avoids the AVC444
++#    chroma-combine corruption seen with the OpenH264 backend.
+ ExternalProject_Add(
+   ffmpeg
+   INSTALL_DIR ${DEPS_INSTALL_DIR}
+@@ -66,15 +77,19 @@ ExternalProject_Add(
+   BINARY_DIR ${CMAKE_BINARY_DIR}/external/ffmpeg
+   URL https://github.com/FFmpeg/FFmpeg/archive/refs/tags/${FFMPEG_VERSION}.tar.gz
+   URL_HASH ${FFMPEG_HASH}
++  TIMEOUT 60
++  INACTIVITY_TIMEOUT 30
+   LIST_SEPARATOR |
+-  DEPENDS ${ANDROID_NATIVE_DEPS}
+   CONFIGURE_COMMAND
+     ${CMAKE_COMMAND} -E env "PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH}"
+-    "PKG_CONFIG_PATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/pkgconfig" ${FFMPEG_BIGENDIAN_ENV}
++    "PKG_CONFIG_LIBDIR=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/pkgconfig" ${FFMPEG_BIGENDIAN_ENV}
+     <SOURCE_DIR>/configure --cross-prefix=${NDK_TOOLCHAIN_BIN}/llvm- --cc=${FFMPEG_CC} --cxx=${FFMPEG_CXX}
+-    --pkg-config=${PKG_CONFIG_EXECUTABLE} --sysroot=${NDK_SYSROOT} --arch=${FFMPEG_ARCH} ${FFMPEG_CPU}
+-    --extra-ldflags="${FFMPEG_LDFLAGS}" ${FFMPEG_EXTRA_ARGS} --target-os=android --enable-cross-compile --enable-pic
+-    --enable-lto --enable-jni --enable-mediacodec --enable-shared --disable-static --disable-programs --disable-doc
++    --pkg-config=${PKG_CONFIG_EXECUTABLE} --sysroot=${NDK_SYSROOT} --arch=${FFMPEG_ARCH}
++    --extra-ldflags="${FFMPEG_LDFLAGS}" ${FFMPEG_EXTRA_ARGS} --target-os=android
++    --enable-cross-compile --enable-pic --disable-shared --enable-static
++    --disable-vulkan --disable-stripping --disable-programs --disable-doc --disable-avdevice --disable-avfilter
++    --disable-avformat --disable-everything
++    --enable-decoder=h264 --enable-parser=h264
+     --prefix=${DEPS_INSTALL_DIR} --libdir=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}
+   BUILD_COMMAND ${CMAKE_COMMAND} -E env "PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH}" make -j
+   INSTALL_COMMAND ${CMAKE_COMMAND} -E env "PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH}" make -j install
+diff --git a/client/Android/cmake/ExternalFreeRDP.cmake b/client/Android/cmake/ExternalFreeRDP.cmake
+index 87804adf..d42222b1 100644
+--- a/client/Android/cmake/ExternalFreeRDP.cmake
++++ b/client/Android/cmake/ExternalFreeRDP.cmake
+@@ -7,6 +7,10 @@ set(FREERDP_PREFIX_PATH
+ )
+ 
+ string(REPLACE ";" "|" FREERDP_PREFIX_PATH "${FREERDP_PREFIX_PATH}")
++# -Wl,-z,max-page-size=16384 is required for Android 15+ (SDK 35+) 16 KB page-size devices.
++# This explicit list overrides CMAKE_SHARED_LINKER_FLAGS_INIT from the NDK toolchain,
++# so the 16 KB flag has to be re-appended here.
++set(FREERDP_LINKER_FLAGS "-L${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR} -Wl,-z,max-page-size=16384")
+ 
+ set(FREERDP_EXTRA_CMAKE_ARGS
+     -DWITHOUT_WINPR_3x_DEPRECATED:BOOL=ON
+@@ -18,6 +22,10 @@ set(FREERDP_EXTRA_CMAKE_ARGS
+     -DWITH_SYSTEMD:BOOL=OFF
+     # Toolchain
+     -DPKG_CONFIG_EXECUTABLE:FILEPATH=${PKG_CONFIG_EXECUTABLE}
++    -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES:BOOL=ON
++    -DCMAKE_SHARED_LINKER_FLAGS:STRING=${FREERDP_LINKER_FLAGS}
++    -DCMAKE_MODULE_LINKER_FLAGS:STRING=${FREERDP_LINKER_FLAGS}
++    -DCMAKE_EXE_LINKER_FLAGS:STRING=${FREERDP_LINKER_FLAGS}
+     # Internal crypto
+     -DWITH_INTERNAL_RC4:BOOL=ON
+     -DWITH_INTERNAL_MD4:BOOL=ON
+@@ -25,10 +33,27 @@ set(FREERDP_EXTRA_CMAKE_ARGS
+     # SSL backend
+     -DWITH_OPENSSL:BOOL=${WITH_OPENSSL}
+     # Codecs
+-    -DWITH_MEDIACODEC:BOOL=${WITH_MEDIACODEC}
++    # MediaCodec forced ON here (not via the gradle cmake-args) ON PURPOSE: passing -DWITH_MEDIACODEC
++    # through core-rdp/build.gradle.kts would change AGP's CMake config hash and trigger a full
++    # superbuild re-download/rebuild of every dep (openssl/ffmpeg/cjson) for all four ABIs — fatal on a
++    # China network. Setting it in this .cmake (a build INPUT, not part of the config hash) keeps the
++    # hash stable so cached deps are reused; only FreeRDP rebuilds (it gains h264_mediacodec.c + links
++    # the system libmediandk). h264.c orders subsystems MediaCodec → OpenH264 → FFmpeg and takes the
++    # first whose Init() succeeds, so this makes hardware decode PRIMARY with FFmpeg as the auto-fallback.
++    -DWITH_MEDIACODEC:BOOL=ON
+     -DWITH_FFMPEG:BOOL=${WITH_FFMPEG}
+     -DWITH_SWSCALE:BOOL=${WITH_FFMPEG}
++    # Register FFmpeg as the H.264 VIDEO decoder subsystem (g_Subsystem_libavcodec). DSP/audio via
++    # FFmpeg stays OFF — our minimal static FFmpeg only carries the h264 decoder + swscale.
++    -DWITH_VIDEO_FFMPEG:BOOL=${WITH_FFMPEG}
++    -DWITH_DSP_FFMPEG:BOOL=OFF
+     -DWITH_OPENH264:BOOL=${WITH_OPENH264}
++    # MUST dlopen openh264 at runtime (default is OFF = direct link). A direct link bakes the
++    # versioned SONAME libopenh264.so.7 into libfreerdp3.so as a DT_NEEDED, which Android's APK
++    # packaging can't satisfy (only lib<name>.so is installed) → libfreerdp3.so fails to dlopen.
++    # Loading mode instead probes a name list ending in the unversioned libopenh264.so, which we
++    # ship in jniLibs. (issue #1 H.264 / AVC444)
++    -DWITH_OPENH264_LOADING:BOOL=${WITH_OPENH264}
+     -DWITH_VAAPI_H264_ENCODING:BOOL=OFF
+     # Image formats
+     -DWINPR_UTILS_IMAGE_PNG:BOOL=${WITH_PNG}
+@@ -38,10 +63,18 @@ set(FREERDP_EXTRA_CMAKE_ARGS
+     -DWITH_OPUS:BOOL=${WITH_OPUS}
+     # JSON
+     -DWITH_CJSON_REQUIRED:BOOL=${WITH_CJSON}
+-    # Printer channel
+-    -DCHANNEL_PRINTER_CLIENT:BOOL=ON
+-    # Camera redirection (Android NDK Camera2 HAL)
+-    -DCHANNEL_RDPECAM_CLIENT:BOOL=ON
++    # PocketRDP exposes only playback, clipboard, phone-storage drive, display-control and touch
++    # redirection. Remove sensitive device redirection clients that a future argument/configuration
++    # mistake could otherwise activate. rdpsnd/cliprdr/rdpdr/drive/disp/rdpei stay enabled.
++    -DCHANNEL_AUDIN_CLIENT:BOOL=OFF
++    -DCHANNEL_PRINTER_CLIENT:BOOL=OFF
++    -DCHANNEL_RDPECAM_CLIENT:BOOL=OFF
++    -DCHANNEL_SMARTCARD_CLIENT:BOOL=OFF
++    -DCHANNEL_SERIAL_CLIENT:BOOL=OFF
++    -DCHANNEL_PARALLEL_CLIENT:BOOL=OFF
++    -DCHANNEL_URBDRC_CLIENT:BOOL=OFF
++    -DCHANNEL_SSHAGENT_CLIENT:BOOL=OFF
++    -DCHANNEL_LOCATION_CLIENT:BOOL=OFF
+ )
+ 
+ ExternalProject_Add(
+diff --git a/client/Android/cmake/ExternalOpenH264.cmake b/client/Android/cmake/ExternalOpenH264.cmake
+index fc9d52dd..250a1073 100644
+--- a/client/Android/cmake/ExternalOpenH264.cmake
++++ b/client/Android/cmake/ExternalOpenH264.cmake
+@@ -22,13 +22,16 @@ ExternalProject_Add(
+   SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/openh264
+   GIT_REPOSITORY https://github.com/cisco/openh264.git
+   GIT_TAG ${OPENH264_TAG}
+-  GIT_SHALLOW TRUE
++  # A raw commit ID is intentionally immutable. Use a full fetch because shallow Git clones do
++  # not reliably permit checkout of an arbitrary commit that is not advertised as a branch tip.
++  GIT_SHALLOW FALSE
+   LIST_SEPARATOR |
+   PATCH_COMMAND git apply --3way ${CMAKE_CURRENT_LIST_DIR}/0001-riscv64-support.patch
+                 ${CMAKE_CURRENT_LIST_DIR}/0002-openh264-pkgconfig-patch.patch
+   CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different <SOURCE_DIR> <BINARY_DIR>
+   BUILD_COMMAND
+-    ${CMAKE_COMMAND} -E env "PATH=${NDK_ROOT}:$ENV{PATH}" make ENABLEPIC=Yes LDFLAGS=-static-libstdc++ OS=android
++    ${CMAKE_COMMAND} -E env "PATH=${NDK_ROOT}:$ENV{PATH}" make ENABLEPIC=Yes
++    "LDFLAGS=-static-libstdc++ -Wl,-z,max-page-size=16384" OS=android
+     NDKROOT=${NDK_ROOT} NDK_TOOLCHAIN_VERSION=clang TARGET=android-${NDK_API_LEVEL} NDKLEVEL=${NDK_API_LEVEL}
+     ARCH=${H264_ARCH} -j libraries
+   INSTALL_COMMAND
+diff --git a/client/Android/cmake/ExternalOpenSSL.cmake b/client/Android/cmake/ExternalOpenSSL.cmake
+index ec7fde4b..6ef53b6c 100644
+--- a/client/Android/cmake/ExternalOpenSSL.cmake
++++ b/client/Android/cmake/ExternalOpenSSL.cmake
+@@ -25,10 +25,13 @@ ExternalProject_Add(
+   BINARY_DIR ${CMAKE_BINARY_DIR}/external/openssl
+   URL https://github.com/openssl/openssl/releases/download/${OPENSSL_VERSION}/${OPENSSL_VERSION}.tar.gz
+   URL_HASH ${OPENSSL_HASH}
++  TIMEOUT 60
++  INACTIVITY_TIMEOUT 30
+   LIST_SEPARATOR |
+   CONFIGURE_COMMAND
+     ${CMAKE_COMMAND} -E env PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH} ANDROID_NDK=${NDK_ROOT} ANDROID_NDK_ROOT=${NDK_ROOT}
+-    ANDROID_NDK_HOME=${NDK_ROOT} CC=clang perl <SOURCE_DIR>/Configure ${OSSL_ARCH} shared no-tests no-apps no-docs
++    ANDROID_NDK_HOME=${NDK_ROOT} CC=clang LDFLAGS=-Wl,-z,max-page-size=16384
++    perl <SOURCE_DIR>/Configure ${OSSL_ARCH} shared no-tests no-apps no-docs
+     -U__ANDROID_API__ -D__ANDROID_API__=${NDK_API_LEVEL} --prefix=${DEPS_INSTALL_DIR} --libdir=${CMAKE_INSTALL_LIBDIR}
+   BUILD_COMMAND ${CMAKE_COMMAND} -E env PATH=${NDK_TOOLCHAIN_BIN}:$ENV{PATH} ANDROID_NDK=${NDK_ROOT}
+                 ANDROID_NDK_ROOT=${NDK_ROOT} ANDROID_NDK_HOME=${NDK_ROOT} make -j SHLIB_EXT=.so build_libs
+diff --git a/client/Android/cmake/ExternalUriparser.cmake b/client/Android/cmake/ExternalUriparser.cmake
+index 1ff69db9..406736db 100644
+--- a/client/Android/cmake/ExternalUriparser.cmake
++++ b/client/Android/cmake/ExternalUriparser.cmake
+@@ -7,6 +7,8 @@ ExternalProject_Add(
+   SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/uriparser
+   URL https://github.com/uriparser/uriparser/releases/download/uriparser-${URIPARSER_VERSION}/uriparser-${URIPARSER_VERSION}.tar.xz
+   URL_HASH ${URIPARSER_HASH}
++  TIMEOUT 60
++  INACTIVITY_TIMEOUT 30
+   LIST_SEPARATOR |
+   CMAKE_ARGS ${ANDROID_CMAKE_ARGS} -DURIPARSER_BUILD_DOCS:BOOL=OFF -DURIPARSER_BUILD_TESTS:BOOL=OFF
+              -DURIPARSER_BUILD_TOOLS:BOOL=OFF
+diff --git a/cmake/DepVersions.cmake b/cmake/DepVersions.cmake
+index 75d7cad2..4cfb7312 100644
+--- a/cmake/DepVersions.cmake
++++ b/cmake/DepVersions.cmake
+@@ -19,7 +19,9 @@ set(OPUS_HASH "SHA256=65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f
+ set(URIPARSER_VERSION "1.0.2")
+ set(URIPARSER_HASH "SHA256=7b2496f9622b4b201186a3d159d278605f1fb7262402a10cc1c0824889798b00")
+ 
+-set(OPENH264_TAG v2.6.0)
++# Immutable commit behind the v2.6.0 tag. OpenH264 is disabled in PocketRDP's
++# current build, but keeping the dormant fallback reproducible avoids a moving-tag fetch.
++set(OPENH264_TAG 652bdb7719f30b52b08e506645a7322ff1b2cc6f)
+ 
+-set(FFMPEG_VERSION "n8.1")
+-set(FFMPEG_HASH "SHA256=dd308201bb1239a1b73185f80c6b4121f4efdfa424a009ce544fd00bf736bb2e")
++set(FFMPEG_VERSION "n8.1.2")
++set(FFMPEG_HASH "SHA256=9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7")
+diff --git a/libfreerdp/codec/h264_ffmpeg.c b/libfreerdp/codec/h264_ffmpeg.c
+index 049696aa..f157abee 100644
+--- a/libfreerdp/codec/h264_ffmpeg.c
++++ b/libfreerdp/codec/h264_ffmpeg.c
+@@ -787,6 +787,14 @@ static BOOL libavcodec_init(H264_CONTEXT* h264)
+ 	fail_vt_create:
+ #endif
+ 
++		/* Android uses this decoder only when MediaCodec initialization fails. Slice threading
++		 * avoids the old single-threaded software fallback bottleneck without adding the extra
++		 * frame of latency associated with FF_THREAD_FRAME. */
++#if !defined(WITH_VAAPI) && !defined(WITH_VIDEOTOOLBOX)
++		sys->codecDecoderContext->thread_type = FF_THREAD_SLICE;
++		sys->codecDecoderContext->thread_count = 4;
++#endif
++
+ 		if (avcodec_open2(sys->codecDecoderContext, sys->codecDecoder, nullptr) < 0)
+ 		{
+ 			WLog_Print(h264->log, WLOG_ERROR, "Failed to open libav codec");
+diff --git a/libfreerdp/codec/h264_mediacodec.c b/libfreerdp/codec/h264_mediacodec.c
+index 159d74d1..5a0c608f 100644
+--- a/libfreerdp/codec/h264_mediacodec.c
++++ b/libfreerdp/codec/h264_mediacodec.c
+@@ -64,6 +64,12 @@ static AMediaFormat* mediacodec_format_new(wLog* log, int width, int height)
+ 	AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
+ 	AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
+ 	AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FormatYUV420Planar);
++	/* PocketRDP local patch — low-latency decode (操控延迟 fix): ask the hardware decoder to minimise
++	 * pipeline buffering (no multi-frame reorder/throughput buffer) so a decoded frame is emitted as
++	 * soon as it's ready, which is essential for an interactive RDP session. Use the literal key string
++	 * ("low-latency", == MediaFormat.KEY_LOW_LATENCY) rather than the API-30-gated AMEDIAFORMAT_KEY_*
++	 * symbol so it links cleanly across NDK levels; a codec that doesn't understand it just ignores it. */
++	AMediaFormat_setInt32(format, "low-latency", 1);
+ 
+ 	media_format = AMediaFormat_toString(format);
+ 	if (media_format == nullptr)
+@@ -287,8 +293,9 @@ static int mediacodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
+ 			const ssize_t inputBufferId = AMediaCodec_dequeueInputBuffer(sys->decoder, -1);
+ 			if (inputBufferId < 0)
+ 			{
+-				WLog_Print(h264->log, WLOG_ERROR, "AMediaCodec_dequeueInputBuffer failed [%d]",
+-				           inputBufferId);
++				WLog_Print(h264->log, WLOG_ERROR,
++				           "AMediaCodec_dequeueInputBuffer failed [%" PRId64 "]",
++				           (INT64)inputBufferId);
+ 				// TODO: sleep?
+ 				continue;
+ 			}
+@@ -305,8 +312,8 @@ static int mediacodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
+ 			if (numberOfBytesToCopy > inputBufferSize)
+ 			{
+ 				WLog_Print(h264->log, WLOG_WARN,
+-				           "MediaCodec inputBufferSize: got [%d] but wanted [%d]", inputBufferSize,
+-				           numberOfBytesToCopy);
++				           "MediaCodec inputBufferSize: got [%" PRIuz "] but wanted [%" PRIu32 "]",
++				           inputBufferSize, numberOfBytesToCopy);
+ 				numberOfBytesToCopy = inputBufferSize;
+ 			}
+ 
+@@ -341,7 +348,7 @@ static int mediacodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
+ 				     ((sys->outputWidth + 1) / 2) * ((sys->outputHeight + 1) / 2) * 2))
+ 				{
+ 					WLog_Print(h264->log, WLOG_ERROR,
+-					           "Error MediaCodec unexpected output buffer size %d",
++					           "Error MediaCodec unexpected output buffer size %" PRIuz,
+ 					           outputBufferSize);
+ 					return -1;
+ 				}
+@@ -357,7 +364,7 @@ static int mediacodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
+ 				              iStride[1] * ((sys->outputHeight + 1) / 2);
+ 
+ 				h264->YUVWidth = sys->outputWidth;
+-				h264->YUVHeigth = sys->outputHeigth;
++				h264->YUVHeight = sys->outputHeight;
+ 				break;
+ 			}
+ 			else if (outputBufferId == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
+@@ -384,8 +391,8 @@ static int mediacodec_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT3
+ 			else
+ 			{
+ 				WLog_Print(h264->log, WLOG_ERROR,
+-				           "AMediaCodec_dequeueOutputBuffer returned unknown value [%d]",
+-				           outputBufferId);
++				           "AMediaCodec_dequeueOutputBuffer returned unknown value [%" PRId64 "]",
++				           (INT64)outputBufferId);
+ 				return -1;
+ 			}
+ 		}
+diff --git a/libfreerdp/gdi/gfx.c b/libfreerdp/gdi/gfx.c
+index ec94f96e..9e85eef9 100644
+--- a/libfreerdp/gdi/gfx.c
++++ b/libfreerdp/gdi/gfx.c
+@@ -34,6 +34,47 @@
+ #include <math.h>
+ 
+ #define TAG FREERDP_TAG("gdi")
++#define GDI_GFX_MAX_DIMENSION 8192u
++#define GDI_GFX_MAX_PIXELS 16777216ull
++#define GDI_GFX_MAX_SURFACE_BYTES (128ull * 1024ull * 1024ull)
++
++static BOOL gdi_gfx_dimensions_safe(UINT32 width, UINT32 height)
++{
++	return width > 0 && height > 0 && width <= GDI_GFX_MAX_DIMENSION &&
++	       height <= GDI_GFX_MAX_DIMENSION && (UINT64)width * height <= GDI_GFX_MAX_PIXELS;
++}
++
++static BOOL gdi_gfx_surface_budget_allows(RdpgfxClientContext* context, UINT64 requested)
++{
++	WINPR_ASSERT(context);
++	if (requested > GDI_GFX_MAX_SURFACE_BYTES || !context->GetSurfaceIds ||
++	    !context->GetSurfaceData)
++		return FALSE;
++
++	UINT16 count = 0;
++	UINT16* surfaceIds = nullptr;
++	if (context->GetSurfaceIds(context, &surfaceIds, &count) != CHANNEL_RC_OK)
++		return FALSE;
++
++	UINT64 total = requested;
++	for (UINT16 index = 0; index < count; index++)
++	{
++		const gdiGfxSurface* surface =
++		    (const gdiGfxSurface*)context->GetSurfaceData(context, surfaceIds[index]);
++		if (!surface)
++			continue;
++		const UINT64 bytes = (UINT64)surface->scanline * surface->height;
++		if (bytes > GDI_GFX_MAX_SURFACE_BYTES || total > GDI_GFX_MAX_SURFACE_BYTES - bytes)
++		{
++			free(surfaceIds);
++			return FALSE;
++		}
++		total += bytes;
++	}
++
++	free(surfaceIds);
++	return TRUE;
++}
+ 
+ static BOOL is_rect_valid(const RECTANGLE_16* rect, size_t width, size_t height)
+ {
+@@ -115,6 +156,12 @@ static UINT gdi_ResetGraphics(RdpgfxClientContext* context,
+ 	const UINT32 DesktopHeight = resetGraphics->height;
+ 
+ 	WLog_DBG(TAG, "new size: %" PRIu32 "x%" PRIu32, DesktopWidth, DesktopHeight);
++	if (!gdi_gfx_dimensions_safe(DesktopWidth, DesktopHeight))
++	{
++		WLog_ERR(TAG, "rejecting unsafe graphics reset size %" PRIu32 "x%" PRIu32, DesktopWidth,
++		         DesktopHeight);
++		goto fail;
++	}
+ 
+ 	if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, DesktopWidth))
+ 		goto fail;
+@@ -1259,10 +1306,23 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 	rdpGdi* gdi = nullptr;
+ 	WINPR_ASSERT(context);
+ 	WINPR_ASSERT(createSurface);
++	if (!gdi_gfx_dimensions_safe(createSurface->width, createSurface->height))
++	{
++		WLog_ERR(TAG, "rejecting unsafe GFX surface size %" PRIu16 "x%" PRIu16,
++		         createSurface->width, createSurface->height);
++		return ERROR_INVALID_DATA;
++	}
+ 	gdi = (rdpGdi*)context->custom;
+ 	WINPR_ASSERT(gdi);
+ 	WINPR_ASSERT(gdi->context);
+ 	EnterCriticalSection(&context->mux);
++	if (context->GetSurfaceData &&
++	    context->GetSurfaceData(context, createSurface->surfaceId) != nullptr)
++	{
++		WLog_ERR(TAG, "rejecting duplicate GFX surface id %" PRIu16, createSurface->surfaceId);
++		rc = ERROR_INVALID_DATA;
++		goto fail;
++	}
+ 	surface = (gdiGfxSurface*)calloc(1, sizeof(gdiGfxSurface));
+ 
+ 	if (!surface)
+@@ -1304,7 +1364,14 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 	}
+ 
+ 	surface->scanline = gfx_align_scanline(surface->width * 4UL, 16);
+-	surface->data = (BYTE*)winpr_aligned_malloc(1ull * surface->scanline * surface->height, 16);
++	const UINT64 surfaceBytes = (UINT64)surface->scanline * surface->height;
++	if (!gdi_gfx_surface_budget_allows(context, surfaceBytes))
++	{
++		WLog_ERR(TAG, "rejecting GFX surface: aggregate memory budget exceeded");
++		free(surface);
++		goto fail;
++	}
++	surface->data = (BYTE*)winpr_aligned_malloc(surfaceBytes, 16);
+ 
+ 	if (!surface->data)
+ 	{
+@@ -1317,6 +1384,12 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 
+ 	WINPR_ASSERT(context->SetSurfaceData);
+ 	rc = context->SetSurfaceData(context, surface->surfaceId, (void*)surface);
++	if (rc != CHANNEL_RC_OK)
++	{
++		region16_uninit(&surface->invalidRegion);
++		winpr_aligned_free(surface->data);
++		free(surface);
++	}
+ fail:
+ 	LeaveCriticalSection(&context->mux);
+ 	return rc;
