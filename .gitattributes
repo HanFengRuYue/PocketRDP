@@ -1,2 +1,5 @@
 *.sh text eol=lf
 *.patch text eol=lf
+# Patch files contain diff context markers that look like whitespace errors to git diff --check.
+# The apply script validates their embedded changes with git apply --whitespace=error-all.
+patches/freerdp/*.patch -whitespace

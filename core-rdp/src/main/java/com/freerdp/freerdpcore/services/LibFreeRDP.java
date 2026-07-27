@@ -54,6 +54,12 @@ public class LibFreeRDP {
         // libfreerdp3 as the software fallback (WITH_OPENH264=OFF). There is no separate
         // libopenh264.so to pre-load here.
         try {
+            // Load WinPR explicitly before the JNI bridge. If it is first mapped only as a
+            // DT_NEEDED dependency of freerdp-android, newer Android runtimes may not invoke
+            // WinPR's JNI_OnLoad when loadLibrary("winpr3") is called later. That leaves its
+            // JavaVM pointer null and aborts in winpr_jni_attach_thread during connection setup.
+            // The native core is pinned to FreeRDP 3.30, so its ABI major is intentionally fixed.
+            System.loadLibrary("winpr3");
             System.loadLibrary("freerdp-android");
             String version = freerdp_get_jni_version();
             String[] versions = version.split("[\\.-]");

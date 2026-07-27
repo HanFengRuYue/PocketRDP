@@ -32,6 +32,10 @@ if (releaseArtifactRequested && !releaseSigningReady) {
 android {
     namespace = "com.hanfengruyue.pocketrdp"
     compileSdk = 37
+    // Keep APK-side native processing on the same audited toolchain as :core-rdp. Without this,
+    // AGP falls back to its default NDK and cannot strip the staged FreeRDP libraries when that
+    // unrelated version is not installed on the Windows build host.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.hanfengruyue.pocketrdp"

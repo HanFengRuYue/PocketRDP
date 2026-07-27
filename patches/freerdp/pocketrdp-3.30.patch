@@ -4822,6 +4822,34 @@ index ec94f96e..9e85eef9 100644
  fail:
  	LeaveCriticalSection(&context->mux);
  	return rc;
+diff --git a/winpr/libwinpr/thread/tls.c b/winpr/libwinpr/thread/tls.c
+index 416bebd7..a84045ad 100644
+--- a/winpr/libwinpr/thread/tls.c
++++ b/winpr/libwinpr/thread/tls.c
+@@ -40,9 +40,21 @@ DWORD TlsAlloc(void)
+ 
+ 	if (pthread_key_create(&key, nullptr) != 0)
+ 		return TLS_OUT_OF_INDEXES;
+-	if (key > UINT32_MAX)
++
++	/*
++	 * pthread_key_t is opaque. Android's bionic encodes a validity flag in bit 31, so a valid
++	 * key is negative when observed as its signed typedef. WINPR_ASSERTING_INT_CAST rejects that
++	 * sign change even though DWORD preserves the complete 32-bit key. Validate the round trip
++	 * instead and keep the opaque bit pattern intact for pthread_get/setspecific.
++	 */
++	const DWORD index = (DWORD)key;
++	if ((index == TLS_OUT_OF_INDEXES) || ((pthread_key_t)index != key))
++	{
++		pthread_key_delete(key);
+ 		return TLS_OUT_OF_INDEXES;
+-	return WINPR_ASSERTING_INT_CAST(DWORD, key);
++	}
++
++	return index;
+ }
+ 
+ LPVOID TlsGetValue(DWORD dwTlsIndex)
 diff --git a/libfreerdp/core/rdpudp.c b/libfreerdp/core/rdpudp.c
 new file mode 100644
 index 00000000..94a8a1fb

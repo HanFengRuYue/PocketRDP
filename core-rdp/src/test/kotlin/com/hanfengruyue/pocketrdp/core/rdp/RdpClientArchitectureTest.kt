@@ -45,6 +45,23 @@ class RdpClientArchitectureTest {
     }
 
     @Test
+    fun winprJniIsInitializedBeforeFreeRdpBridgeLoads() {
+        val source = Files.readString(
+            projectRoot().resolve(
+                "core-rdp/src/main/java/com/freerdp/freerdpcore/services/LibFreeRDP.java",
+            ),
+        )
+
+        val winprLoad = source.indexOf("System.loadLibrary(\"winpr3\")")
+        val bridgeLoad = source.indexOf("System.loadLibrary(\"freerdp-android\")")
+        assertTrue("The pinned WinPR JNI library must be explicitly loaded.", winprLoad >= 0)
+        assertTrue(
+            "WinPR JNI_OnLoad must run before freerdp-android maps it as a dependency.",
+            winprLoad < bridgeLoad,
+        )
+    }
+
+    @Test
     fun certificatePromptsDoNotRemainRegisteredAsReconnects() {
         val source = Files.readString(
             projectRoot().resolve(
