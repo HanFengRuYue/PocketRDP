@@ -27,6 +27,444 @@ index 9640a93c..e86a6b00 100644
  			if ((error = channel_client_post_message(cliprdr->MsgsHandle, pData, dataLength,
  			                                         totalLength, dataFlags)))
  				WLog_Print(cliprdr->log, WLOG_ERROR, "failed with error %" PRIu32 "", error);
+diff --git a/channels/drdynvc/client/drdynvc_main.c b/channels/drdynvc/client/drdynvc_main.c
+index d94f088d..f9a673a2 100644
+--- a/channels/drdynvc/client/drdynvc_main.c
++++ b/channels/drdynvc/client/drdynvc_main.c
+@@ -31,9 +31,13 @@
+ #include <freerdp/utils/drdynvc.h>
+ #include <freerdp/codec/zgfx.h>
+ 
++#include "../../../libfreerdp/core/rdp.h"
++#include "../../../libfreerdp/core/multitransport.h"
++
+ #include "drdynvc_main.h"
+ 
+ #define TAG CHANNELS_TAG("drdynvc.client")
++#define DRDYNVC_MAX_MESSAGE_SIZE (16u * 1024u * 1024u)
+ 
+ static const char* channel_state2str(DVC_CHANNEL_STATE state)
+ {
+@@ -330,6 +334,15 @@ static IWTSVirtualChannelManager* dvcman_new(drdynvcPlugin* plugin)
+ 	WINPR_ASSERT(obj);
+ 	obj->fnObjectFree = channelByIdCleanerFn;
+ 
++	dvcman->staticTunnelsByName = HashTable_New(TRUE);
++	if (!dvcman->staticTunnelsByName)
++		goto fail;
++	if (!HashTable_SetHashFunction(dvcman->staticTunnelsByName, HashTable_StringHash))
++		goto fail;
++	obj = HashTable_KeyObject(dvcman->staticTunnelsByName);
++	WINPR_ASSERT(obj);
++	obj->fnObjectEquals = HashTable_StringCompare;
++
+ 	dvcman->pool = StreamPool_New(TRUE, 10);
+ 	if (!dvcman->pool)
+ 		goto fail;
+@@ -487,6 +500,17 @@ static UINT dvcman_call_on_receive(DVCMAN_CHANNEL* channel, wStream* data)
+ 	WINPR_ASSERT(data);
+ 
+ 	channel->stats.packetsIn++;
++	if (channel->staticTunnel)
++	{
++		drdynvcPlugin* drdynvc = channel->dvcman ? channel->dvcman->drdynvc : nullptr;
++		freerdp* instance = drdynvc && drdynvc->rdpcontext ? drdynvc->rdpcontext->instance : nullptr;
++		const size_t length = Stream_GetRemainingLength(data);
++		return instance &&
++		               freerdp_channels_data(instance, channel->staticChannelId, Stream_Pointer(data),
++		                                     length, CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST, length)
++		           ? CHANNEL_RC_OK
++		           : ERROR_INTERNAL_ERROR;
++	}
+ 
+ 	IWTSVirtualChannelCallback* cb = channel->channel_callback;
+ 	WINPR_ASSERT(cb);
+@@ -534,6 +558,10 @@ static UINT dvcman_channel_close(DVCMAN_CHANNEL* channel, BOOL perRequest, BOOL
+ 
+ 			channel->state = DVC_CHANNEL_CLOSED;
+ 
++			if (channel->staticTunnel && channel->dvcman->staticTunnelsByName)
++				HashTable_Remove(channel->dvcman->staticTunnelsByName, channel->channel_name);
++
++			if (!channel->staticTunnel)
+ 			{
+ 				check_open_close_receive(channel);
+ 
+@@ -543,7 +571,7 @@ static UINT dvcman_channel_close(DVCMAN_CHANNEL* channel, BOOL perRequest, BOOL
+ 					error = IFCALLRESULT(CHANNEL_RC_OK, cb->OnClose, cb);
+ 			}
+ 
+-			if (channel->dvcman && channel->dvcman->drdynvc)
++			if (!channel->staticTunnel && channel->dvcman && channel->dvcman->drdynvc)
+ 			{
+ 				if (context)
+ 				{
+@@ -620,6 +648,7 @@ static void dvcman_clear(drdynvcPlugin* drdynvc, IWTSVirtualChannelManager* pCha
+ 	WINPR_UNUSED(drdynvc);
+ 
+ 	HashTable_Clear(dvcman->channelsById);
++	HashTable_Clear(dvcman->staticTunnelsByName);
+ 	ArrayList_Clear(dvcman->plugins);
+ 	ArrayList_Clear(dvcman->plugin_names);
+ 	HashTable_Clear(dvcman->listeners);
+@@ -633,6 +662,7 @@ static void dvcman_free(drdynvcPlugin* drdynvc, IWTSVirtualChannelManager* pChan
+ 	WINPR_UNUSED(drdynvc);
+ 
+ 	HashTable_Free(dvcman->channelsById);
++	HashTable_Free(dvcman->staticTunnelsByName);
+ 	ArrayList_Free(dvcman->plugins);
+ 	ArrayList_Free(dvcman->plugin_names);
+ 	HashTable_Free(dvcman->listeners);
+@@ -789,6 +819,68 @@ static DrdynvcClientChannelStat* drdynvc_get_channel_stats(DrdynvcClientContext*
+ 	return args.stats;
+ }
+ 
++static DVCMAN_CHANNEL* dvcman_create_static_tunnel_channel(
++    drdynvcPlugin* drdynvc, IWTSVirtualChannelManager* pChannelMgr, UINT32 ChannelId,
++    const char* ChannelName, UINT* res)
++{
++	WINPR_ASSERT(drdynvc);
++	WINPR_ASSERT(pChannelMgr);
++	WINPR_ASSERT(ChannelName);
++	WINPR_ASSERT(res);
++
++	DVCMAN* dvcman = (DVCMAN*)pChannelMgr;
++	rdpSettings* settings = drdynvc->rdpcontext ? drdynvc->rdpcontext->settings : nullptr;
++	freerdp* instance = drdynvc->rdpcontext ? drdynvc->rdpcontext->instance : nullptr;
++	if (!settings || !instance ||
++	    (freerdp_settings_get_uint32(settings, FreeRDP_MultitransportFlags) &
++	     TRANSPORT_TYPE_UDP_PREFERRED) == 0 ||
++	    strnlen(ChannelName, CHANNEL_NAME_LEN + 1) > CHANNEL_NAME_LEN)
++	{
++		*res = ERROR_NOT_FOUND;
++		return nullptr;
++	}
++
++	const UINT16 staticChannelId = freerdp_channels_get_id_by_name(instance, ChannelName);
++	const UINT16 drdynvcChannelId =
++	    freerdp_channels_get_id_by_name(instance, DRDYNVC_SVC_CHANNEL_NAME);
++	if (staticChannelId == 0 || staticChannelId == drdynvcChannelId ||
++	    dvcman_get_channel_by_id(pChannelMgr, ChannelId, FALSE) != nullptr ||
++	    HashTable_GetItemValue(dvcman->staticTunnelsByName, ChannelName) != nullptr)
++	{
++		*res = ERROR_NOT_FOUND;
++		return nullptr;
++	}
++
++	DVCMAN_CHANNEL* channel =
++	    dvcman_channel_new(drdynvc, pChannelMgr, ChannelId, ChannelName);
++	if (!channel)
++	{
++		*res = CHANNEL_RC_NO_MEMORY;
++		return nullptr;
++	}
++	channel->iface.Write = dvcman_write_channel;
++	channel->iface.Close = dvcman_close_channel_iface;
++	channel->staticTunnel = TRUE;
++	channel->staticChannelId = staticChannelId;
++	channel->state = DVC_CHANNEL_RUNNING;
++	if (!HashTable_Insert(dvcman->channelsById, &channel->channel_id, channel))
++	{
++		dvcman_channel_free(channel);
++		*res = ERROR_INTERNAL_ERROR;
++		return nullptr;
++	}
++	if (!HashTable_Insert(dvcman->staticTunnelsByName, channel->channel_name, channel))
++	{
++		HashTable_Remove(dvcman->channelsById, &channel->channel_id);
++		*res = ERROR_INTERNAL_ERROR;
++		return nullptr;
++	}
++
++	WLog_INFO(TAG, "static VC '%s' tunneled through DVC id=%" PRIu32, ChannelName, ChannelId);
++	*res = CHANNEL_RC_OK;
++	return channel;
++}
++
+ /**
+  * Function description
+  *
+@@ -812,7 +904,8 @@ static DVCMAN_CHANNEL* dvcman_create_channel(drdynvcPlugin* drdynvc,
+ 	listener = (DVCMAN_LISTENER*)HashTable_GetItemValue(dvcman->listeners, ChannelName);
+ 	if (!listener)
+ 	{
+-		*res = ERROR_NOT_FOUND;
++		channel = dvcman_create_static_tunnel_channel(drdynvc, pChannelMgr, ChannelId,
++		                                               ChannelName, res);
+ 		goto out;
+ 	}
+ 
+@@ -917,6 +1010,8 @@ static UINT dvcman_open_channel(drdynvcPlugin* drdynvc, DVCMAN_CHANNEL* channel)
+ 	WINPR_ASSERT(channel);
+ 	if (channel->state == DVC_CHANNEL_RUNNING)
+ 	{
++		if (channel->staticTunnel)
++			return CHANNEL_RC_OK;
+ 		IWTSVirtualChannelCallback* pCallback = channel->channel_callback;
+ 
+ 		if (pCallback->OnOpen)
+@@ -948,6 +1043,8 @@ static UINT dvcman_receive_channel_data_first(DVCMAN_CHANNEL* channel, UINT32 le
+ {
+ 	WINPR_ASSERT(channel);
+ 	WINPR_ASSERT(channel->dvcman);
++	if (length == 0 || length > DRDYNVC_MAX_MESSAGE_SIZE)
++		return ERROR_INVALID_DATA;
+ 	if (channel->dvc_data)
+ 		Stream_Release(channel->dvc_data);
+ 
+@@ -1082,6 +1179,32 @@ static UINT drdynvc_send(drdynvcPlugin* drdynvc, wStream* s, DVCMAN_CHANNEL_STAT
+ 	}
+ }
+ 
++static UINT drdynvc_send_data_pdu(drdynvcPlugin* drdynvc, wStream* s,
++                                  DVCMAN_CHANNEL_STATS* stats, UINT32 channelId)
++{
++	if (!drdynvc || !s)
++		return CHANNEL_RC_BAD_CHANNEL_HANDLE;
++	rdpMultitransport* multi =
++	    drdynvc->rdpcontext && drdynvc->rdpcontext->rdp
++	        ? drdynvc->rdpcontext->rdp->multitransport
++	        : nullptr;
++	BOOL routed = FALSE;
++	const size_t length = Stream_GetPosition(s);
++	if (multi && !multitransport_send_dvc_data(multi, channelId, Stream_Buffer(s), length, &routed))
++	{
++		Stream_Release(s);
++		return ERROR_INTERNAL_ERROR;
++	}
++	if (routed)
++	{
++		if (stats)
++			stats->bytesOut += length;
++		Stream_Release(s);
++		return CHANNEL_RC_OK;
++	}
++	return drdynvc_send(drdynvc, s, stats);
++}
++
+ /**
+  * Function description
+  *
+@@ -1137,7 +1260,7 @@ static UINT drdynvc_write_data(drdynvcPlugin* drdynvc, UINT32 ChannelId, const B
+ 		}
+ 		Stream_Write(data_out, data, dataSize);
+ 		stats->packetsOut++;
+-		status = drdynvc_send(drdynvc, data_out, stats);
++		status = drdynvc_send_data_pdu(drdynvc, data_out, stats, ChannelId);
+ 	}
+ 	else
+ 	{
+@@ -1166,7 +1289,7 @@ static UINT drdynvc_write_data(drdynvcPlugin* drdynvc, UINT32 ChannelId, const B
+ 		if (dataSize > 0)
+ 			stats->fragmentsOut++;
+ 
+-		status = drdynvc_send(drdynvc, data_out, stats);
++		status = drdynvc_send_data_pdu(drdynvc, data_out, stats, ChannelId);
+ 
+ 		while (status == CHANNEL_RC_OK && dataSize > 0)
+ 		{
+@@ -1210,7 +1333,7 @@ static UINT drdynvc_write_data(drdynvcPlugin* drdynvc, UINT32 ChannelId, const B
+ 			data += chunkLength;
+ 			dataSize -= chunkLength;
+ 
+-			status = drdynvc_send(drdynvc, data_out, stats);
++			status = drdynvc_send_data_pdu(drdynvc, data_out, stats, ChannelId);
+ 		}
+ 	}
+ 
+@@ -1629,6 +1752,91 @@ static UINT drdynvc_process_close_request(drdynvcPlugin* drdynvc, int Sp, int cb
+ 	return CHANNEL_RC_OK;
+ }
+ 
++static UINT drdynvc_send_soft_sync_response(drdynvcPlugin* drdynvc, const UINT32* tunnelTypes,
++                                            size_t tunnelCount)
++{
++	DVCMAN* dvcman = drdynvc ? (DVCMAN*)drdynvc->channel_mgr : nullptr;
++	if (!dvcman || tunnelCount > 2)
++		return CHANNEL_RC_BAD_CHANNEL_HANDLE;
++	wStream* response = StreamPool_Take(dvcman->pool, 6 + tunnelCount * sizeof(UINT32));
++	if (!response)
++		return CHANNEL_RC_NO_MEMORY;
++	Stream_Write_UINT8(response, SOFT_SYNC_RESPONSE_PDU << 4);
++	Stream_Zero(response, 1);
++	Stream_Write_UINT32(response, WINPR_ASSERTING_INT_CAST(UINT32, tunnelCount));
++	for (size_t index = 0; index < tunnelCount; index++)
++		Stream_Write_UINT32(response, tunnelTypes[index]);
++	drdynvc->softSyncResponse = response;
++	const UINT status = drdynvc_send(drdynvc, response, nullptr);
++	if (status != CHANNEL_RC_OK)
++		drdynvc->softSyncResponse = nullptr;
++	return status;
++}
++
++static UINT drdynvc_process_soft_sync_request(drdynvcPlugin* drdynvc, UINT8 Sp, UINT8 cbChId,
++                                              wStream* s)
++{
++	WINPR_ASSERT(drdynvc);
++	if (Sp != 0 || cbChId != 0 || !Stream_CheckAndLogRequiredLength(TAG, s, 9))
++		return ERROR_INVALID_DATA;
++	/* MS-RDPEDYC Length starts at the Length field itself; it excludes the
++	 * command header and the one-byte Pad field that precedes it. */
++	const size_t declaredPayloadLength = Stream_GetRemainingLength(s) - 1;
++	Stream_Seek(s, 1);
++	UINT32 declaredLength = 0;
++	UINT16 flags = 0;
++	UINT16 tunnelCount = 0;
++	Stream_Read_UINT32(s, declaredLength);
++	Stream_Read_UINT16(s, flags);
++	Stream_Read_UINT16(s, tunnelCount);
++	if (declaredLength != declaredPayloadLength || (flags & SOFT_SYNC_TCP_FLUSHED) == 0 ||
++	    tunnelCount > 2 || ((flags & SOFT_SYNC_CHANNEL_LIST_PRESENT) == 0 && tunnelCount != 0))
++		return ERROR_INVALID_DATA;
++
++	UINT32 channelIds[2][1024] = { 0 };
++	MultitransportSoftSyncList lists[2] = WINPR_C_ARRAY_INIT;
++	for (UINT16 tunnelIndex = 0; tunnelIndex < tunnelCount; tunnelIndex++)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 6))
++			return ERROR_INVALID_DATA;
++		UINT32 tunnelType = 0;
++		UINT16 channelCount = 0;
++		Stream_Read_UINT32(s, tunnelType);
++		Stream_Read_UINT16(s, channelCount);
++		if ((tunnelType != TUNNELTYPE_UDPFECR && tunnelType != TUNNELTYPE_UDPFECL) ||
++		    channelCount > ARRAYSIZE(channelIds[0]) ||
++		    !Stream_CheckAndLogRequiredLength(TAG, s, (size_t)channelCount * sizeof(UINT32)))
++			return ERROR_INVALID_DATA;
++		lists[tunnelIndex].tunnelType = tunnelType;
++		lists[tunnelIndex].channelIds = channelIds[tunnelIndex];
++		lists[tunnelIndex].channelCount = channelCount;
++		for (UINT16 idIndex = 0; idIndex < channelCount; idIndex++)
++		{
++			Stream_Read_UINT32(s, channelIds[tunnelIndex][idIndex]);
++			DVCMAN_CHANNEL* channel = dvcman_get_channel_by_id(
++			    drdynvc->channel_mgr, channelIds[tunnelIndex][idIndex], FALSE);
++			if (!channel || (channel->staticTunnel && tunnelType != TUNNELTYPE_UDPFECR))
++				return ERROR_INVALID_DATA;
++		}
++	}
++	if (Stream_GetRemainingLength(s) != 0)
++		return ERROR_INVALID_DATA;
++
++	rdpMultitransport* multi =
++	    drdynvc->rdpcontext && drdynvc->rdpcontext->rdp
++	        ? drdynvc->rdpcontext->rdp->multitransport
++	        : nullptr;
++	UINT32 accepted[2] = { 0 };
++	size_t acceptedCount = 0;
++	if (!multitransport_prepare_soft_sync(multi, lists, tunnelCount, accepted,
++	                                      ARRAYSIZE(accepted), &acceptedCount))
++		return ERROR_INVALID_DATA;
++	const UINT status = drdynvc_send_soft_sync_response(drdynvc, accepted, acceptedCount);
++	if (status != CHANNEL_RC_OK)
++		multitransport_soft_sync_response_complete(multi, FALSE);
++	return status;
++}
++
+ /**
+  * Function description
+  *
+@@ -1668,6 +1876,9 @@ static UINT drdynvc_order_recv(drdynvcPlugin* drdynvc, wStream* s, UINT32 Thread
+ 		case CLOSE_REQUEST_PDU:
+ 			return drdynvc_process_close_request(drdynvc, Sp, cbChId, s);
+ 
++		case SOFT_SYNC_REQUEST_PDU:
++			return drdynvc_process_soft_sync_request(drdynvc, Sp, cbChId, s);
++
+ 		case SOFT_SYNC_RESPONSE_PDU:
+ 			WLog_Print(drdynvc->log, WLOG_ERROR,
+ 			           "not expecting a SOFT_SYNC_RESPONSE_PDU as a client");
+@@ -1790,6 +2001,16 @@ static void VCAPITYPE drdynvc_virtual_channel_open_event_ex(LPVOID lpUserParam,
+ 		case CHANNEL_EVENT_WRITE_COMPLETE:
+ 		{
+ 			wStream* s = (wStream*)pData;
++			if (s == drdynvc->softSyncResponse)
++			{
++				rdpMultitransport* multi =
++				    drdynvc->rdpcontext && drdynvc->rdpcontext->rdp
++				        ? drdynvc->rdpcontext->rdp->multitransport
++				        : nullptr;
++				drdynvc->softSyncResponse = nullptr;
++				multitransport_soft_sync_response_complete(
++				    multi, event == CHANNEL_EVENT_WRITE_COMPLETE);
++			}
+ 			Stream_Release(s);
+ 		}
+ 		break;
+@@ -2223,6 +2444,36 @@ static VOID VCAPITYPE drdynvc_virtual_channel_init_event_ex(LPVOID lpUserParam,
+  * Channel Client Interface
+  */
+ 
++static UINT drdynvc_tunnel_static_channel(DrdynvcClientContext* context, const char* channelName,
++                                          const BYTE* data, UINT32 dataLength, BOOL* routed)
++{
++	if (routed)
++		*routed = FALSE;
++	if (!context || !context->handle || !channelName || !data || dataLength == 0 || !routed)
++		return ERROR_INVALID_PARAMETER;
++
++	drdynvcPlugin* drdynvc = (drdynvcPlugin*)context->handle;
++	DVCMAN* dvcman = (DVCMAN*)drdynvc->channel_mgr;
++	if (!dvcman || !dvcman->staticTunnelsByName)
++		return CHANNEL_RC_OK;
++
++	HashTable_Lock(dvcman->staticTunnelsByName);
++	DVCMAN_CHANNEL* channel =
++	    (DVCMAN_CHANNEL*)HashTable_GetItemValue(dvcman->staticTunnelsByName, channelName);
++	if (channel && channel->state == DVC_CHANNEL_RUNNING)
++		InterlockedIncrement(&channel->refCounter);
++	else
++		channel = nullptr;
++	HashTable_Unlock(dvcman->staticTunnelsByName);
++	if (!channel)
++		return CHANNEL_RC_OK;
++
++	*routed = TRUE;
++	const UINT status = channel->iface.Write(&channel->iface, dataLength, data, nullptr);
++	dvcman_channel_unref(channel);
++	return status;
++}
++
+ static int drdynvc_get_version(DrdynvcClientContext* context)
+ {
+ 	WINPR_ASSERT(context);
+@@ -2274,6 +2525,7 @@ FREERDP_ENTRY_POINT(BOOL VCAPITYPE VirtualChannelEntryEx(PCHANNEL_ENTRY_POINTS_E
+ 		drdynvc->context = context;
+ 		context->GetVersion = drdynvc_get_version;
+ 		context->GetChannelStats = drdynvc_get_channel_stats;
++		context->TunnelStaticChannel = drdynvc_tunnel_static_channel;
+ 		drdynvc->rdpcontext = pEntryPointsEx->context;
+ 		if (!freerdp_settings_get_bool(drdynvc->rdpcontext->settings,
+ 		                               FreeRDP_TransportDumpReplay) &&
+diff --git a/channels/drdynvc/client/drdynvc_main.h b/channels/drdynvc/client/drdynvc_main.h
+index bea00b14..49e8cc8c 100644
+--- a/channels/drdynvc/client/drdynvc_main.h
++++ b/channels/drdynvc/client/drdynvc_main.h
+@@ -49,6 +49,7 @@ typedef struct
+ 
+ 	wHashTable* listeners;
+ 	wHashTable* channelsById;
++	wHashTable* staticTunnelsByName;
+ 	wStreamPool* pool;
+ } DVCMAN;
+ 
+@@ -102,6 +103,8 @@ typedef struct
+ 
+ 	wStream* dvc_data;
+ 	UINT32 dvc_data_length;
++	BOOL staticTunnel;
++	UINT16 staticChannelId;
+ 	ZGFX_CONTEXT* decompressor;
+ 	CRITICAL_SECTION lock;
+ 	DVCMAN_CHANNEL_STATS stats;
+@@ -126,6 +129,7 @@ struct drdynvc_plugin
+ 	HANDLE thread;
+ 	BOOL async;
+ 	wStream* data_in;
++	wStream* softSyncResponse;
+ 	void* InitHandle;
+ 	DWORD OpenHandle;
+ 	wMessageQueue* queue;
 diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt b/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt
 index 2add2262..79fcfce8 100644
 --- a/client/Android/Studio/freeRDPCore/src/main/cpp/CMakeLists.txt
@@ -1262,7 +1700,7 @@ index ea986246..98263ffc 100644
  FREERDP_LOCAL ANDROID_EVENT_CLIPBOARD*
  android_event_clipboard_new(const void* data, size_t data_length, const char* mimeType);
 diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
-index 2e1f1c0d..cdf34f9f 100644
+index 2e1f1c0d..2fa60cd6 100644
 --- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
 +++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
 @@ -24,7 +24,10 @@
@@ -1276,7 +1714,7 @@ index 2e1f1c0d..cdf34f9f 100644
  #include <freerdp/graphics.h>
  #include <freerdp/codec/rfx.h>
  #include <freerdp/gdi/gdi.h>
-@@ -58,6 +61,16 @@
+@@ -58,10 +61,27 @@
  #endif
  
  #define TAG CLIENT_TAG("android")
@@ -1293,7 +1731,18 @@ index 2e1f1c0d..cdf34f9f 100644
  
  /* Defines the JNI version supported by this library. */
  #define FREERDP_JNI_VERSION FREERDP_VERSION_FULL
-@@ -71,7 +84,6 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+ 
++/*
++ * The Android shim can be rebuilt before the ExternalProject install tree has
++ * refreshed freerdp.h.  Keep this declaration local so incremental native
++ * builds can consume the matching core symbol in the same build.
++ */
++FREERDP_API BOOL freerdp_get_transport_snapshot(const rdpRdp* rdp, INT64* values, size_t count);
++
+ static jclass gJavaActivityClass;
+ static jmethodID gOnPointerSetMethod;
+ static jmethodID gOnRailWindowUpdateMethod;
+@@ -71,7 +91,6 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
  static void android_OnChannelConnectedEventHandler(void* context,
                                                     const ChannelConnectedEventArgs* e)
  {
@@ -1301,7 +1750,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	androidContext* afc;
  
  	if (!context || !e)
-@@ -81,19 +93,28 @@ static void android_OnChannelConnectedEventHandler(void* context,
+@@ -81,19 +100,28 @@ static void android_OnChannelConnectedEventHandler(void* context,
  	}
  
  	afc = (androidContext*)context;
@@ -1334,7 +1783,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	}
  	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
  	{
-@@ -109,7 +130,6 @@ static void android_OnChannelConnectedEventHandler(void* context,
+@@ -109,7 +137,6 @@ static void android_OnChannelConnectedEventHandler(void* context,
  static void android_OnChannelDisconnectedEventHandler(void* context,
                                                        const ChannelDisconnectedEventArgs* e)
  {
@@ -1342,7 +1791,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	androidContext* afc;
  
  	if (!context || !e)
-@@ -119,7 +139,6 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
+@@ -119,7 +146,6 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
  	}
  
  	afc = (androidContext*)context;
@@ -1350,7 +1799,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
  	{
-@@ -133,6 +152,11 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
+@@ -133,6 +159,11 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
  	{
  		android_rail_uninit(afc, (RailClientContext*)e->pInterface);
  	}
@@ -1362,7 +1811,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	else
  		freerdp_client_OnChannelDisconnectedEventHandler(context, e);
  }
-@@ -201,6 +225,13 @@ static BOOL android_end_paint(rdpContext* context)
+@@ -201,6 +232,13 @@ static BOOL android_end_paint(rdpContext* context)
  	return TRUE;
  }
  
@@ -1376,7 +1825,7 @@ index 2e1f1c0d..cdf34f9f 100644
  static BOOL android_desktop_resize(rdpContext* context)
  {
  	WINPR_ASSERT(context);
-@@ -210,6 +241,14 @@ static BOOL android_desktop_resize(rdpContext* context)
+@@ -210,6 +248,14 @@ static BOOL android_desktop_resize(rdpContext* context)
  	const UINT32 width = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
  	const UINT32 height = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
  
@@ -1391,7 +1840,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	if (context->gdi && !gdi_resize(context->gdi, width, height))
  		return FALSE;
  
-@@ -228,6 +267,19 @@ static BOOL android_pre_connect(freerdp* instance)
+@@ -228,6 +274,19 @@ static BOOL android_pre_connect(freerdp* instance)
  	if (!settings)
  		return FALSE;
  
@@ -1411,7 +1860,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	int rc = PubSub_SubscribeChannelConnected(instance->context->pubSub,
  	                                          android_OnChannelConnectedEventHandler);
  
-@@ -267,7 +319,16 @@ static BOOL android_Pointer_New(rdpContext* context, rdpPointer* pointer)
+@@ -267,7 +326,16 @@ static BOOL android_Pointer_New(rdpContext* context, rdpPointer* pointer)
  	if (!ptr)
  		return FALSE;
  
@@ -1429,7 +1878,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	ptr->data = winpr_aligned_malloc(ptr->size, 16);
  	if (!ptr->data)
  		return FALSE;
-@@ -311,7 +372,7 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
+@@ -311,7 +379,7 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
  	JNIEnv* env = nullptr;
  	jboolean attached = jni_attach_thread(&env);
  
@@ -1438,7 +1887,7 @@ index 2e1f1c0d..cdf34f9f 100644
  		goto done;
  
  	jintArray pixels = (*env)->NewIntArray(env, nPixels);
-@@ -323,6 +384,11 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
+@@ -323,6 +391,11 @@ static BOOL android_Pointer_Set(rdpContext* context, rdpPointer* pointer)
  	                             (jlong)context->instance, pixels, (jint)pointer->width,
  	                             (jint)pointer->height, (jint)pointer->xPos, (jint)pointer->yPos);
  	(*env)->DeleteLocalRef(env, pixels);
@@ -1450,7 +1899,7 @@ index 2e1f1c0d..cdf34f9f 100644
  done:
  	if (attached)
  		jni_detach_thread();
-@@ -364,15 +430,19 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+@@ -364,15 +437,19 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
  
  	const UINT32 width = surface->mappedWidth ? surface->mappedWidth : surface->width;
  	const UINT32 height = surface->mappedHeight ? surface->mappedHeight : surface->height;
@@ -1473,7 +1922,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	jintArray pixels = (*env)->NewIntArray(env, nPixels);
  	if (!pixels)
  		goto done;
-@@ -400,6 +470,11 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
+@@ -400,6 +477,11 @@ static UINT android_UpdateWindowFromSurface(RdpgfxClientContext* context, gdiGfx
  	(*env)->CallStaticVoidMethod(env, gJavaActivityClass, gOnRailWindowUpdateMethod, (jlong)inst,
  	                             (jlong)surface->windowId, (jint)width, (jint)height, pixels);
  	(*env)->DeleteLocalRef(env, pixels);
@@ -1485,7 +1934,7 @@ index 2e1f1c0d..cdf34f9f 100644
  done:
  	if (attached)
  		jni_detach_thread();
-@@ -449,6 +524,16 @@ static BOOL android_post_connect(freerdp* instance)
+@@ -449,6 +531,16 @@ static BOOL android_post_connect(freerdp* instance)
  	                                  ANDROID_EXPERIMENTAL_CAMERA))
  		return FALSE;
  
@@ -1502,7 +1951,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	if (!gdi_init(instance, PIXEL_FORMAT_RGBX32))
  		return FALSE;
  
-@@ -458,6 +543,21 @@ static BOOL android_post_connect(freerdp* instance)
+@@ -458,6 +550,21 @@ static BOOL android_post_connect(freerdp* instance)
  	update->BeginPaint = android_begin_paint;
  	update->EndPaint = android_end_paint;
  	update->DesktopResize = android_desktop_resize;
@@ -1524,7 +1973,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	freerdp_callback("OnSettingsChanged", "(JIII)V", (jlong)instance,
  	                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
  	                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
-@@ -486,29 +586,59 @@ static void android_post_final_disconnect(freerdp* instance)
+@@ -486,29 +593,59 @@ static void android_post_final_disconnect(freerdp* instance)
  static BOOL android_authenticate_int(freerdp* instance, char** username, char** password,
                                       char** domain, const char* cb_name)
  {
@@ -1598,7 +2047,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	if (attached == JNI_TRUE)
  		jni_detach_thread();
  
-@@ -538,26 +668,37 @@ static DWORD android_verify_certificate_ex(freerdp* instance, const char* host,
+@@ -538,26 +675,37 @@ static DWORD android_verify_certificate_ex(freerdp* instance, const char* host,
                                             const char* common_name, const char* subject,
                                             const char* issuer, const char* fingerprint, DWORD flags)
  {
@@ -1655,7 +2104,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  	if (attached == JNI_TRUE)
  		jni_detach_thread();
-@@ -571,23 +712,41 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
+@@ -571,23 +719,41 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
                                                     const char* old_subject, const char* old_issuer,
                                                     const char* old_fingerprint, DWORD flags)
  {
@@ -1713,7 +2162,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  	if (attached == JNI_TRUE)
  		jni_detach_thread();
-@@ -595,6 +754,39 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
+@@ -595,6 +761,39 @@ static DWORD android_verify_changed_certificate_ex(freerdp* instance, const char
  	return res;
  }
  
@@ -1753,7 +2202,7 @@ index 2e1f1c0d..cdf34f9f 100644
  static int android_freerdp_run(freerdp* instance)
  {
  	WINPR_ASSERT(instance);
-@@ -703,6 +895,39 @@ fail:
+@@ -703,6 +902,39 @@ fail:
  	return status;
  }
  
@@ -1793,7 +2242,7 @@ index 2e1f1c0d..cdf34f9f 100644
  static BOOL android_client_new(freerdp* instance, rdpContext* context)
  {
  	WINPR_ASSERT(instance);
-@@ -718,6 +943,7 @@ static BOOL android_client_new(freerdp* instance, rdpContext* context)
+@@ -718,6 +950,7 @@ static BOOL android_client_new(freerdp* instance, rdpContext* context)
  	instance->AuthenticateEx = android_authenticate_ex;
  	instance->VerifyCertificateEx = android_verify_certificate_ex;
  	instance->VerifyChangedCertificateEx = android_verify_changed_certificate_ex;
@@ -1801,7 +2250,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	instance->LogonErrorInfo = nullptr;
  	return TRUE;
  }
-@@ -751,16 +977,20 @@ static int RdpClientEntry(RDP_CLIENT_ENTRY_POINTS* pEntryPoints)
+@@ -751,16 +984,20 @@ static int RdpClientEntry(RDP_CLIENT_ENTRY_POINTS* pEntryPoints)
  JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1new(
      JNIEnv* env, jclass cls, jobject context)
  {
@@ -1832,7 +2281,7 @@ index 2e1f1c0d..cdf34f9f 100644
  #if defined(WITH_GPROF)
  	setenv("CPUPROFILE_FREQUENCY", "200", 1);
  	monstartup("libfreerdp-android.so");
-@@ -772,7 +1002,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+@@ -772,7 +1009,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
  	{
  		WLog_FATAL(TAG, "Failed to load class references %s=%p, %s=%p", JAVA_CONTEXT_CLASS,
  		           (void*)contextClass, JAVA_FILE_CLASS, (void*)fileClass);
@@ -1841,7 +2290,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	}
  
  	getFilesDirID =
-@@ -781,7 +1011,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+@@ -781,7 +1018,7 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
  	if (!getFilesDirID)
  	{
  		WLog_FATAL(TAG, "Failed to find method ID getFilesDir ()L" JAVA_FILE_CLASS ";");
@@ -1850,7 +2299,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	}
  
  	getAbsolutePathID =
-@@ -790,57 +1020,60 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
+@@ -790,57 +1027,60 @@ JNIEXPORT jlong JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp
  	if (!getAbsolutePathID)
  	{
  		WLog_FATAL(TAG, "Failed to find method ID getAbsolutePath ()Ljava/lang/String;");
@@ -1933,7 +2382,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  JNIEXPORT void JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1free(
-@@ -849,7 +1082,45 @@ JNIEXPORT void JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_
+@@ -849,7 +1089,45 @@ JNIEXPORT void JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_
  	freerdp* inst = (freerdp*)instance;
  
  	if (inst)
@@ -1980,7 +2429,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  #if defined(WITH_GPROF)
  	moncleanup();
-@@ -861,13 +1132,31 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1last_1error_1stri
+@@ -861,13 +1139,31 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1last_1error_1stri
                                                                                     jclass cls,
                                                                                     jlong instance)
  {
@@ -2015,7 +2464,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  JNIEXPORT jboolean JNICALL
-@@ -875,36 +1164,53 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1parse_1arguments(JNIEn
+@@ -875,36 +1171,53 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1parse_1arguments(JNIEn
                                                                             jlong instance,
                                                                             jobjectArray arguments)
  {
@@ -2085,7 +2534,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1connect(
-@@ -932,31 +1238,32 @@ JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_free
+@@ -932,31 +1245,32 @@ JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_free
  JNIEXPORT jboolean JNICALL Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1disconnect(
      JNIEnv* env, jclass cls, jlong instance)
  {
@@ -2128,7 +2577,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  JNIEXPORT jboolean JNICALL
-@@ -966,28 +1273,38 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1update_1graphics(JNIEn
+@@ -966,28 +1280,38 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1update_1graphics(JNIEn
                                                                             jint y, jint width,
                                                                             jint height)
  {
@@ -2174,7 +2623,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  	if ((ret = AndroidBitmap_lockPixels(env, bitmap, &pixels)) < 0)
  	{
-@@ -1037,10 +1354,16 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
+@@ -1037,10 +1361,16 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
                                                                             jint keycode,
                                                                             jboolean down)
  {
@@ -2191,7 +2640,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	int flags = (down == JNI_TRUE) ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
  	flags |= (scancode & KBDEXT) ? KBD_FLAGS_EXTENDED : 0;
  	event = (ANDROID_EVENT*)android_event_key_new(flags, scancode & 0xFF);
-@@ -1054,7 +1377,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
+@@ -1054,7 +1384,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1key_1event(JNIEn
  		return JNI_FALSE;
  	}
  
@@ -2200,7 +2649,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	return JNI_TRUE;
  }
  
-@@ -1062,8 +1385,12 @@ JNIEXPORT jboolean JNICALL
+@@ -1062,8 +1392,12 @@ JNIEXPORT jboolean JNICALL
  Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1unicodekey_1event(
      JNIEnv* env, jclass cls, jlong instance, jint keycode, jboolean down)
  {
@@ -2213,7 +2662,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	UINT16 flags = (down == JNI_TRUE) ? 0 : KBD_FLAGS_RELEASE;
  	event = (ANDROID_EVENT*)android_event_unicodekey_new(flags, keycode);
  
-@@ -1076,7 +1403,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1unicodekey_1even
+@@ -1076,7 +1410,7 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1unicodekey_1even
  		return JNI_FALSE;
  	}
  
@@ -2222,7 +2671,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	return JNI_TRUE;
  }
  
-@@ -1084,6 +1411,8 @@ JNIEXPORT jboolean JNICALL
+@@ -1084,6 +1418,8 @@ JNIEXPORT jboolean JNICALL
  Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1is_1unicode_1input_1supported(
      JNIEnv* env, jclass cls, jlong instance)
  {
@@ -2231,7 +2680,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	freerdp* inst = (freerdp*)instance;
  
  	if (!inst || !inst->context || !inst->context->settings)
-@@ -1099,8 +1428,13 @@ JNIEXPORT jboolean JNICALL
+@@ -1099,8 +1435,13 @@ JNIEXPORT jboolean JNICALL
  Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1cursor_1event(
      JNIEnv* env, jclass cls, jlong instance, jint x, jint y, jint flags)
  {
@@ -2245,7 +2694,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	event = (ANDROID_EVENT*)android_event_cursor_new(flags, x, y);
  
  	if (!event)
-@@ -1138,13 +1472,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1data(
+@@ -1138,13 +1479,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1data(
  {
  	WINPR_UNUSED(cls);
  	freerdp* inst = (freerdp*)instance;
@@ -2276,7 +2725,7 @@ index 2e1f1c0d..cdf34f9f 100644
  
  	return ret;
  }
-@@ -1168,16 +1513,23 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1image
+@@ -1168,16 +1520,23 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1image
  {
  	WINPR_UNUSED(cls);
  	freerdp* inst = (freerdp*)instance;
@@ -2306,7 +2755,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	return ret;
  }
  
-@@ -1189,18 +1541,100 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1monitor_1layout(
+@@ -1189,18 +1548,79 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1monitor_1layout(
  	WINPR_UNUSED(cls);
  	freerdp* inst = (freerdp*)instance;
  
@@ -2363,43 +2812,22 @@ index 2e1f1c0d..cdf34f9f 100644
 +	return JNI_TRUE;
 +}
 +
-+/*
-+ * Upstream FreeRDP 3.30's client responds E_ABORT to RDPEMT requests. The audited build omits the
-+ * old out-of-tree UDP implementation and reports TCP fallback whenever multitransport was requested.
-+ */
-+JNIEXPORT jint JNICALL
-+Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1transport_1info(JNIEnv* env,
-+                                                                              jclass cls,
-+                                                                              jlong instance)
-+{
-+	WINPR_UNUSED(env);
-+	WINPR_UNUSED(cls);
-+	freerdp* inst = (freerdp*)instance;
-+
-+	if (!inst || !inst->context || !inst->context->settings)
-+		return -1;
-+
-+	rdpSettings* settings = inst->context->settings;
-+	const androidContext* afc = (const androidContext*)inst->context;
-+	const UINT32 proto = freerdp_settings_get_uint32(settings, FreeRDP_SelectedProtocol);
-+	const jint requested = afc->multitransportRequested ? 0x200 : 0;
-+	const jint fallback = afc->multitransportRequested ? 0x100 : 0;
-+	return (jint)(0x01 | fallback | requested | ((proto & 0x0Fu) << 4));
-+}
-+
 +JNIEXPORT jlongArray JNICALL
-+Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1transport_1stats(JNIEnv* env,
-+                                                                                jclass cls,
-+                                                                                jlong instance)
++Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1transport_1snapshot(
++    JNIEnv* env, jclass cls, jlong instance)
 +{
 +	WINPR_UNUSED(cls);
 +	freerdp* inst = (freerdp*)instance;
 +	if (!env || !inst || !inst->context)
 +		return nullptr;
 +
-+	/* The audited build removes PocketRDP's unsafe out-of-tree UDP transport. Preserve the stable
-+	 * Java diagnostics shape until upstream exposes transport counters. */
-+	return (*env)->NewLongArray(env, 8);
++	INT64 values[36] = { 0 };
++	(void)freerdp_get_transport_snapshot(inst->context->rdp, values, ARRAYSIZE(values));
++	jlongArray result = (*env)->NewLongArray(env, ARRAYSIZE(values));
++	if (!result)
++		return nullptr;
++	(*env)->SetLongArrayRegion(env, result, 0, ARRAYSIZE(values), (const jlong*)values);
++	return result;
  }
  
  JNIEXPORT jstring JNICALL
@@ -2411,7 +2839,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  JNIEXPORT jboolean JNICALL
-@@ -1226,21 +1660,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1has_1camera_1redirecti
+@@ -1226,21 +1646,24 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1has_1camera_1redirecti
  JNIEXPORT jstring JNICALL
  Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1version(JNIEnv* env, jclass cls)
  {
@@ -2439,7 +2867,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  jint JNI_OnLoad(JavaVM* vm, void* reserved)
-@@ -1273,8 +1710,25 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
+@@ -1273,8 +1696,25 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
  
  	/* create global reference for class */
  	gJavaActivityClass = (*env)->NewGlobalRef(env, activityClass);
@@ -2465,7 +2893,7 @@ index 2e1f1c0d..cdf34f9f 100644
  	gOnRailWindowUpdateMethod =
  	    (*env)->GetStaticMethodID(env, gJavaActivityClass, "OnRailWindowUpdate", "(JJII[I)V");
  	if (!gOnRailWindowUpdateMethod)
-@@ -1283,7 +1737,14 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
+@@ -1283,7 +1723,14 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved)
  		WLog_WARN(TAG, "OnRailWindowUpdate method not found, RAIL window display disabled");
  	}
  	g_JavaVm = vm;
@@ -2481,7 +2909,7 @@ index 2e1f1c0d..cdf34f9f 100644
  }
  
  void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved)
-@@ -1299,4 +1760,9 @@ void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved)
+@@ -1299,4 +1746,9 @@ void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved)
  
  	if (gJavaActivityClass)
  		(*env)->DeleteGlobalRef(env, gJavaActivityClass);
@@ -3350,6 +3778,20 @@ index 1ff69db9..406736db 100644
    LIST_SEPARATOR |
    CMAKE_ARGS ${ANDROID_CMAKE_ARGS} -DURIPARSER_BUILD_DOCS:BOOL=OFF -DURIPARSER_BUILD_TESTS:BOOL=OFF
               -DURIPARSER_BUILD_TOOLS:BOOL=OFF
+diff --git a/client/common/cmdline.c b/client/common/cmdline.c
+index 11fd0946..6a7cdfd0 100644
+--- a/client/common/cmdline.c
++++ b/client/common/cmdline.c
+@@ -1296,7 +1296,8 @@ static int freerdp_client_command_line_post_filter_int(void* context, COMMAND_LI
+ 		UINT32 flags = 0;
+ 		if (freerdp_settings_get_bool(settings, FreeRDP_SupportMultitransport))
+ 			flags =
+-			    (TRANSPORT_TYPE_UDP_FECR | TRANSPORT_TYPE_UDP_FECL | TRANSPORT_TYPE_UDP_PREFERRED);
++			    (TRANSPORT_TYPE_UDP_FECR | TRANSPORT_TYPE_UDP_FECL |
++			     TRANSPORT_TYPE_UDP_PREFERRED | SOFTSYNC_TCP_TO_UDP);
+ 
+ 		if (!freerdp_settings_set_uint32(settings, FreeRDP_MultitransportFlags, flags))
+ 			return fail_at(arg, COMMAND_LINE_ERROR);
 diff --git a/cmake/DepVersions.cmake b/cmake/DepVersions.cmake
 index 75d7cad2..4cfb7312 100644
 --- a/cmake/DepVersions.cmake
@@ -3367,6 +3809,45 @@ index 75d7cad2..4cfb7312 100644
 -set(FFMPEG_HASH "SHA256=dd308201bb1239a1b73185f80c6b4121f4efdfa424a009ce544fd00bf736bb2e")
 +set(FFMPEG_VERSION "n8.1.2")
 +set(FFMPEG_HASH "SHA256=9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7")
+diff --git a/include/freerdp/client/drdynvc.h b/include/freerdp/client/drdynvc.h
+index 9929a149..d9352436 100644
+--- a/include/freerdp/client/drdynvc.h
++++ b/include/freerdp/client/drdynvc.h
+@@ -76,6 +76,9 @@ extern "C"
+ 	 */
+ 	typedef DrdynvcClientChannelStat* (*pcDrdynvcGetChannelStats)(DrdynvcClientContext* context,
+ 	                                                              size_t* pCount);
++	typedef UINT (*pcDrdynvcTunnelStaticChannel)(DrdynvcClientContext* context,
++	                                            const char* channelName, const BYTE* data,
++	                                            UINT32 dataLength, BOOL* routed);
+ 
+ 	struct s_drdynvc_client_context
+ 	{
+@@ -90,7 +93,8 @@ extern "C"
+ 		    GetChannelStats; /**< Function returning the dynamic channel statistics.
+ 		                      * @since version 3.28.0
+ 		                      */
+-		ALIGN64 UINT64 reserved[56];
++		ALIGN64 WINPR_ATTR_NODISCARD pcDrdynvcTunnelStaticChannel TunnelStaticChannel;
++		ALIGN64 UINT64 reserved[55];
+ 	};
+ 
+ #ifdef __cplusplus
+diff --git a/include/freerdp/freerdp.h b/include/freerdp/freerdp.h
+index 68e392d4..487b4599 100644
+--- a/include/freerdp/freerdp.h
++++ b/include/freerdp/freerdp.h
+@@ -729,6 +729,10 @@ owned by rdpRdp */
+ 	FREERDP_API BOOL freerdp_get_stats(const rdpRdp* rdp, UINT64* inBytes, UINT64* outBytes,
+ 	                                   UINT64* inPackets, UINT64* outPackets);
+ 
++	WINPR_ATTR_NODISCARD
++	FREERDP_API BOOL freerdp_get_transport_snapshot(const rdpRdp* rdp, INT64* values,
++	                                                size_t count);
++
+ 	FREERDP_API void freerdp_get_version(int* major, int* minor, int* revision);
+ 
+ 	WINPR_ATTR_NODISCARD
 diff --git a/libfreerdp/codec/h264_ffmpeg.c b/libfreerdp/codec/h264_ffmpeg.c
 index 049696aa..f157abee 100644
 --- a/libfreerdp/codec/h264_ffmpeg.c
@@ -3455,6 +3936,774 @@ index 159d74d1..5a0c608f 100644
  				return -1;
  			}
  		}
+diff --git a/libfreerdp/core/CMakeLists.txt b/libfreerdp/core/CMakeLists.txt
+index a190e27e..98944d1a 100644
+--- a/libfreerdp/core/CMakeLists.txt
++++ b/libfreerdp/core/CMakeLists.txt
+@@ -110,6 +110,8 @@ set(${MODULE_PREFIX}_SRCS
+     heartbeat.h
+     multitransport.c
+     multitransport.h
++	rdpudp.c
++	rdpudp.h
+     timezone.c
+     timezone.h
+     childsession.c
+diff --git a/libfreerdp/core/client.c b/libfreerdp/core/client.c
+index 069018c6..850fd2ed 100644
+--- a/libfreerdp/core/client.c
++++ b/libfreerdp/core/client.c
+@@ -744,8 +744,18 @@ static BOOL freerdp_channels_process_message(freerdp* instance, wMessage* messag
+ 				goto fail;
+ 			const uint64_t frags = (1ull * item->DataLength + VCChunkSize - 1ull) / VCChunkSize;
+ 			pChannelOpenData->stats.fragmentsOut += frags;
+-			ret = instance->SendChannelData(instance, channel->ChannelId, item->Data,
+-			                                item->DataLength);
++			BOOL tunneled = FALSE;
++			DrdynvcClientContext* drdynvc = instance->context->channels->drdynvc;
++			if (drdynvc && drdynvc->TunnelStaticChannel &&
++			    strncmp(channel->Name, DRDYNVC_SVC_CHANNEL_NAME, CHANNEL_NAME_LEN) != 0)
++			{
++				const UINT status = drdynvc->TunnelStaticChannel(
++				    drdynvc, channel->Name, (const BYTE*)item->Data, item->DataLength, &tunneled);
++				ret = status == CHANNEL_RC_OK;
++			}
++			if (!tunneled && ret)
++				ret = instance->SendChannelData(instance, channel->ChannelId, item->Data,
++				                                item->DataLength);
+ 		}
+ 	}
+ 
+diff --git a/libfreerdp/core/multitransport.c b/libfreerdp/core/multitransport.c
+index 0ce33b5f..116a9a2d 100644
+--- a/libfreerdp/core/multitransport.c
++++ b/libfreerdp/core/multitransport.c
+@@ -18,12 +18,36 @@
+  */
+ 
+ #include <winpr/assert.h>
++#include <winpr/synch.h>
+ #include <freerdp/config.h>
++#include <freerdp/channels/channels.h>
++#include <freerdp/channels/drdynvc.h>
+ #include <freerdp/log.h>
+ 
+ #include "settings.h"
+ #include "rdp.h"
+ #include "multitransport.h"
++#include "rdpudp.h"
++
++#define MULTITRANSPORT_MAX_DVC_ROUTES 1024
++#define MULTITRANSPORT_POLL_INTERVAL_MS 25
++
++typedef struct
++{
++	rdpUdpTunnel* tunnel;
++	UINT32 requestId;
++	UINT16 requestedProtocol;
++	BOOL responseSent;
++	BOOL abortSent;
++	BOOL failureRecorded;
++	rdpUdpTunnelSnapshot lastSnapshot;
++} rdpMultitransportTunnel;
++
++typedef struct
++{
++	UINT32 channelId;
++	UINT32 tunnelMask;
++} rdpMultitransportRoute;
+ 
+ struct rdp_multitransport
+ {
+@@ -37,6 +61,29 @@ struct rdp_multitransport
+ 
+ 	BYTE reliableCookie[RDPUDP_COOKIE_LEN];
+ 	BYTE reliableCookieHash[RDPUDP_COOKIE_HASHLEN];
++
++	rdpMultitransportTunnel reliable;
++	rdpMultitransportTunnel lossy;
++	HANDLE pollTimer;
++	BOOL timerStarted;
++	FreeRDPTransportPhase phase;
++	UINT32 requestedMask;
++	UINT32 readyMask;
++	UINT32 activeMask;
++	UINT32 softSyncMask;
++	UINT32 failureStage;
++	HRESULT tunnelHr;
++	INT32 socketError;
++	BOOL softSyncResponsePending;
++	BOOL reconnectRequested;
++	BOOL downgradedToTcp;
++	UINT16 drdynvcChannelId;
++	rdpMultitransportRoute pendingRoutes[MULTITRANSPORT_MAX_DVC_ROUTES];
++	size_t pendingRouteCount;
++	rdpMultitransportRoute activeRoutes[MULTITRANSPORT_MAX_DVC_ROUTES];
++	size_t activeRouteCount;
++	CRITICAL_SECTION lock;
++	BOOL lockInitialized;
+ };
+ 
+ enum
+@@ -48,6 +95,100 @@ enum
+ 
+ #define TAG FREERDP_TAG("core.multitransport")
+ 
++static UINT32 multitransport_mask_from_snapshot(const rdpUdpTunnelSnapshot* snapshot)
++{
++	return snapshot ? snapshot->kind : 0;
++}
++
++static UINT32 multitransport_mask_from_protocol(UINT16 protocol, const rdpUdpTunnel* tunnel)
++{
++	if (protocol == INITIATE_REQUEST_PROTOCOL_UDPFECL)
++		return FREERDP_UDP_MASK_LOSSY;
++	if (protocol == INITIATE_REQUEST_PROTOCOL_UDPFECR)
++	{
++		rdpUdpTunnelSnapshot snapshot = WINPR_C_ARRAY_INIT;
++		rdpudp_tunnel_snapshot(tunnel, &snapshot);
++		return snapshot.kind ? snapshot.kind : FREERDP_UDP_MASK_RELIABLE;
++	}
++	return 0;
++}
++
++static rdpMultitransportTunnel* multitransport_slot_for_protocol(rdpMultitransport* multi,
++                                                                 UINT16 protocol)
++{
++	if (protocol == INITIATE_REQUEST_PROTOCOL_UDPFECR)
++		return &multi->reliable;
++	if (protocol == INITIATE_REQUEST_PROTOCOL_UDPFECL)
++		return &multi->lossy;
++	return nullptr;
++}
++
++static BOOL multitransport_start_timer(rdpMultitransport* multi)
++{
++	WINPR_ASSERT(multi);
++	if (multi->timerStarted)
++		return TRUE;
++	if (!multi->pollTimer)
++		multi->pollTimer = CreateWaitableTimer(nullptr, FALSE, nullptr);
++	if (!multi->pollTimer)
++		return FALSE;
++	LARGE_INTEGER due = WINPR_C_ARRAY_INIT;
++	due.QuadPart = -(INT64)MULTITRANSPORT_POLL_INTERVAL_MS * 10000;
++	if (!SetWaitableTimer(multi->pollTimer, &due, MULTITRANSPORT_POLL_INTERVAL_MS, nullptr, nullptr,
++	                      FALSE))
++		return FALSE;
++	multi->timerStarted = TRUE;
++	return TRUE;
++}
++
++static UINT32 multitransport_route_mask(const rdpMultitransportRoute* routes, size_t count,
++                                        UINT32 channelId)
++{
++	for (size_t index = 0; index < count; index++)
++	{
++		if (routes[index].channelId == channelId)
++			return routes[index].tunnelMask;
++	}
++	return 0;
++}
++
++static BOOL multitransport_parse_dvc_data_id(const BYTE* data, size_t length, UINT32* channelId)
++{
++	if (!data || !channelId || length < 2)
++		return FALSE;
++	const UINT8 command = data[0] >> 4u;
++	if (command != DATA_FIRST_PDU && command != DATA_PDU &&
++	    command != DATA_FIRST_COMPRESSED_PDU && command != DATA_COMPRESSED_PDU)
++		return FALSE;
++	const UINT8 cbChannelId = data[0] & 0x03u;
++	const size_t idBytes = cbChannelId == 0 ? 1u : (cbChannelId == 1 ? 2u : 4u);
++	if (cbChannelId == 3 || length < 1u + idBytes)
++		return FALSE;
++	wStream buffer = WINPR_C_ARRAY_INIT;
++	wStream* s = Stream_StaticInit(&buffer, (BYTE*)data + 1, length - 1);
++	switch (idBytes)
++	{
++		case 1:
++		{
++			UINT8 id = 0;
++			Stream_Read_UINT8(s, id);
++			*channelId = id;
++			break;
++		}
++		case 2:
++		{
++			UINT16 id = 0;
++			Stream_Read_UINT16(s, id);
++			*channelId = id;
++			break;
++		}
++		default:
++			Stream_Read_UINT32(s, *channelId);
++			break;
++	}
++	return TRUE;
++}
++
+ state_run_t multitransport_recv_request(rdpMultitransport* multi, wStream* s)
+ {
+ 	WINPR_ASSERT(multi);
+@@ -191,12 +332,35 @@ state_run_t multitransport_recv_response(rdpMultitransport* multi, wStream* s)
+ 	return res;
+ }
+ 
+-static state_run_t multitransport_no_udp(rdpMultitransport* multi, UINT32 reqId,
+-                                         WINPR_ATTR_UNUSED UINT16 reqProto,
+-                                         WINPR_ATTR_UNUSED const BYTE* cookie)
++static state_run_t multitransport_client_start_udp(rdpMultitransport* multi, UINT32 reqId,
++                                                   UINT16 reqProto, const BYTE* cookie)
+ {
+-	return multitransport_client_send_response(multi, reqId, E_ABORT) ? STATE_RUN_SUCCESS
+-	                                                                  : STATE_RUN_FAILED;
++	WINPR_ASSERT(multi);
++	rdpMultitransportTunnel* slot = multitransport_slot_for_protocol(multi, reqProto);
++	if (!slot || slot->tunnel || multi->downgradedToTcp)
++		return multitransport_client_send_response(multi, reqId, E_ABORT) ? STATE_RUN_SUCCESS
++		                                                                  : STATE_RUN_FAILED;
++
++	slot->requestId = reqId;
++	slot->requestedProtocol = reqProto;
++	slot->tunnel = rdpudp_tunnel_begin(multi->rdp, reqId, reqProto, cookie);
++	if (!slot->tunnel || !multitransport_start_timer(multi))
++	{
++		rdpudp_tunnel_free(slot->tunnel);
++		slot->tunnel = nullptr;
++		slot->responseSent = TRUE;
++		multi->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
++		return multitransport_client_send_response(multi, reqId, E_ABORT) ? STATE_RUN_SUCCESS
++		                                                                  : STATE_RUN_FAILED;
++	}
++
++	multi->requestedMask |= reqProto == INITIATE_REQUEST_PROTOCOL_UDPFECL
++	                            ? FREERDP_UDP_MASK_LOSSY
++	                            : FREERDP_UDP_MASK_RELIABLE;
++	multi->phase = FREERDP_TRANSPORT_PHASE_NEGOTIATING;
++	WLog_INFO(TAG, "started asynchronous RDP-UDP request id=%" PRIu32 " protocol=0x%04" PRIx16,
++	          reqId, reqProto);
++	return STATE_RUN_SUCCESS;
+ }
+ 
+ static state_run_t multitransport_server_handle_response(rdpMultitransport* multi,
+@@ -211,6 +375,311 @@ static state_run_t multitransport_server_handle_response(rdpMultitransport* mult
+ 	return STATE_RUN_CONTINUE;
+ }
+ 
++size_t multitransport_get_event_handles(rdpMultitransport* multi, HANDLE* handles, size_t count)
++{
++	if (!multi || !handles)
++		return 0;
++	size_t used = 0;
++	const HANDLE reliable = rdpudp_tunnel_get_event(multi->reliable.tunnel);
++	const HANDLE lossy = rdpudp_tunnel_get_event(multi->lossy.tunnel);
++	if (reliable && used < count)
++		handles[used++] = reliable;
++	if (lossy && used < count)
++		handles[used++] = lossy;
++	if (multi->timerStarted && multi->pollTimer && used < count)
++		handles[used++] = multi->pollTimer;
++	return used;
++}
++
++static BOOL multitransport_deliver_tunnel_data(rdpMultitransport* multi,
++                                               rdpMultitransportTunnel* slot)
++{
++	WINPR_ASSERT(multi);
++	WINPR_ASSERT(slot);
++	BYTE data[UINT16_MAX] = { 0 };
++	size_t length = 0;
++	while (rdpudp_tunnel_pop_data(slot->tunnel, data, sizeof(data), &length))
++	{
++		UINT32 channelId = 0;
++		const UINT32 tunnelMask = multitransport_mask_from_protocol(slot->requestedProtocol,
++		                                                               slot->tunnel);
++		if (!multitransport_parse_dvc_data_id(data, length, &channelId) ||
++		    multitransport_route_mask(multi->activeRoutes, multi->activeRouteCount, channelId) !=
++		        tunnelMask)
++		{
++			multi->failureStage = 101; /* invalid or misrouted UDP DVC PDU */
++			return FALSE;
++		}
++
++		if (multi->drdynvcChannelId == 0)
++		{
++			freerdp* instance = multi->rdp->context ? multi->rdp->context->instance : nullptr;
++			if (instance)
++				multi->drdynvcChannelId =
++				    freerdp_channels_get_id_by_name(instance, DRDYNVC_SVC_CHANNEL_NAME);
++		}
++		if (multi->drdynvcChannelId == 0 ||
++		    !freerdp_channels_data(multi->rdp->context->instance, multi->drdynvcChannelId, data,
++		                           length, CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST, length))
++		{
++			multi->failureStage = 102; /* main-loop DVC injection failed */
++			return FALSE;
++		}
++	}
++	return TRUE;
++}
++
++static BOOL multitransport_poll_slot(rdpMultitransport* multi, rdpMultitransportTunnel* slot)
++{
++	if (!slot->tunnel)
++		return TRUE;
++	const rdpUdpTunnelState before = rdpudp_tunnel_get_state(slot->tunnel);
++	const BOOL pollOk = rdpudp_tunnel_poll(slot->tunnel);
++	rdpudp_tunnel_snapshot(slot->tunnel, &slot->lastSnapshot);
++	const rdpUdpTunnelState state = rdpudp_tunnel_get_state(slot->tunnel);
++	const UINT32 mask = multitransport_mask_from_snapshot(&slot->lastSnapshot);
++
++	if (state == RDPUDP_TUNNEL_STATE_READY && !slot->responseSent)
++	{
++		if (!multitransport_client_send_response(multi, slot->requestId, 0))
++			return FALSE;
++		slot->responseSent = TRUE;
++		multi->readyMask |= mask;
++		multi->phase = FREERDP_TRANSPORT_PHASE_WAITING_SOFT_SYNC;
++		WLog_INFO(TAG, "RDP-UDP tunnel ready id=%" PRIu32 " mask=0x%02" PRIx32,
++		          slot->requestId, mask);
++	}
++	else if ((!pollOk || state == RDPUDP_TUNNEL_STATE_FAILED) && !slot->failureRecorded)
++	{
++		slot->failureRecorded = TRUE;
++		multi->failureStage = slot->lastSnapshot.state == RDPUDP_TUNNEL_STATE_FAILED
++		                          ? rdpudp_tunnel_stats(slot->tunnel)->failureStage
++		                          : 103;
++		multi->tunnelHr = rdpudp_tunnel_stats(slot->tunnel)->tunnelHr;
++		multi->socketError = rdpudp_tunnel_stats(slot->tunnel)->lastSocketError;
++		if (!slot->abortSent)
++		{
++			if (!multitransport_client_send_response(multi, slot->requestId, E_ABORT))
++				return FALSE;
++			slot->abortSent = TRUE;
++		}
++		if ((multi->activeMask & mask) != 0 || before == RDPUDP_TUNNEL_STATE_ACTIVE)
++		{
++			multi->phase = FREERDP_TRANSPORT_PHASE_UDP_FAILED;
++			multi->reconnectRequested = TRUE;
++			return FALSE;
++		}
++		multi->readyMask &= ~mask;
++		multi->requestedMask &= ~mask;
++		multi->phase = multi->readyMask != 0 ? FREERDP_TRANSPORT_PHASE_WAITING_SOFT_SYNC
++		                                    : FREERDP_TRANSPORT_PHASE_TCP;
++	}
++
++	if (state == RDPUDP_TUNNEL_STATE_ACTIVE &&
++	    !multitransport_deliver_tunnel_data(multi, slot))
++	{
++		multi->phase = FREERDP_TRANSPORT_PHASE_UDP_FAILED;
++		multi->reconnectRequested = TRUE;
++		return FALSE;
++	}
++	return TRUE;
++}
++
++int multitransport_check_fds(rdpMultitransport* multi)
++{
++	if (!multi)
++		return 1;
++	EnterCriticalSection(&multi->lock);
++	const BOOL ok = multitransport_poll_slot(multi, &multi->reliable) &&
++	                multitransport_poll_slot(multi, &multi->lossy);
++	if (!ok && multi->reconnectRequested && !multi->downgradedToTcp)
++		multitransport_force_tcp_reconnect(multi);
++	const BOOL reconnect = multi->reconnectRequested;
++	LeaveCriticalSection(&multi->lock);
++	return reconnect ? -1 : 1;
++}
++
++BOOL multitransport_prepare_soft_sync(rdpMultitransport* multi,
++                                     const MultitransportSoftSyncList* lists, size_t count,
++                                     UINT32* acceptedTunnelTypes, size_t acceptedCapacity,
++                                     size_t* acceptedCount)
++{
++	if (acceptedCount)
++		*acceptedCount = 0;
++	if (!multi || (!lists && count > 0) || !acceptedCount)
++		return FALSE;
++
++	EnterCriticalSection(&multi->lock);
++	multi->pendingRouteCount = 0;
++	size_t usedTunnels = 0;
++	for (size_t listIndex = 0; listIndex < count; listIndex++)
++	{
++		const MultitransportSoftSyncList* list = &lists[listIndex];
++		UINT32 mask = 0;
++		if (list->tunnelType == TUNNELTYPE_UDPFECR)
++			mask = multi->readyMask & (FREERDP_UDP_MASK_RELIABLE | FREERDP_UDP_MASK_UDP2);
++		else if (list->tunnelType == TUNNELTYPE_UDPFECL)
++			mask = multi->readyMask & FREERDP_UDP_MASK_LOSSY;
++		else
++			goto fail;
++
++		if (mask == 0)
++			continue;
++		if (usedTunnels >= acceptedCapacity)
++			goto fail;
++		acceptedTunnelTypes[usedTunnels++] = list->tunnelType;
++		for (size_t idIndex = 0; idIndex < list->channelCount; idIndex++)
++		{
++			const UINT32 channelId = list->channelIds[idIndex];
++			if (multi->pendingRouteCount >= MULTITRANSPORT_MAX_DVC_ROUTES ||
++			    multitransport_route_mask(multi->pendingRoutes, multi->pendingRouteCount, channelId) !=
++			        0)
++				goto fail;
++			multi->pendingRoutes[multi->pendingRouteCount++] =
++			    (rdpMultitransportRoute){ .channelId = channelId, .tunnelMask = mask };
++		}
++	}
++	multi->softSyncResponsePending = TRUE;
++	*acceptedCount = usedTunnels;
++	LeaveCriticalSection(&multi->lock);
++	return TRUE;
++
++fail:
++	multi->pendingRouteCount = 0;
++	multi->softSyncResponsePending = FALSE;
++	LeaveCriticalSection(&multi->lock);
++	return FALSE;
++}
++
++void multitransport_soft_sync_response_complete(rdpMultitransport* multi, BOOL written)
++{
++	if (!multi)
++		return;
++	EnterCriticalSection(&multi->lock);
++	if (!multi->softSyncResponsePending)
++	{
++		LeaveCriticalSection(&multi->lock);
++		return;
++	}
++	if (!written)
++	{
++		multi->pendingRouteCount = 0;
++		multi->softSyncResponsePending = FALSE;
++		LeaveCriticalSection(&multi->lock);
++		return;
++	}
++	memcpy(multi->activeRoutes, multi->pendingRoutes,
++	       multi->pendingRouteCount * sizeof(multi->pendingRoutes[0]));
++	multi->activeRouteCount = multi->pendingRouteCount;
++	multi->pendingRouteCount = 0;
++	multi->softSyncResponsePending = FALSE;
++	multi->activeMask = 0;
++	for (size_t index = 0; index < multi->activeRouteCount; index++)
++		multi->activeMask |= multi->activeRoutes[index].tunnelMask;
++	multi->softSyncMask = multi->activeMask;
++	if ((multi->activeMask & (FREERDP_UDP_MASK_RELIABLE | FREERDP_UDP_MASK_UDP2)) != 0)
++		rdpudp_tunnel_set_active(multi->reliable.tunnel);
++	if ((multi->activeMask & FREERDP_UDP_MASK_LOSSY) != 0)
++		rdpudp_tunnel_set_active(multi->lossy.tunnel);
++	multi->phase = multi->activeMask != 0 ? FREERDP_TRANSPORT_PHASE_ACTIVE
++	                                     : FREERDP_TRANSPORT_PHASE_TCP;
++	LeaveCriticalSection(&multi->lock);
++}
++
++BOOL multitransport_send_dvc_data(rdpMultitransport* multi, UINT32 channelId, const BYTE* data,
++                                  size_t length, BOOL* routed)
++{
++	if (routed)
++		*routed = FALSE;
++	if (!multi || !routed || !data || length == 0)
++		return FALSE;
++	EnterCriticalSection(&multi->lock);
++	const UINT32 mask = multitransport_route_mask(multi->activeRoutes, multi->activeRouteCount,
++	                                               channelId);
++	if (mask == 0)
++	{
++		LeaveCriticalSection(&multi->lock);
++		return TRUE;
++	}
++	*routed = TRUE;
++	rdpUdpTunnel* tunnel = (mask & FREERDP_UDP_MASK_LOSSY) != 0 ? multi->lossy.tunnel
++	                                                           : multi->reliable.tunnel;
++	const BOOL ok = rdpudp_tunnel_get_state(tunnel) == RDPUDP_TUNNEL_STATE_ACTIVE &&
++	                rdpudp_tunnel_write_data(tunnel, data, length);
++	if (!ok)
++	{
++		multi->failureStage = 104; /* active tunnel write failed */
++		multi->phase = FREERDP_TRANSPORT_PHASE_UDP_FAILED;
++		multi->reconnectRequested = TRUE;
++	}
++	LeaveCriticalSection(&multi->lock);
++	return ok;
++}
++
++void multitransport_force_tcp_reconnect(rdpMultitransport* multi)
++{
++	if (!multi || multi->downgradedToTcp)
++		return;
++	multi->downgradedToTcp = TRUE;
++	multi->reconnectRequested = TRUE;
++	multi->phase = FREERDP_TRANSPORT_PHASE_RECONNECTING_TCP;
++	multi->activeMask = 0;
++	multi->softSyncMask = 0;
++	multi->activeRouteCount = 0;
++	(void)freerdp_settings_set_bool(multi->rdp->settings, FreeRDP_SupportMultitransport, FALSE);
++	(void)freerdp_settings_set_uint32(multi->rdp->settings, FreeRDP_MultitransportFlags, 0);
++	rdpudp_tunnel_abort(multi->reliable.tunnel);
++	rdpudp_tunnel_abort(multi->lossy.tunnel);
++	WLog_WARN(TAG, "active RDP-UDP failed; reconnecting the same FreeRDP instance with TCP only");
++}
++
++static void multitransport_write_tunnel_snapshot(INT64* values,
++                                                 const rdpMultitransportTunnel* slot)
++{
++	rdpUdpTunnelSnapshot snapshot = slot ? slot->lastSnapshot : (rdpUdpTunnelSnapshot){ 0 };
++	if (slot && slot->tunnel)
++		rdpudp_tunnel_snapshot(slot->tunnel, &snapshot);
++	values[0] = snapshot.kind;
++	values[1] = snapshot.state;
++	values[2] = snapshot.negotiatedVersion;
++	values[3] = (INT64)snapshot.bytesReceived;
++	values[4] = (INT64)snapshot.bytesSent;
++	values[5] = (INT64)snapshot.packetsReceived;
++	values[6] = (INT64)snapshot.packetsSent;
++	values[7] = (INT64)snapshot.retransmits;
++	values[8] = (INT64)snapshot.fecRecovered;
++	values[9] = (INT64)snapshot.droppedPackets;
++	values[10] = (INT64)snapshot.srttMicros;
++	values[11] = (INT64)snapshot.idleMillis;
++}
++
++void multitransport_get_snapshot(const rdpMultitransport* multi,
++                                 INT64 values[FREERDP_TRANSPORT_SNAPSHOT_FIELDS])
++{
++	if (!values)
++		return;
++	ZeroMemory(values, sizeof(INT64) * FREERDP_TRANSPORT_SNAPSHOT_FIELDS);
++	values[0] = FREERDP_TRANSPORT_SNAPSHOT_VERSION;
++	if (!multi)
++		return;
++	rdpMultitransport* mutable = (rdpMultitransport*)multi;
++	EnterCriticalSection(&mutable->lock);
++	values[1] = multi->phase;
++	values[2] = multi->requestedMask;
++	values[3] = multi->readyMask;
++	values[4] = multi->activeMask;
++	values[5] = multi->softSyncMask;
++	values[6] = (multi->downgradedToTcp ? 1 : 0) | (multi->reconnectRequested ? 2 : 0);
++	values[7] = freerdp_settings_get_uint32(multi->rdp->settings, FreeRDP_SelectedProtocol);
++	values[8] = (INT64)multi->activeRouteCount;
++	values[9] = multi->failureStage;
++	values[10] = (UINT32)multi->tunnelHr;
++	values[11] = multi->socketError;
++	multitransport_write_tunnel_snapshot(&values[12], &multi->reliable);
++	multitransport_write_tunnel_snapshot(&values[24], &multi->lossy);
++	LeaveCriticalSection(&mutable->lock);
++}
++
+ rdpMultitransport* multitransport_new(rdpRdp* rdp, WINPR_ATTR_UNUSED UINT16 protocol)
+ {
+ 	WINPR_ASSERT(rdp);
+@@ -228,14 +697,28 @@ rdpMultitransport* multitransport_new(rdpRdp* rdp, WINPR_ATTR_UNUSED UINT16 prot
+ 	}
+ 	else
+ 	{
+-		multi->MtRequest = multitransport_no_udp;
++		multi->MtRequest = multitransport_client_start_udp;
+ 	}
+ 
+ 	multi->rdp = rdp;
++	multi->phase = FREERDP_TRANSPORT_PHASE_TCP;
++	InitializeCriticalSection(&multi->lock);
++	multi->lockInitialized = TRUE;
+ 	return multi;
+ }
+ 
+ void multitransport_free(rdpMultitransport* multitransport)
+ {
++	if (!multitransport)
++		return;
++	if (multitransport->pollTimer)
++	{
++		(void)CancelWaitableTimer(multitransport->pollTimer);
++		(void)CloseHandle(multitransport->pollTimer);
++	}
++	rdpudp_tunnel_free(multitransport->reliable.tunnel);
++	rdpudp_tunnel_free(multitransport->lossy.tunnel);
++	if (multitransport->lockInitialized)
++		DeleteCriticalSection(&multitransport->lock);
+ 	free(multitransport);
+ }
+diff --git a/libfreerdp/core/multitransport.h b/libfreerdp/core/multitransport.h
+index 785bd8cc..d530977c 100644
+--- a/libfreerdp/core/multitransport.h
++++ b/libfreerdp/core/multitransport.h
+@@ -44,6 +44,29 @@ typedef state_run_t (*MultiTransportResponseCb)(rdpMultitransport* multi, UINT32
+ #define RDPUDP_COOKIE_LEN 16
+ #define RDPUDP_COOKIE_HASHLEN 32
+ 
++#define FREERDP_TRANSPORT_SNAPSHOT_VERSION 1
++#define FREERDP_TRANSPORT_SNAPSHOT_FIELDS 36
++#define FREERDP_UDP_MASK_RELIABLE 0x01u
++#define FREERDP_UDP_MASK_LOSSY 0x02u
++#define FREERDP_UDP_MASK_UDP2 0x04u
++
++typedef enum
++{
++	FREERDP_TRANSPORT_PHASE_TCP = 0,
++	FREERDP_TRANSPORT_PHASE_NEGOTIATING = 1,
++	FREERDP_TRANSPORT_PHASE_WAITING_SOFT_SYNC = 2,
++	FREERDP_TRANSPORT_PHASE_ACTIVE = 3,
++	FREERDP_TRANSPORT_PHASE_UDP_FAILED = 4,
++	FREERDP_TRANSPORT_PHASE_RECONNECTING_TCP = 5
++} FreeRDPTransportPhase;
++
++typedef struct
++{
++	UINT32 tunnelType;
++	const UINT32* channelIds;
++	size_t channelCount;
++} MultitransportSoftSyncList;
++
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL state_run_t multitransport_recv_request(rdpMultitransport* multi, wStream* s);
+ 
+@@ -57,6 +80,32 @@ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL BOOL multitransport_client_send_response(rdpMultitransport* multi, UINT32 reqId,
+                                                        HRESULT hr);
+ 
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL size_t multitransport_get_event_handles(rdpMultitransport* multi, HANDLE* handles,
++                                                      size_t count);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL int multitransport_check_fds(rdpMultitransport* multi);
++
++WINPR_ATTR_NODISCARD
++FREERDP_API BOOL multitransport_prepare_soft_sync(rdpMultitransport* multi,
++                                                 const MultitransportSoftSyncList* lists,
++                                                 size_t count, UINT32* acceptedTunnelTypes,
++                                                 size_t acceptedCapacity,
++                                                 size_t* acceptedCount);
++
++FREERDP_API void multitransport_soft_sync_response_complete(rdpMultitransport* multi,
++                                                            BOOL written);
++
++WINPR_ATTR_NODISCARD
++FREERDP_API BOOL multitransport_send_dvc_data(rdpMultitransport* multi, UINT32 channelId,
++                                              const BYTE* data, size_t length, BOOL* routed);
++
++FREERDP_LOCAL void multitransport_get_snapshot(const rdpMultitransport* multi,
++                                               INT64 values[FREERDP_TRANSPORT_SNAPSHOT_FIELDS]);
++
++FREERDP_LOCAL void multitransport_force_tcp_reconnect(rdpMultitransport* multi);
++
+ FREERDP_LOCAL void multitransport_free(rdpMultitransport* multi);
+ 
+ WINPR_ATTR_MALLOC(multitransport_free, 1)
+diff --git a/libfreerdp/core/rdp.c b/libfreerdp/core/rdp.c
+index 12bfd029..21b2be69 100644
+--- a/libfreerdp/core/rdp.c
++++ b/libfreerdp/core/rdp.c
+@@ -2311,6 +2311,9 @@ int rdp_check_fds(rdpRdp* rdp)
+ 			return -1;
+ 	}
+ 
++	if (status >= 0 && rdp->multitransport)
++		status = multitransport_check_fds(rdp->multitransport);
++
+ 	if (status < 0)
+ 		WLog_Print(rdp->log, WLOG_DEBUG, "transport_check_fds() - %i", status);
+ 	else
+@@ -2337,6 +2340,24 @@ BOOL freerdp_get_stats(const rdpRdp* rdp, UINT64* inBytes, UINT64* outBytes, UIN
+ 	return TRUE;
+ }
+ 
++BOOL freerdp_get_transport_snapshot(const rdpRdp* rdp, INT64* values, size_t count)
++{
++	if (!values || count < FREERDP_TRANSPORT_SNAPSHOT_FIELDS)
++		return FALSE;
++	ZeroMemory(values, sizeof(INT64) * count);
++	values[0] = FREERDP_TRANSPORT_SNAPSHOT_VERSION;
++	if (!rdp)
++		return FALSE;
++	if (rdp->multitransport)
++		multitransport_get_snapshot(rdp->multitransport, values);
++	else
++	{
++		values[1] = FREERDP_TRANSPORT_PHASE_TCP;
++		values[7] = freerdp_settings_get_uint32(rdp->settings, FreeRDP_SelectedProtocol);
++	}
++	return TRUE;
++}
++
+ static bool rdp_new_common(rdpRdp* rdp)
+ {
+ 	WINPR_ASSERT(rdp);
+@@ -3218,6 +3239,14 @@ size_t rdp_get_event_handles(rdpRdp* rdp, HANDLE* handles, uint32_t count)
+ 	if (nCount == 0)
+ 		return 0;
+ 
++	const size_t multiCount = rdp->multitransport
++	                              ? multitransport_get_event_handles(
++	                                    rdp->multitransport, &handles[nCount], count - nCount)
++	                              : 0;
++	if (rdp->multitransport && multiCount == 0 && count <= nCount)
++		return 0;
++	nCount += multiCount;
++
+ 	if (count < nCount + 2UL)
+ 		return 0;
+ 
+diff --git a/libfreerdp/core/test/CMakeLists.txt b/libfreerdp/core/test/CMakeLists.txt
+index f0251683..31b23408 100644
+--- a/libfreerdp/core/test/CMakeLists.txt
++++ b/libfreerdp/core/test/CMakeLists.txt
+@@ -7,13 +7,14 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+ 
+ set(DRIVER ${MODULE_NAME}.c)
+ 
+-set(TESTS TestVersion.c TestSettings.c TestUtils.c)
++set(TESTS TestVersion.c TestSettings.c TestUtils.c TestRdpUdp.c)
+ 
+ if(BUILD_TESTING_INTERNAL)
+   list(APPEND TESTS TestStreamDump.c TestRdstls.c)
+ endif()
+ 
+-set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c)
++set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c
++            TestFuzzRdpUdp.c)
+ 
+ # Test not compatible with package tests, disable
+ if(WITH_SAMPLE AND WITH_SERVER AND NOT WIN32 AND BUILD_TESTING_INTERNAL)
+diff --git a/libfreerdp/core/transport.c b/libfreerdp/core/transport.c
+index 5a074dfe..b9fe590e 100644
+--- a/libfreerdp/core/transport.c
++++ b/libfreerdp/core/transport.c
+@@ -1978,6 +1978,14 @@ HANDLE transport_get_front_bio(rdpTransport* transport)
+ 	return hEvent;
+ }
+ 
++BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket)
++{
++	if (!transport || !transport->frontBio || !socket)
++		return FALSE;
++	*socket = INVALID_SOCKET;
++	return BIO_get_socket(transport->frontBio, socket) == 1 && *socket != INVALID_SOCKET;
++}
++
+ BOOL transport_io_callback_set_event(rdpTransport* transport, BOOL set)
+ {
+ 	WINPR_ASSERT(transport);
+diff --git a/libfreerdp/core/transport.h b/libfreerdp/core/transport.h
+index b5cfae92..d2863264 100644
+--- a/libfreerdp/core/transport.h
++++ b/libfreerdp/core/transport.h
+@@ -152,6 +152,9 @@ FREERDP_LOCAL DWORD transport_get_event_handles(rdpTransport* transport, HANDLE*
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL HANDLE transport_get_front_bio(rdpTransport* transport);
+ 
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket);
++
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL BOOL transport_set_blocking_mode(rdpTransport* transport, BOOL blocking);
+ 
 diff --git a/libfreerdp/gdi/gfx.c b/libfreerdp/gdi/gfx.c
 index ec94f96e..9e85eef9 100644
 --- a/libfreerdp/gdi/gfx.c
@@ -3573,3 +4822,3587 @@ index ec94f96e..9e85eef9 100644
  fail:
  	LeaveCriticalSection(&context->mux);
  	return rc;
+diff --git a/libfreerdp/core/rdpudp.c b/libfreerdp/core/rdpudp.c
+new file mode 100644
+index 00000000..94a8a1fb
+--- /dev/null
++++ b/libfreerdp/core/rdpudp.c
+@@ -0,0 +1,2859 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * RDP-UDP client bootstrap
++ *
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#include <freerdp/config.h>
++
++#include "rdpudp.h"
++
++#include <errno.h>
++#include <inttypes.h>
++#include <stdio.h>
++#include <string.h>
++
++#include <freerdp/log.h>
++
++#include <openssl/bio.h>
++
++#include <winpr/assert.h>
++#include <winpr/cast.h>
++#include <winpr/crt.h>
++#include <winpr/custom-crypto.h>
++#include <winpr/sysinfo.h>
++#include <winpr/synch.h>
++#include <winpr/stream.h>
++#include <winpr/winsock.h>
++
++#include "settings.h"
++#include "rdp.h"
++#include "../crypto/tls.h"
++
++#if !defined(_WIN32)
++#include <netdb.h>
++#include <netinet/in.h>
++#include <sys/select.h>
++#include <sys/socket.h>
++#include <sys/types.h>
++#else
++#include <ws2tcpip.h>
++#endif
++
++#define TAG FREERDP_TAG("core.rdpudp")
++
++enum
++{
++	RDPUDP_FLAG_SYN = 0x0001,
++	RDPUDP_FLAG_ACK = 0x0004,
++	RDPUDP_FLAG_DATA = 0x0008,
++	RDPUDP_FLAG_FEC = 0x0010,
++	RDPUDP_FLAG_ACK_OF_ACKS = 0x0100,
++	RDPUDP_FLAG_SYNLOSSY = 0x0200,
++	RDPUDP_FLAG_CORRELATION_ID = 0x0800,
++	RDPUDP_FLAG_SYNEX = 0x1000,
++
++	RDPUDP_VERSION_INFO_VALID = 0x0001,
++	RDPUDP_PROTOCOL_VERSION_1 = 0x0001,
++	RDPUDP_PROTOCOL_VERSION_2 = 0x0002,
++	RDPUDP_PROTOCOL_VERSION_3 = 0x0101,
++
++	RDPUDP_DEFAULT_MTU = 1232,
++	RDPUDP_MIN_MTU = 1132,
++	RDPUDP_RECEIVE_WINDOW = 1024,
++	RDPUDP_SYN_TIMEOUT_MS = 800,
++	RDPUDP_DATA_TIMEOUT_MS = 5000,
++	RDPUDP_HANDSHAKE_TIMEOUT_MS = 15000,
++	RDPUDP_TLS_HANDSHAKE_READ_TIMEOUT_MS = 500,
++	/* Windows retransmits SYN three times after the first send. */
++	RDPUDP_SYN_SEND_ATTEMPTS = 4,
++	RDPUDP_RECV_BUFFER_SIZE = 2048,
++	RDPUDP1_RETRANSMIT_TIMEOUT_V1_MS = 500,
++	RDPUDP1_RETRANSMIT_TIMEOUT_V2_MS = 300,
++	RDPUDP1_MAX_RETRANSMITS = 5,
++	RDPUDP1_KEEPALIVE_INTERVAL_MS = 8000,
++	RDPUDP1_LOSSY_OUT_OF_ORDER_TIMEOUT_MS = 200,
++
++	RDPUDP2_PACKET_TYPE_DATA = 0,
++	RDPUDP2_PACKET_TYPE_DUMMY = 8,
++	RDPUDP2_FLAG_ACK = 0x0001,
++	RDPUDP2_FLAG_DATA = 0x0004,
++	RDPUDP2_FLAG_ACKVEC = 0x0008,
++	RDPUDP2_FLAG_AOA = 0x0010,
++	RDPUDP2_FLAG_OVERHEAD = 0x0040,
++	RDPUDP2_FLAG_DELAYACKINFO = 0x0100,
++	RDPUDP2_LOG_WINDOW = 10,
++	RDPUDP2_DEFAULT_MAX_DELAYED_ACKS = 8,
++	RDPUDP2_DEFAULT_DELAY_ACK_TIMEOUT_MS = 50,
++	RDPUDP2_SEND_WINDOW = 256,
++	RDPUDP2_RECV_WINDOW = 256,
++	RDPUDP2_RETRANSMIT_TIMEOUT_MS = 250,
++	RDPUDP2_MAX_RETRANSMITS = 8,
++	RDPUDP2_KEEPALIVE_INTERVAL_MS = 8000,
++	RDPUDP_IDLE_TIMEOUT_MS = 30000,
++	RDPUDP_ASYNC_HANDSHAKE_TIMEOUT_MS = 15000,
++	RDPUDP_MAX_RDPEMT_FRAME = UINT16_MAX + 260,
++	RDPUDP_MAX_QUEUED_BYTES = 1024 * 1024,
++	RDPUDP_MAX_QUEUED_FRAMES = 128,
++
++	RDPTUNNEL_HEADER_LENGTH = 4,
++	RDPTUNNEL_CREATE_REQUEST_PAYLOAD_LENGTH = 24,
++	RDPTUNNEL_CREATE_RESPONSE_PAYLOAD_LENGTH = 4,
++	RDPTUNNEL_ACTION_CREATEREQUEST = 0x00,
++	RDPTUNNEL_ACTION_CREATERESPONSE = 0x01,
++	RDPTUNNEL_ACTION_DATA = 0x02
++};
++
++typedef struct
++{
++	BOOL inUse;
++	UINT32 dataSequence;
++	UINT16 channelSequence;
++	BYTE* payload;
++	size_t payloadLength;
++	UINT64 lastSentMs;
++	UINT32 retransmits;
++} rdpUdpPendingPacket;
++
++typedef struct
++{
++	BOOL inUse;
++	UINT16 dataSequence;
++} rdpUdpRecvAckEntry;
++
++typedef struct
++{
++	BOOL inUse;
++	UINT32 channelSequence;
++	BYTE* payload;
++	size_t payloadLength;
++} rdpUdpRecvSegment;
++
++typedef struct
++{
++	rdpRdp* rdp;
++	SOCKET sock;
++	UINT16 requestedProtocol;
++	UINT16 negotiatedVersion;
++	BOOL lossy;
++	BOOL sentDelayAckInfo;
++	UINT32 sendSequence;
++	UINT32 codedSequence;
++	UINT32 recvSequence;
++	UINT32 recvReadSequence;
++	UINT32 recvAckHigh;
++	UINT16 channelSequence;
++	UINT16 recvChannelSequence;
++	int readTimeoutMs;
++	rdpUdpPendingPacket pending[RDPUDP2_SEND_WINDOW];
++	rdpUdpRecvAckEntry recvAcks[RDPUDP2_RECV_WINDOW];
++	rdpUdpRecvSegment recvSegments[RDPUDP2_RECV_WINDOW];
++	BYTE* readPayload;
++	size_t readPayloadLength;
++	size_t readPayloadOffset;
++	UINT64 lastSendMs;
++	UINT64 lastReceiveMs;
++	UINT64 lastKeepaliveMs;
++	UINT64 lossyOutOfOrderSinceMs;
++	long mtu;
++	long recvTimeoutMs;
++	rdpUdpClientBootstrapResult* result;
++} rdpUdpConnection;
++
++typedef struct rdp_udp_frame
++{
++	struct rdp_udp_frame* next;
++	size_t length;
++	BYTE data[];
++} rdpUdpFrame;
++
++struct rdp_udp_tunnel
++{
++	rdpUdpConnection* connection;
++	rdpTls* tls;
++	UINT16 requestedProtocol;
++	rdpUdpClientBootstrapResult result;
++	CRITICAL_SECTION lock;
++	BOOL lockInitialized;
++	BOOL aborted;
++	rdpUdpTunnelState state;
++	UINT32 requestId;
++	BYTE cookie[RDPUDP_COOKIE_LEN];
++	BYTE synPacket[RDPUDP_DEFAULT_MTU];
++	size_t synPacketLength;
++	UINT32 synAttempts;
++	UINT64 stateStartedMs;
++	UINT64 lastSynMs;
++	HANDLE socketEvent;
++	BIO* pendingBio;
++	BYTE* wireBuffer;
++	size_t wireLength;
++	size_t wireCapacity;
++	rdpUdpFrame* rxHead;
++	rdpUdpFrame* rxTail;
++	size_t rxQueuedBytes;
++	size_t rxQueuedFrames;
++};
++
++static int rdpudp_socket_error(void)
++{
++#if defined(_WIN32)
++	return WSAGetLastError();
++#else
++	return errno;
++#endif
++}
++
++static BOOL rdpudp_sha256_cookie(const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                 BYTE hash[WINPR_SHA256_DIGEST_LENGTH])
++{
++	return winpr_Digest(WINPR_MD_SHA256, cookie, RDPUDP_COOKIE_LEN, hash,
++	                    WINPR_SHA256_DIGEST_LENGTH);
++}
++
++static BOOL rdpudp_write_syn(wStream* s, UINT16 requestedProtocol,
++                             const BYTE cookie[RDPUDP_COOKIE_LEN], UINT32* initialSequence)
++{
++	WINPR_ASSERT(s);
++	WINPR_ASSERT(cookie);
++	WINPR_ASSERT(initialSequence);
++
++	UINT32 sequence = 0;
++	if (winpr_RAND(&sequence, sizeof(sequence)) < 0)
++		return FALSE;
++
++	const BOOL lossy = requestedProtocol == INITIATE_REQUEST_PROTOCOL_UDPFECL;
++	UINT16 flags = RDPUDP_FLAG_SYN | RDPUDP_FLAG_SYNEX;
++	if (lossy)
++		flags |= RDPUDP_FLAG_SYNLOSSY;
++
++	if (!Stream_EnsureRemainingCapacity(s, RDPUDP_DEFAULT_MTU))
++		return FALSE;
++
++	/* RDP-UDP uses network byte order. */
++	Stream_Write_UINT32_BE(s, 0xFFFFFFFFu);          /* snSourceAck */
++	Stream_Write_UINT16_BE(s, RDPUDP_RECEIVE_WINDOW); /* uReceiveWindowSize */
++	Stream_Write_UINT16_BE(s, flags);                /* uFlags */
++	Stream_Write_UINT32_BE(s, sequence);             /* snInitialSequenceNumber */
++	Stream_Write_UINT16_BE(s, RDPUDP_DEFAULT_MTU);   /* uUpStreamMtu */
++	Stream_Write_UINT16_BE(s, RDPUDP_DEFAULT_MTU);   /* uDownStreamMtu */
++
++	/* SYNEX advertises RDP-UDP v3, which is the UDP2 data-transfer version. */
++	Stream_Write_UINT16_BE(s, RDPUDP_VERSION_INFO_VALID);
++	Stream_Write_UINT16_BE(s, RDPUDP_PROTOCOL_VERSION_3);
++
++	BYTE cookieHash[WINPR_SHA256_DIGEST_LENGTH] = { 0 };
++	if (!rdpudp_sha256_cookie(cookie, cookieHash))
++		return FALSE;
++	Stream_Write(s, cookieHash, sizeof(cookieHash));
++
++	const size_t written = Stream_GetPosition(s);
++	if (written > RDPUDP_DEFAULT_MTU)
++		return FALSE;
++	Stream_Zero(s, RDPUDP_DEFAULT_MTU - written);
++
++	*initialSequence = sequence;
++	return TRUE;
++}
++
++static BOOL rdpudp_wait_readable(SOCKET sock, int timeoutMs)
++{
++	fd_set rfds;
++	FD_ZERO(&rfds);
++	FD_SET(sock, &rfds);
++
++	struct timeval tv;
++	tv.tv_sec = timeoutMs / 1000;
++	tv.tv_usec = (timeoutMs % 1000) * 1000;
++
++	const int rc = select((int)sock + 1, &rfds, nullptr, nullptr, &tv);
++	return rc > 0 && FD_ISSET(sock, &rfds);
++}
++
++static BOOL rdpudp_parse_syn_ack(const BYTE* data, size_t length, UINT32 initialSequence,
++                                 rdpUdpClientBootstrapResult* result)
++{
++	WINPR_ASSERT(data);
++	WINPR_ASSERT(result);
++
++	if (length < 16)
++		return FALSE;
++
++	wStream* s = Stream_New((BYTE*)data, length);
++	if (!s)
++		return FALSE;
++
++	UINT32 sourceAck = 0;
++	UINT16 window = 0;
++	UINT16 flags = 0;
++	UINT32 serverInitialSequence = 0;
++	UINT16 upstreamMtu = 0;
++	UINT16 downstreamMtu = 0;
++	Stream_Read_UINT32_BE(s, sourceAck);
++	Stream_Read_UINT16_BE(s, window);
++	Stream_Read_UINT16_BE(s, flags);
++	Stream_Read_UINT32_BE(s, serverInitialSequence);
++	Stream_Read_UINT16_BE(s, upstreamMtu);
++	Stream_Read_UINT16_BE(s, downstreamMtu);
++
++	const BOOL isSynAck = ((flags & (RDPUDP_FLAG_SYN | RDPUDP_FLAG_ACK)) ==
++	                       (RDPUDP_FLAG_SYN | RDPUDP_FLAG_ACK));
++	const BOOL ackMatches = sourceAck == initialSequence;
++	const BOOL mtuOk = upstreamMtu >= RDPUDP_MIN_MTU && upstreamMtu <= RDPUDP_DEFAULT_MTU &&
++	                   downstreamMtu >= RDPUDP_MIN_MTU && downstreamMtu <= RDPUDP_DEFAULT_MTU;
++
++	if (!isSynAck || !ackMatches || !mtuOk)
++	{
++		Stream_Free(s, FALSE);
++		return FALSE;
++	}
++
++	if ((flags & RDPUDP_FLAG_CORRELATION_ID) != 0)
++	{
++		if (!Stream_SafeSeek(s, 32))
++		{
++			Stream_Free(s, FALSE);
++			return FALSE;
++		}
++	}
++
++	result->negotiatedVersion = RDPUDP_PROTOCOL_VERSION_1;
++	if ((flags & RDPUDP_FLAG_SYNEX) != 0 && Stream_GetRemainingLength(s) >= 4)
++	{
++		UINT16 synExFlags = 0;
++		UINT16 udpVersion = 0;
++		Stream_Read_UINT16_BE(s, synExFlags);
++		Stream_Read_UINT16_BE(s, udpVersion);
++		if ((synExFlags & RDPUDP_VERSION_INFO_VALID) != 0)
++			result->negotiatedVersion = udpVersion;
++	}
++
++	result->synAckReceived = TRUE;
++	result->serverInitialSequence = serverInitialSequence;
++	Stream_Free(s, FALSE);
++	return TRUE;
++}
++
++BOOL rdpudp_test_write_syn(wStream* s, UINT16 requestedProtocol,
++                           const BYTE cookie[RDPUDP_COOKIE_LEN], UINT32* initialSequence)
++{
++	return rdpudp_write_syn(s, requestedProtocol, cookie, initialSequence);
++}
++
++BOOL rdpudp_test_parse_syn_ack(const BYTE* data, size_t length, UINT32 initialSequence,
++                               rdpUdpClientBootstrapResult* result)
++{
++	return rdpudp_parse_syn_ack(data, length, initialSequence, result);
++}
++
++static SOCKET rdpudp_connect_socket(rdpRdp* rdp, int* lastSocketError)
++{
++	WINPR_ASSERT(rdp);
++	WINPR_ASSERT(lastSocketError);
++	SOCKET tcpSocket = INVALID_SOCKET;
++	if (!transport_get_socket(rdp->transport, &tcpSocket))
++	{
++		*lastSocketError = WSAENOTSOCK;
++		return INVALID_SOCKET;
++	}
++
++	struct sockaddr_storage peer = WINPR_C_ARRAY_INIT;
++	socklen_t peerLength = sizeof(peer);
++	if (getpeername((int)tcpSocket, (struct sockaddr*)&peer, &peerLength) != 0 ||
++	    (peer.ss_family != AF_INET && peer.ss_family != AF_INET6))
++	{
++		*lastSocketError = rdpudp_socket_error();
++		return INVALID_SOCKET;
++	}
++
++	SOCKET sock = _socket(peer.ss_family, SOCK_DGRAM, IPPROTO_UDP);
++	if (sock == INVALID_SOCKET)
++	{
++		*lastSocketError = rdpudp_socket_error();
++		return INVALID_SOCKET;
++	}
++	if (_connect(sock, (const struct sockaddr*)&peer, (int)peerLength) != 0)
++	{
++		*lastSocketError = rdpudp_socket_error();
++		closesocket(sock);
++		return INVALID_SOCKET;
++	}
++	return sock;
++}
++
++static void rdpudp_connection_free(rdpUdpConnection* connection)
++{
++	if (!connection)
++		return;
++
++	if (connection->sock != INVALID_SOCKET)
++		closesocket(connection->sock);
++
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++		free(connection->pending[x].payload);
++	for (size_t x = 0; x < ARRAYSIZE(connection->recvSegments); x++)
++		free(connection->recvSegments[x].payload);
++	free(connection->readPayload);
++
++	free(connection);
++}
++
++static BOOL rdpudp2_sequence_lt(UINT16 a, UINT16 b)
++{
++	return (INT16)(a - b) < 0;
++}
++
++static BOOL rdpudp2_sequence_le(UINT16 a, UINT16 b)
++{
++	return (INT16)(a - b) <= 0;
++}
++
++static BOOL rdpudp2_sequence_gt(UINT16 a, UINT16 b)
++{
++	return (INT16)(a - b) > 0;
++}
++
++static UINT16 rdpudp2_sequence_distance(UINT16 from, UINT16 to)
++{
++	return (UINT16)(to - from);
++}
++
++static BOOL rdpudp1_sequence_lt(UINT32 a, UINT32 b)
++{
++	return (INT32)(a - b) < 0;
++}
++
++static BOOL rdpudp1_sequence_le(UINT32 a, UINT32 b)
++{
++	return (INT32)(a - b) <= 0;
++}
++
++static BOOL rdpudp1_sequence_gt(UINT32 a, UINT32 b)
++{
++	return (INT32)(a - b) > 0;
++}
++
++static UINT32 rdpudp1_sequence_distance(UINT32 from, UINT32 to)
++{
++	return to - from;
++}
++
++UINT16 rdpudp_test_sequence16_distance(UINT16 from, UINT16 to)
++{
++	return rdpudp2_sequence_distance(from, to);
++}
++
++UINT32 rdpudp_test_sequence32_distance(UINT32 from, UINT32 to)
++{
++	return rdpudp1_sequence_distance(from, to);
++}
++
++static void rdpudp2_pending_clear(rdpUdpPendingPacket* packet)
++{
++	if (!packet)
++		return;
++
++	free(packet->payload);
++	ZeroMemory(packet, sizeof(*packet));
++}
++
++static void rdpudp_pending_update_rtt(rdpUdpConnection* connection,
++	                                  const rdpUdpPendingPacket* packet)
++{
++	if (!connection || !connection->result || !packet || packet->retransmits != 0 ||
++	    packet->lastSentMs == 0)
++		return;
++	const UINT64 now = GetTickCount64();
++	if (now < packet->lastSentMs)
++		return;
++	const UINT64 sample = (now - packet->lastSentMs) * 1000u;
++	connection->result->srttMicros = connection->result->srttMicros == 0
++	                                            ? sample
++	                                            : (connection->result->srttMicros * 7u + sample) / 8u;
++}
++
++static rdpUdpPendingPacket* rdpudp2_pending_find_by_data_seq(rdpUdpConnection* connection,
++                                                              UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (packet->inUse && (UINT16)packet->dataSequence == dataSeq)
++			return packet;
++	}
++
++	return nullptr;
++}
++
++static rdpUdpPendingPacket* rdpudp1_pending_find_by_data_seq(rdpUdpConnection* connection,
++                                                             UINT32 dataSeq)
++{
++	WINPR_ASSERT(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (packet->inUse && packet->dataSequence == dataSeq)
++			return packet;
++	}
++
++	return nullptr;
++}
++
++static rdpUdpPendingPacket* rdpudp2_pending_find_free(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		if (!connection->pending[x].inUse)
++			return &connection->pending[x];
++	}
++
++	return nullptr;
++}
++
++static rdpUdpRecvAckEntry* rdpudp2_recv_ack_find(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++	rdpUdpRecvAckEntry* entry = &connection->recvAcks[dataSeq % RDPUDP2_RECV_WINDOW];
++	return (entry->inUse && entry->dataSequence == dataSeq) ? entry : nullptr;
++}
++
++static void rdpudp2_recv_ack_clear(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	rdpUdpRecvAckEntry* entry = rdpudp2_recv_ack_find(connection, dataSeq);
++	if (entry)
++		ZeroMemory(entry, sizeof(*entry));
++}
++
++static void rdpudp2_recv_ack_clear_to(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++
++	for (size_t x = 0; x < ARRAYSIZE(connection->recvAcks); x++)
++	{
++		rdpUdpRecvAckEntry* entry = &connection->recvAcks[x];
++		if (entry->inUse && rdpudp2_sequence_le(entry->dataSequence, dataSeq))
++			ZeroMemory(entry, sizeof(*entry));
++	}
++}
++
++static BOOL rdpudp2_recv_ack_received(const rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++	const rdpUdpRecvAckEntry* entry = &connection->recvAcks[dataSeq % RDPUDP2_RECV_WINDOW];
++	return entry->inUse && entry->dataSequence == dataSeq;
++}
++
++static void rdpudp2_recv_ack_promote(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	for (;;)
++	{
++		const UINT16 nextSeq = (UINT16)((connection->recvSequence + 1u) & 0xFFFFu);
++		if (!rdpudp2_recv_ack_received(connection, nextSeq))
++			break;
++
++		rdpudp2_recv_ack_clear(connection, nextSeq);
++		connection->recvSequence = nextSeq;
++	}
++
++	if (!rdpudp2_sequence_gt((UINT16)connection->recvAckHigh,
++	                         (UINT16)(connection->recvSequence & 0xFFFFu)))
++		connection->recvAckHigh = (UINT16)(connection->recvSequence & 0xFFFFu);
++}
++
++static void rdpudp2_recv_ack_note(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++
++	const UINT16 cumulative = (UINT16)(connection->recvSequence & 0xFFFFu);
++	if (rdpudp2_sequence_le(dataSeq, cumulative))
++		return;
++
++	const UINT16 expected = (UINT16)(cumulative + 1u);
++	const UINT16 distance = rdpudp2_sequence_distance(expected, dataSeq);
++	if (distance >= RDPUDP2_RECV_WINDOW)
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP2 receive ACK window overflow expected=%" PRIu16
++		          " received=%" PRIu16,
++		          expected, dataSeq);
++		return;
++	}
++
++	rdpUdpRecvAckEntry* entry = &connection->recvAcks[dataSeq % RDPUDP2_RECV_WINDOW];
++	entry->inUse = TRUE;
++	entry->dataSequence = dataSeq;
++
++	if (rdpudp2_sequence_gt(dataSeq, (UINT16)connection->recvAckHigh))
++		connection->recvAckHigh = dataSeq;
++
++	rdpudp2_recv_ack_promote(connection);
++}
++
++static void rdpudp2_recv_ack_apply_aoa(rdpUdpConnection* connection, UINT16 ackOfAcksSeq)
++{
++	WINPR_ASSERT(connection);
++
++	const UINT16 newCumulative = (UINT16)(ackOfAcksSeq - 1u);
++	if (!rdpudp2_sequence_gt(newCumulative, (UINT16)(connection->recvSequence & 0xFFFFu)))
++		return;
++
++	connection->recvSequence = newCumulative;
++	rdpudp2_recv_ack_clear_to(connection, newCumulative);
++	rdpudp2_recv_ack_promote(connection);
++}
++
++static rdpUdpRecvSegment* rdpudp2_recv_segment_find(rdpUdpConnection* connection,
++                                                    UINT32 channelSeq)
++{
++	WINPR_ASSERT(connection);
++
++	for (size_t x = 0; x < ARRAYSIZE(connection->recvSegments); x++)
++	{
++		rdpUdpRecvSegment* segment = &connection->recvSegments[x];
++		if (segment->inUse && segment->channelSequence == channelSeq)
++			return segment;
++	}
++
++	return nullptr;
++}
++
++static rdpUdpRecvSegment* rdpudp2_recv_segment_find_free(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	for (size_t x = 0; x < ARRAYSIZE(connection->recvSegments); x++)
++	{
++		if (!connection->recvSegments[x].inUse)
++			return &connection->recvSegments[x];
++	}
++
++	return nullptr;
++}
++
++static void rdpudp2_recv_segment_take(rdpUdpConnection* connection, rdpUdpRecvSegment* segment)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(segment);
++
++	free(connection->readPayload);
++	connection->readPayload = segment->payload;
++	connection->readPayloadLength = segment->payloadLength;
++	connection->readPayloadOffset = 0;
++	segment->payload = nullptr;
++	ZeroMemory(segment, sizeof(*segment));
++	connection->recvChannelSequence++;
++}
++
++static BOOL rdpudp2_queue_channel_payload(rdpUdpConnection* connection, UINT16 channelSeq,
++                                          const BYTE* payload, size_t payloadLength)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(payload || (payloadLength == 0));
++
++	if (payloadLength == 0)
++	{
++		if (channelSeq == connection->recvChannelSequence)
++			connection->recvChannelSequence++;
++		return TRUE;
++	}
++
++	const UINT16 expected = connection->recvChannelSequence;
++	if (rdpudp2_sequence_lt(channelSeq, expected))
++		return TRUE; /* Duplicate retransmission of a segment already delivered upstream. */
++
++	if (rdpudp2_sequence_distance(expected, channelSeq) >= RDPUDP2_RECV_WINDOW)
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP2 receive channel window overflow expected=%" PRIu16
++		          " received=%" PRIu16,
++		          expected, channelSeq);
++		return FALSE;
++	}
++
++	if (rdpudp2_recv_segment_find(connection, channelSeq))
++		return TRUE;
++
++	rdpUdpRecvSegment* segment = rdpudp2_recv_segment_find_free(connection);
++	if (!segment)
++	{
++		WLog_WARN(TAG, "RDP-UDP2 receive channel window is full");
++		return FALSE;
++	}
++
++	BYTE* copy = (BYTE*)malloc(payloadLength);
++	if (!copy)
++		return FALSE;
++	memcpy(copy, payload, payloadLength);
++
++	segment->inUse = TRUE;
++	segment->channelSequence = channelSeq;
++	segment->payload = copy;
++	segment->payloadLength = payloadLength;
++	return TRUE;
++}
++
++static int rdpudp2_read_buffered_payload(rdpUdpConnection* connection, BYTE* data, size_t length)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(data);
++
++	if (!connection->readPayload)
++	{
++		rdpUdpRecvSegment* next =
++		    rdpudp2_recv_segment_find(connection, connection->recvChannelSequence);
++		if (next)
++			rdpudp2_recv_segment_take(connection, next);
++	}
++
++	if (!connection->readPayload)
++		return 0;
++
++	const size_t remaining = connection->readPayloadLength - connection->readPayloadOffset;
++	const size_t copyLength = (remaining < length) ? remaining : length;
++	if (copyLength > 0)
++		memcpy(data, connection->readPayload + connection->readPayloadOffset, copyLength);
++
++	connection->readPayloadOffset += copyLength;
++	if (connection->readPayloadOffset >= connection->readPayloadLength)
++	{
++		free(connection->readPayload);
++		connection->readPayload = nullptr;
++		connection->readPayloadLength = 0;
++		connection->readPayloadOffset = 0;
++	}
++
++	return WINPR_ASSERTING_INT_CAST(int, copyLength);
++}
++
++static void rdpudp2_pending_mark_acked(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	rdpUdpPendingPacket* packet = rdpudp2_pending_find_by_data_seq(connection, dataSeq);
++	if (packet)
++	{
++		rdpudp_pending_update_rtt(connection, packet);
++		rdpudp2_pending_clear(packet);
++	}
++}
++
++static void rdpudp2_pending_mark_acked_to(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	WINPR_ASSERT(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (packet->inUse && rdpudp2_sequence_le((UINT16)packet->dataSequence, dataSeq))
++		{
++			rdpudp_pending_update_rtt(connection, packet);
++			rdpudp2_pending_clear(packet);
++		}
++	}
++}
++
++static int rdpudp_connection_send_raw(rdpUdpConnection* connection, const BYTE* data, size_t length)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(data || (length == 0));
++
++	const int ilength = WINPR_ASSERTING_INT_CAST(int, length);
++	const int sent = _send(connection->sock, (const char*)data, ilength, 0);
++	if (sent > 0)
++	{
++		connection->lastSendMs = GetTickCount64();
++		if (connection->result)
++		{
++			connection->result->packetsSent++;
++			connection->result->bytesSent += WINPR_ASSERTING_INT_CAST(UINT32, sent);
++		}
++	}
++	else if (connection->result)
++		connection->result->lastSocketError = rdpudp_socket_error();
++
++	return sent;
++}
++
++static int rdpudp_connection_recv_raw(rdpUdpConnection* connection, BYTE* data, size_t length,
++                                      int timeoutMs)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(data);
++
++	if (!rdpudp_wait_readable(connection->sock, timeoutMs))
++		return 0;
++
++	const int received =
++	    _recv(connection->sock, (char*)data, WINPR_ASSERTING_INT_CAST(int, length), 0);
++	if (received > 0)
++	{
++		connection->lastReceiveMs = GetTickCount64();
++		if (connection->result)
++		{
++			connection->result->packetsReceived++;
++			connection->result->bytesReceived += WINPR_ASSERTING_INT_CAST(UINT32, received);
++		}
++	}
++	else if (connection->result)
++		connection->result->lastSocketError = rdpudp_socket_error();
++
++	return received;
++}
++
++static UINT32 rdpudp1_retransmit_timeout_ms(const rdpUdpConnection* connection)
++{
++	return (connection && connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_1)
++	           ? RDPUDP1_RETRANSMIT_TIMEOUT_V1_MS
++	           : RDPUDP1_RETRANSMIT_TIMEOUT_V2_MS;
++}
++
++static BOOL rdpudp1_source_packet_received(rdpUdpConnection* connection, UINT32 sourceSeq)
++{
++	WINPR_ASSERT(connection);
++	return rdpudp1_sequence_le(sourceSeq, connection->recvSequence) ||
++	       rdpudp2_recv_segment_find(connection, sourceSeq);
++}
++
++static BOOL rdpudp1_write_ack_vector(wStream* s, rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(s);
++	WINPR_ASSERT(connection);
++
++	UINT32 highSeq = connection->recvAckHigh;
++	if (rdpudp1_sequence_lt(highSeq, connection->recvSequence))
++		highSeq = connection->recvSequence;
++
++	const UINT32 firstSeq = connection->recvSequence + 1u;
++	size_t vectorSize = 0;
++	BYTE vector[2048] = { 0 };
++
++	if (rdpudp1_sequence_le(firstSeq, highSeq))
++	{
++		BOOL haveRun = FALSE;
++		UINT8 runState = 0;
++		UINT8 runLength = 0;
++
++		for (UINT32 seq = firstSeq; rdpudp1_sequence_le(seq, highSeq); seq++)
++		{
++			const UINT8 state = rdpudp1_source_packet_received(connection, seq) ? 0 : 3;
++			if (!haveRun)
++			{
++				haveRun = TRUE;
++				runState = state;
++				runLength = 1;
++			}
++			else if (state == runState && runLength < 63)
++			{
++				runLength++;
++			}
++			else
++			{
++				if (vectorSize >= ARRAYSIZE(vector))
++					return FALSE;
++				vector[vectorSize++] = (BYTE)((runState << 6u) | runLength);
++				runState = state;
++				runLength = 1;
++			}
++		}
++
++		if (haveRun)
++		{
++			if (vectorSize >= ARRAYSIZE(vector))
++				return FALSE;
++			vector[vectorSize++] = (BYTE)((runState << 6u) | runLength);
++		}
++	}
++
++	if (vectorSize == 0)
++	{
++		vector[vectorSize++] = 1; /* one DATAGRAM_RECEIVED entry for snSourceAck */
++		highSeq = connection->recvSequence;
++	}
++
++	const size_t padding = (4u - ((sizeof(UINT16) + vectorSize) % 4u)) % 4u;
++	if (!Stream_EnsureRemainingCapacity(s, sizeof(UINT16) + vectorSize + padding))
++		return FALSE;
++
++	Stream_Write_UINT16_BE(s, (UINT16)vectorSize);
++	Stream_Write(s, vector, vectorSize);
++	Stream_Zero(s, padding);
++	connection->recvAckHigh = highSeq;
++	return TRUE;
++}
++
++static BOOL rdpudp1_write_ack_fields(rdpUdpConnection* connection, wStream* s, UINT16 extraFlags)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(s);
++
++	if (!Stream_EnsureRemainingCapacity(s, 12))
++		return FALSE;
++
++	UINT32 sourceAck = connection->recvAckHigh;
++	if (rdpudp1_sequence_lt(sourceAck, connection->recvSequence))
++		sourceAck = connection->recvSequence;
++
++	Stream_Write_UINT32_BE(s, sourceAck); /* snSourceAck */
++	Stream_Write_UINT16_BE(s, RDPUDP_RECEIVE_WINDOW);
++	Stream_Write_UINT16_BE(s, RDPUDP_FLAG_ACK | extraFlags);
++	return rdpudp1_write_ack_vector(s, connection);
++}
++
++static BOOL rdpudp_send_connection_ack(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	wStream* s = Stream_New(nullptr, 16);
++	if (!s)
++		return FALSE;
++
++	if (!rdpudp1_write_ack_fields(connection, s, 0))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	const size_t length = Stream_GetPosition(s);
++	const int sent = rdpudp_connection_send_raw(connection, Stream_Buffer(s), length);
++	Stream_Free(s, TRUE);
++	return sent == WINPR_ASSERTING_INT_CAST(int, length);
++}
++
++static void rdpudp1_pending_mark_acked(rdpUdpConnection* connection, UINT32 sourceSeq)
++{
++	rdpUdpPendingPacket* packet = rdpudp1_pending_find_by_data_seq(connection, sourceSeq);
++	if (packet)
++	{
++		rdpudp_pending_update_rtt(connection, packet);
++		rdpudp2_pending_clear(packet);
++	}
++}
++
++static void rdpudp1_pending_mark_acked_to(rdpUdpConnection* connection, UINT32 sourceSeq)
++{
++	WINPR_ASSERT(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (packet->inUse && rdpudp1_sequence_le(packet->dataSequence, sourceSeq))
++		{
++			rdpudp_pending_update_rtt(connection, packet);
++			rdpudp2_pending_clear(packet);
++		}
++	}
++}
++
++static BOOL rdpudp1_send_source_segment(rdpUdpConnection* connection, UINT32 sourceSeq,
++                                        const BYTE* payload, size_t payloadLen)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(payload || (payloadLen == 0));
++
++	wStream* s = Stream_New(nullptr, RDPUDP_DEFAULT_MTU);
++	if (!s)
++		return FALSE;
++
++	if (!rdpudp1_write_ack_fields(connection, s, RDPUDP_FLAG_DATA))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	const UINT32 codedSeq = connection->codedSequence++;
++	Stream_Write_UINT32_BE(s, codedSeq);
++	Stream_Write_UINT32_BE(s, sourceSeq);
++	if (payloadLen > 0)
++		Stream_Write(s, payload, payloadLen);
++
++	const size_t length = Stream_GetPosition(s);
++	const int sent = rdpudp_connection_send_raw(connection, Stream_Buffer(s), length);
++	Stream_Free(s, TRUE);
++	return sent == WINPR_ASSERTING_INT_CAST(int, length);
++}
++
++static BOOL rdpudp1_retransmit_packet(rdpUdpConnection* connection, rdpUdpPendingPacket* packet)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(packet);
++
++	if (!packet->inUse || !packet->payload)
++		return TRUE;
++
++	if (packet->retransmits >= RDPUDP1_MAX_RETRANSMITS)
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP packet sourceSeq=%" PRIu32 " exceeded retransmit limit",
++		          packet->dataSequence);
++		return FALSE;
++	}
++
++	if (!rdpudp1_send_source_segment(connection, packet->dataSequence, packet->payload,
++	                                packet->payloadLength))
++		return FALSE;
++
++	packet->lastSentMs = GetTickCount64();
++	packet->retransmits++;
++	if (connection->result)
++		connection->result->retransmits++;
++
++	WLog_DBG(TAG, "RDP-UDP retransmit sourceSeq=%" PRIu32 " count=%" PRIu32,
++	         packet->dataSequence, packet->retransmits);
++	return TRUE;
++}
++
++static BOOL rdpudp1_retransmit_due(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	if (connection->lossy)
++		return TRUE;
++
++	const UINT64 now = GetTickCount64();
++	const UINT32 retransmitTimeout = rdpudp1_retransmit_timeout_ms(connection);
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (!packet->inUse)
++			continue;
++
++		if (now >= packet->lastSentMs && now - packet->lastSentMs >= retransmitTimeout)
++		{
++			if (!rdpudp1_retransmit_packet(connection, packet))
++				return FALSE;
++		}
++	}
++
++	return TRUE;
++}
++
++static BOOL rdpudp1_maintenance(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	if (!rdpudp1_retransmit_due(connection))
++		return FALSE;
++
++	const UINT64 now = GetTickCount64();
++	if (connection->lastReceiveMs > 0 && now >= connection->lastReceiveMs &&
++	    now - connection->lastReceiveMs >= RDPUDP_IDLE_TIMEOUT_MS)
++		return FALSE;
++	const UINT64 lastActivity = (connection->lastSendMs > connection->lastKeepaliveMs)
++	                                ? connection->lastSendMs
++	                                : connection->lastKeepaliveMs;
++	if ((lastActivity == 0) || (now < lastActivity) ||
++	    (now - lastActivity < RDPUDP1_KEEPALIVE_INTERVAL_MS))
++		return TRUE;
++
++	const BOOL ok = rdpudp_send_connection_ack(connection);
++	if (ok)
++		connection->lastKeepaliveMs = now;
++	return ok;
++}
++
++static BOOL rdpudp2_send_packet(rdpUdpConnection* connection, UINT8 packetType, UINT16 flags,
++                                const BYTE* payload, size_t payloadLen)
++{
++	WINPR_ASSERT(connection);
++
++	wStream* s = Stream_New(nullptr, RDPUDP_DEFAULT_MTU + 1);
++	if (!s)
++		return FALSE;
++
++	if (!Stream_SetPosition(s, 1))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	const UINT16 header = (UINT16)((flags & 0x0FFFu) | (RDPUDP2_LOG_WINDOW << 12u));
++	Stream_Write_UINT16(s, header);
++
++	if ((flags & RDPUDP2_FLAG_ACK) != 0)
++	{
++		const UINT16 ackSeq = (UINT16)(connection->recvSequence & 0xFFFFu);
++		Stream_Write_UINT16(s, ackSeq);
++		Stream_Zero(s, 3); /* receivedTS */
++		Stream_Write_UINT8(s, 0); /* sendAckTimeGap */
++		Stream_Write_UINT8(s, 0); /* no delayed ACK entries */
++	}
++
++	if ((flags & RDPUDP2_FLAG_DELAYACKINFO) != 0)
++	{
++		Stream_Write_UINT8(s, RDPUDP2_DEFAULT_MAX_DELAYED_ACKS);
++		Stream_Write_UINT16(s, RDPUDP2_DEFAULT_DELAY_ACK_TIMEOUT_MS);
++	}
++
++	if ((flags & RDPUDP2_FLAG_DATA) != 0)
++	{
++		const UINT16 dataSeq = (UINT16)(connection->sendSequence++ & 0xFFFFu);
++		const UINT16 channelSeq = connection->channelSequence++;
++		Stream_Write_UINT16(s, dataSeq);
++		Stream_Write_UINT16(s, channelSeq);
++		if (payloadLen > 0)
++			Stream_Write(s, payload, payloadLen);
++	}
++
++	size_t totalLength = Stream_GetPosition(s);
++	const size_t packetLength = totalLength - 1;
++	if (packetLength < 7)
++	{
++		Stream_Zero(s, 7 - packetLength);
++		totalLength = Stream_GetPosition(s);
++	}
++
++	const UINT8 shortLength =
++	    (packetLength < 7) ? WINPR_ASSERTING_INT_CAST(UINT8, packetLength) : 7;
++	BYTE* buffer = Stream_Buffer(s);
++	buffer[0] = (UINT8)(((packetType & 0x0Fu) << 1u) | (shortLength & 0x07u));
++	/* MS-RDPEUDP2 moves the prefix byte to byte 7 on the wire. */
++	BYTE tmp = buffer[0];
++	buffer[0] = buffer[7];
++	buffer[7] = tmp;
++
++	const int sent = rdpudp_connection_send_raw(connection, buffer, totalLength);
++	Stream_Free(s, TRUE);
++	return sent == WINPR_ASSERTING_INT_CAST(int, totalLength);
++}
++
++static BOOL rdpudp2_send_data_segment(rdpUdpConnection* connection, UINT16 flags,
++                                      UINT16 channelSeq, const BYTE* payload, size_t payloadLen,
++                                      UINT16* dataSeq)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(payload || (payloadLen == 0));
++	WINPR_ASSERT(dataSeq);
++
++	wStream* s = Stream_New(nullptr, RDPUDP_DEFAULT_MTU + 1);
++	if (!s)
++		return FALSE;
++
++	if (!Stream_SetPosition(s, 1))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	flags |= RDPUDP2_FLAG_DATA;
++	const UINT16 header = (UINT16)((flags & 0x0FFFu) | (RDPUDP2_LOG_WINDOW << 12u));
++	Stream_Write_UINT16(s, header);
++
++	if ((flags & RDPUDP2_FLAG_DELAYACKINFO) != 0)
++	{
++		Stream_Write_UINT8(s, RDPUDP2_DEFAULT_MAX_DELAYED_ACKS);
++		Stream_Write_UINT16(s, RDPUDP2_DEFAULT_DELAY_ACK_TIMEOUT_MS);
++	}
++
++	*dataSeq = (UINT16)(connection->sendSequence++ & 0xFFFFu);
++	Stream_Write_UINT16(s, *dataSeq);
++	Stream_Write_UINT16(s, channelSeq);
++	if (payloadLen > 0)
++		Stream_Write(s, payload, payloadLen);
++
++	size_t totalLength = Stream_GetPosition(s);
++	const size_t packetLength = totalLength - 1;
++	if (packetLength < 7)
++	{
++		Stream_Zero(s, 7 - packetLength);
++		totalLength = Stream_GetPosition(s);
++	}
++
++	const UINT8 shortLength =
++	    (packetLength < 7) ? WINPR_ASSERTING_INT_CAST(UINT8, packetLength) : 7;
++	BYTE* buffer = Stream_Buffer(s);
++	buffer[0] = (UINT8)(((RDPUDP2_PACKET_TYPE_DATA & 0x0Fu) << 1u) | (shortLength & 0x07u));
++	BYTE tmp = buffer[0];
++	buffer[0] = buffer[7];
++	buffer[7] = tmp;
++
++	const int sent = rdpudp_connection_send_raw(connection, buffer, totalLength);
++	Stream_Free(s, TRUE);
++	return sent == WINPR_ASSERTING_INT_CAST(int, totalLength);
++}
++
++static BOOL rdpudp2_send_ack(rdpUdpConnection* connection)
++{
++	return rdpudp2_send_packet(connection, RDPUDP2_PACKET_TYPE_DATA, RDPUDP2_FLAG_ACK, nullptr, 0);
++}
++
++static BOOL rdpudp2_send_ack_vector(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	const UINT16 baseSeq = (UINT16)((connection->recvSequence + 1u) & 0xFFFFu);
++	const UINT16 highSeq = (UINT16)connection->recvAckHigh;
++	if (!rdpudp2_sequence_gt(highSeq, (UINT16)(connection->recvSequence & 0xFFFFu)))
++		return rdpudp2_send_ack(connection);
++
++	const UINT16 seqCount = (UINT16)(rdpudp2_sequence_distance(baseSeq, highSeq) + 1u);
++	const UINT8 vectorSize = WINPR_ASSERTING_INT_CAST(UINT8, (seqCount + 6u) / 7u);
++	wStream* s = Stream_New(nullptr, 8 + vectorSize);
++	if (!s)
++		return FALSE;
++
++	if (!Stream_SetPosition(s, 1))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	const UINT16 header =
++	    (UINT16)((RDPUDP2_FLAG_ACKVEC & 0x0FFFu) | (RDPUDP2_LOG_WINDOW << 12u));
++	Stream_Write_UINT16(s, header);
++	Stream_Write_UINT16(s, baseSeq);
++	Stream_Write_UINT8(s, vectorSize); /* no timestamp */
++	for (UINT8 entryIndex = 0; entryIndex < vectorSize; entryIndex++)
++	{
++		UINT8 entry = 0;
++		for (int bit = 0; bit < 7; bit++)
++		{
++			const UINT16 seq = (UINT16)(baseSeq + (entryIndex * 7u) + (UINT8)bit);
++			if (rdpudp2_sequence_gt(seq, highSeq))
++				break;
++			if (rdpudp2_recv_ack_received(connection, seq))
++				entry |= (UINT8)(1u << bit);
++		}
++		Stream_Write_UINT8(s, entry);
++	}
++
++	size_t totalLength = Stream_GetPosition(s);
++	const size_t packetLength = totalLength - 1;
++	if (packetLength < 7)
++	{
++		Stream_Zero(s, 7 - packetLength);
++		totalLength = Stream_GetPosition(s);
++	}
++
++	const UINT8 shortLength =
++	    (packetLength < 7) ? WINPR_ASSERTING_INT_CAST(UINT8, packetLength) : 7;
++	BYTE* buffer = Stream_Buffer(s);
++	buffer[0] = (UINT8)(((RDPUDP2_PACKET_TYPE_DATA & 0x0Fu) << 1u) | (shortLength & 0x07u));
++	BYTE tmp = buffer[0];
++	buffer[0] = buffer[7];
++	buffer[7] = tmp;
++
++	const int sent = rdpudp_connection_send_raw(connection, buffer, totalLength);
++	Stream_Free(s, TRUE);
++	return sent == WINPR_ASSERTING_INT_CAST(int, totalLength);
++}
++
++static BOOL rdpudp2_retransmit_packet(rdpUdpConnection* connection, rdpUdpPendingPacket* packet)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(packet);
++
++	if (!packet->inUse || !packet->payload)
++		return TRUE;
++
++	if (packet->retransmits >= RDPUDP2_MAX_RETRANSMITS)
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP2 packet channelSeq=%" PRIu16 " dataSeq=%" PRIu16
++		          " exceeded retransmit limit",
++		          packet->channelSequence, (UINT16)packet->dataSequence);
++		return FALSE;
++	}
++
++	UINT16 newDataSeq = 0;
++	if (!rdpudp2_send_data_segment(connection, RDPUDP2_FLAG_DATA, packet->channelSequence,
++	                               packet->payload, packet->payloadLength, &newDataSeq))
++		return FALSE;
++
++	packet->dataSequence = newDataSeq;
++	packet->lastSentMs = GetTickCount64();
++	packet->retransmits++;
++	if (connection->result)
++		connection->result->retransmits++;
++
++	WLog_DBG(TAG,
++	         "RDP-UDP2 retransmit channelSeq=%" PRIu16 " newDataSeq=%" PRIu16
++	         " count=%" PRIu32,
++	         packet->channelSequence, (UINT16)packet->dataSequence, packet->retransmits);
++	return TRUE;
++}
++
++static BOOL rdpudp2_retransmit_by_data_seq(rdpUdpConnection* connection, UINT16 dataSeq)
++{
++	rdpUdpPendingPacket* packet = rdpudp2_pending_find_by_data_seq(connection, dataSeq);
++	return packet ? rdpudp2_retransmit_packet(connection, packet) : TRUE;
++}
++
++static BOOL rdpudp2_retransmit_due(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	const UINT64 now = GetTickCount64();
++	for (size_t x = 0; x < ARRAYSIZE(connection->pending); x++)
++	{
++		rdpUdpPendingPacket* packet = &connection->pending[x];
++		if (!packet->inUse)
++			continue;
++
++		if (now >= packet->lastSentMs &&
++		    now - packet->lastSentMs >= RDPUDP2_RETRANSMIT_TIMEOUT_MS)
++		{
++			if (!rdpudp2_retransmit_packet(connection, packet))
++				return FALSE;
++		}
++	}
++
++	return TRUE;
++}
++
++static BOOL rdpudp2_send_receive_ack(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	if (rdpudp2_sequence_gt((UINT16)connection->recvAckHigh,
++	                         (UINT16)(connection->recvSequence & 0xFFFFu)))
++		return rdpudp2_send_ack_vector(connection);
++	return rdpudp2_send_ack(connection);
++}
++
++static BOOL rdpudp2_maintenance(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	if (!rdpudp2_retransmit_due(connection))
++		return FALSE;
++
++	const UINT64 now = GetTickCount64();
++	if (connection->lastReceiveMs > 0 && now >= connection->lastReceiveMs &&
++	    now - connection->lastReceiveMs >= RDPUDP_IDLE_TIMEOUT_MS)
++		return FALSE;
++	const UINT64 lastActivity = (connection->lastSendMs > connection->lastKeepaliveMs)
++	                                ? connection->lastSendMs
++	                                : connection->lastKeepaliveMs;
++	if ((lastActivity == 0) || (now < lastActivity) ||
++	    (now - lastActivity < RDPUDP2_KEEPALIVE_INTERVAL_MS))
++		return TRUE;
++
++	if (!rdpudp2_send_receive_ack(connection))
++		return FALSE;
++
++	connection->lastKeepaliveMs = now;
++	WLog_DBG(TAG,
++	         "RDP-UDP2 keepalive sent cumulativeSeq=%" PRIu16 " recvHigh=%" PRIu16,
++	         (UINT16)(connection->recvSequence & 0xFFFFu), (UINT16)connection->recvAckHigh);
++	return TRUE;
++}
++
++static int rdpudp2_recv_payload(rdpUdpConnection* connection, BYTE* data, size_t length,
++                                int timeoutMs)
++{
++	const int buffered = rdpudp2_read_buffered_payload(connection, data, length);
++	if (buffered > 0)
++		return buffered;
++
++	BYTE buffer[RDPUDP_RECV_BUFFER_SIZE] = { 0 };
++	const int received = rdpudp_connection_recv_raw(connection, buffer, sizeof(buffer), timeoutMs);
++	if (received == 0)
++	{
++		return rdpudp2_maintenance(connection) ? 0 : -1;
++	}
++	if (received <= 0)
++		return received;
++	if (received < 8)
++		return -1;
++
++	BYTE tmp = buffer[0];
++	buffer[0] = buffer[7];
++	buffer[7] = tmp;
++
++	const UINT8 packetType = (buffer[0] >> 1u) & 0x0Fu;
++	const UINT8 shortLength = buffer[0] & 0x07u;
++	if (packetType == RDPUDP2_PACKET_TYPE_DUMMY)
++		return 0;
++
++	size_t packetLength = WINPR_ASSERTING_INT_CAST(size_t, received - 1);
++	if (shortLength < 7)
++		packetLength = shortLength;
++
++	wStream sbuffer = { 0 };
++	wStream* s = Stream_StaticInit(&sbuffer, &buffer[1], packetLength);
++	if (!Stream_CheckAndLogRequiredLength(TAG, s, 2))
++		return -1;
++
++	UINT16 header = 0;
++	Stream_Read_UINT16(s, header);
++	const UINT16 flags = header & 0x0FFFu;
++	if (((flags & RDPUDP2_FLAG_ACK) != 0) && ((flags & RDPUDP2_FLAG_ACKVEC) != 0))
++		return -1;
++
++	if ((flags & RDPUDP2_FLAG_ACK) != 0)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 7))
++			return -1;
++		UINT16 ackSeq = 0;
++		Stream_Read_UINT16(s, ackSeq);
++		rdpudp2_pending_mark_acked_to(connection, ackSeq);
++		Stream_Seek(s, 4);
++		UINT8 ackMeta = 0;
++		Stream_Read_UINT8(s, ackMeta);
++		const UINT8 delayedAcks = ackMeta & 0x0Fu;
++		if (!Stream_SafeSeek(s, delayedAcks))
++			return -1;
++	}
++
++	if ((flags & RDPUDP2_FLAG_OVERHEAD) != 0)
++	{
++		if (!Stream_SafeSeek(s, 1))
++			return -1;
++	}
++
++	if ((flags & RDPUDP2_FLAG_DELAYACKINFO) != 0)
++	{
++		if (!Stream_SafeSeek(s, 3))
++			return -1;
++	}
++
++	if ((flags & RDPUDP2_FLAG_AOA) != 0)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 2))
++			return -1;
++		UINT16 ackOfAcksSeq = 0;
++		Stream_Read_UINT16(s, ackOfAcksSeq);
++		rdpudp2_recv_ack_apply_aoa(connection, ackOfAcksSeq);
++	}
++
++	BOOL hasData = FALSE;
++	UINT16 dataSeq = 0;
++	if ((flags & RDPUDP2_FLAG_DATA) != 0)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 4))
++			return -1;
++
++		Stream_Read_UINT16(s, dataSeq);
++		hasData = TRUE;
++	}
++
++	if ((flags & RDPUDP2_FLAG_ACKVEC) != 0)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 3))
++			return -1;
++
++		UINT16 baseSeq = 0;
++		UINT8 vectorMeta = 0;
++		Stream_Read_UINT16(s, baseSeq);
++		Stream_Read_UINT8(s, vectorMeta);
++
++		const size_t vectorSize = vectorMeta & 0x7Fu;
++		const BOOL timestampPresent = (vectorMeta & 0x80u) != 0;
++		if (timestampPresent && !Stream_SafeSeek(s, 4))
++			return -1;
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, vectorSize))
++			return -1;
++
++		UINT16 seq = baseSeq;
++		for (size_t i = 0; i < vectorSize; i++)
++		{
++			UINT8 entry = 0;
++			Stream_Read_UINT8(s, entry);
++			if ((entry & 0x80u) == 0)
++			{
++				for (int bit = 0; bit < 7; bit++, seq++)
++				{
++					if ((entry & (1u << bit)) != 0)
++						rdpudp2_pending_mark_acked(connection, seq);
++					else if (!rdpudp2_retransmit_by_data_seq(connection, seq))
++						return -1;
++				}
++			}
++			else
++			{
++				const BOOL receivedState = (entry & 0x40u) != 0;
++				const UINT8 runLength = entry & 0x3Fu;
++				for (UINT8 run = 0; run < runLength; run++, seq++)
++				{
++					if (receivedState)
++						rdpudp2_pending_mark_acked(connection, seq);
++					else if (!rdpudp2_retransmit_by_data_seq(connection, seq))
++						return -1;
++				}
++			}
++		}
++	}
++
++	if (hasData)
++	{
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, 2))
++			return -1;
++
++		UINT16 channelSeq = 0;
++		Stream_Read_UINT16(s, channelSeq);
++		const size_t payloadLength = Stream_GetRemainingLength(s);
++		if (!rdpudp2_queue_channel_payload(connection, channelSeq, Stream_Pointer(s),
++		                                   payloadLength))
++			return -1;
++
++		rdpudp2_recv_ack_note(connection, dataSeq);
++		if (!rdpudp2_send_receive_ack(connection))
++			return -1;
++
++		return rdpudp2_read_buffered_payload(connection, data, length);
++	}
++
++	return 0;
++}
++
++static BOOL rdpudp1_skip_ack_vector_padding(wStream* s, size_t vectorSize)
++{
++	WINPR_ASSERT(s);
++	const size_t consumed = sizeof(UINT16) + vectorSize;
++	const size_t padding = (4u - (consumed % 4u)) % 4u;
++	return Stream_SafeSeek(s, padding);
++}
++
++static BOOL rdpudp1_process_ack_vector(rdpUdpConnection* connection, UINT32 sourceAck,
++                                       const BYTE* vector, size_t vectorSize)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(vector || (vectorSize == 0));
++
++	if (vectorSize == 0)
++	{
++		rdpudp1_pending_mark_acked_to(connection, sourceAck);
++		return TRUE;
++	}
++
++	UINT32 totalRun = 0;
++	for (size_t x = 0; x < vectorSize; x++)
++		totalRun += vector[x] & 0x3Fu;
++
++	if (totalRun == 0)
++	{
++		rdpudp1_pending_mark_acked(connection, sourceAck);
++		return TRUE;
++	}
++
++	UINT32 seq = sourceAck - totalRun + 1u;
++	for (size_t x = 0; x < vectorSize; x++)
++	{
++		const UINT8 entry = vector[x];
++		const UINT8 state = entry >> 6u;
++		const UINT8 runLength = entry & 0x3Fu;
++
++		for (UINT8 run = 0; run < runLength; run++, seq++)
++		{
++			if (state == 0)
++				rdpudp1_pending_mark_acked(connection, seq);
++			else if (state == 3)
++			{
++				if (connection->lossy)
++					continue;
++				rdpUdpPendingPacket* packet = rdpudp1_pending_find_by_data_seq(connection, seq);
++				if (packet && !rdpudp1_retransmit_packet(connection, packet))
++					return FALSE;
++			}
++		}
++	}
++
++	return TRUE;
++}
++
++static BOOL rdpudp1_handle_ack(rdpUdpConnection* connection, wStream* s, UINT32 sourceAck)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(s);
++
++	if (!Stream_CheckAndLogRequiredLength(TAG, s, 2))
++		return FALSE;
++
++	UINT16 vectorSize = 0;
++	Stream_Read_UINT16_BE(s, vectorSize);
++	if (vectorSize > 2048)
++		return FALSE;
++	if (!Stream_CheckAndLogRequiredLength(TAG, s, vectorSize))
++		return FALSE;
++
++	const BYTE* vector = Stream_Pointer(s);
++	if (!Stream_SafeSeek(s, vectorSize))
++		return FALSE;
++	if (!rdpudp1_skip_ack_vector_padding(s, vectorSize))
++		return FALSE;
++
++	return rdpudp1_process_ack_vector(connection, sourceAck, vector, vectorSize);
++}
++
++static void rdpudp1_promote_receive_ack(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	for (;;)
++	{
++		const UINT32 nextSeq = connection->recvSequence + 1u;
++		if (!rdpudp2_recv_segment_find(connection, nextSeq))
++			break;
++		connection->recvSequence = nextSeq;
++	}
++
++	if (rdpudp1_sequence_gt(connection->recvSequence, connection->recvAckHigh))
++		connection->recvAckHigh = connection->recvSequence;
++}
++
++static BOOL rdpudp1_queue_source_payload(rdpUdpConnection* connection, UINT32 sourceSeq,
++                                         const BYTE* payload, size_t payloadLength)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(payload || (payloadLength == 0));
++
++	if (sourceSeq == 0 || rdpudp1_sequence_le(sourceSeq, connection->recvReadSequence))
++		return TRUE;
++
++	const UINT32 expected = connection->recvReadSequence + 1u;
++	if (rdpudp1_sequence_distance(expected, sourceSeq) >= RDPUDP2_RECV_WINDOW)
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP receive source window overflow expected=%" PRIu32
++		          " received=%" PRIu32,
++		          expected, sourceSeq);
++		return FALSE;
++	}
++
++	if (rdpudp2_recv_segment_find(connection, sourceSeq))
++		return TRUE;
++
++	if (rdpudp1_sequence_gt(sourceSeq, connection->recvAckHigh))
++		connection->recvAckHigh = sourceSeq;
++	if (connection->lossy && sourceSeq != expected && connection->lossyOutOfOrderSinceMs == 0)
++		connection->lossyOutOfOrderSinceMs = GetTickCount64();
++
++	rdpUdpRecvSegment* segment = rdpudp2_recv_segment_find_free(connection);
++	if (!segment)
++	{
++		WLog_WARN(TAG, "RDP-UDP receive source window is full");
++		return FALSE;
++	}
++
++	BYTE* copy = nullptr;
++	if (payloadLength > 0)
++	{
++		copy = (BYTE*)malloc(payloadLength);
++		if (!copy)
++			return FALSE;
++		memcpy(copy, payload, payloadLength);
++	}
++
++	segment->inUse = TRUE;
++	segment->channelSequence = sourceSeq;
++	segment->payload = copy;
++	segment->payloadLength = payloadLength;
++
++	rdpudp1_promote_receive_ack(connection);
++	if (connection->recvSequence >= sourceSeq)
++		connection->lossyOutOfOrderSinceMs = 0;
++	return TRUE;
++}
++
++static void rdpudp1_recv_segment_take(rdpUdpConnection* connection, rdpUdpRecvSegment* segment)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(segment);
++
++	free(connection->readPayload);
++	connection->readPayload = segment->payload;
++	connection->readPayloadLength = segment->payloadLength;
++	connection->readPayloadOffset = 0;
++	connection->recvReadSequence = segment->channelSequence;
++	segment->payload = nullptr;
++	ZeroMemory(segment, sizeof(*segment));
++}
++
++static rdpUdpRecvSegment* rdpudp1_find_next_received_segment(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	const UINT32 expected = connection->recvReadSequence + 1u;
++	rdpUdpRecvSegment* best = nullptr;
++	UINT32 bestDistance = UINT32_MAX;
++	for (size_t x = 0; x < ARRAYSIZE(connection->recvSegments); x++)
++	{
++		rdpUdpRecvSegment* segment = &connection->recvSegments[x];
++		if (!segment->inUse || rdpudp1_sequence_le(segment->channelSequence, expected))
++			continue;
++
++		const UINT32 distance = rdpudp1_sequence_distance(expected, segment->channelSequence);
++		if (!best || distance < bestDistance)
++		{
++			best = segment;
++			bestDistance = distance;
++		}
++	}
++
++	return best;
++}
++
++static BOOL rdpudp1_lossy_skip_missing_if_due(rdpUdpConnection* connection)
++{
++	WINPR_ASSERT(connection);
++
++	if (!connection->lossy || connection->lossyOutOfOrderSinceMs == 0)
++		return FALSE;
++
++	const UINT64 now = GetTickCount64();
++	if (now >= connection->lossyOutOfOrderSinceMs &&
++	    now - connection->lossyOutOfOrderSinceMs < RDPUDP1_LOSSY_OUT_OF_ORDER_TIMEOUT_MS)
++		return FALSE;
++
++	rdpUdpRecvSegment* next = rdpudp1_find_next_received_segment(connection);
++	if (!next)
++	{
++		connection->lossyOutOfOrderSinceMs = 0;
++		return FALSE;
++	}
++
++	const UINT32 missingFrom = connection->recvReadSequence + 1u;
++	const UINT32 missingTo = next->channelSequence - 1u;
++	connection->recvReadSequence = missingTo;
++	connection->lossyOutOfOrderSinceMs = 0;
++	WLog_DBG(TAG,
++	         "RDP-UDP-L skipped missing sourceSeq range %" PRIu32 "-%" PRIu32
++	         " after out-of-order timeout",
++	         missingFrom, missingTo);
++	return TRUE;
++}
++
++static int rdpudp1_read_buffered_payload(rdpUdpConnection* connection, BYTE* data, size_t length)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(data);
++
++	if (!connection->readPayload)
++	{
++		rdpUdpRecvSegment* next =
++		    rdpudp2_recv_segment_find(connection, connection->recvReadSequence + 1u);
++		if (next)
++			rdpudp1_recv_segment_take(connection, next);
++	}
++
++	if (!connection->readPayload && rdpudp1_lossy_skip_missing_if_due(connection))
++	{
++		rdpUdpRecvSegment* next =
++		    rdpudp2_recv_segment_find(connection, connection->recvReadSequence + 1u);
++		if (next)
++			rdpudp1_recv_segment_take(connection, next);
++	}
++
++	if (!connection->readPayload)
++		return 0;
++
++	const size_t remaining = connection->readPayloadLength - connection->readPayloadOffset;
++	const size_t copyLength = (remaining < length) ? remaining : length;
++	if (copyLength > 0)
++		memcpy(data, connection->readPayload + connection->readPayloadOffset, copyLength);
++
++	connection->readPayloadOffset += copyLength;
++	if (connection->readPayloadOffset >= connection->readPayloadLength)
++	{
++		free(connection->readPayload);
++		connection->readPayload = nullptr;
++		connection->readPayloadLength = 0;
++		connection->readPayloadOffset = 0;
++	}
++
++	return WINPR_ASSERTING_INT_CAST(int, copyLength);
++}
++
++static int rdpudp1_recv_payload(rdpUdpConnection* connection, BYTE* data, size_t length,
++                                int timeoutMs)
++{
++	const int buffered = rdpudp1_read_buffered_payload(connection, data, length);
++	if (buffered > 0)
++		return buffered;
++
++	BYTE buffer[RDPUDP_RECV_BUFFER_SIZE] = { 0 };
++	const int received = rdpudp_connection_recv_raw(connection, buffer, sizeof(buffer), timeoutMs);
++	if (received == 0)
++		return rdpudp1_maintenance(connection) ? 0 : -1;
++	if (received <= 0)
++		return received;
++	if (received < 8)
++		return -1;
++
++	wStream sbuffer = { 0 };
++	wStream* s = Stream_StaticInit(&sbuffer, buffer, WINPR_ASSERTING_INT_CAST(size_t, received));
++
++	UINT32 sourceAck = 0;
++	UINT16 window = 0;
++	UINT16 flags = 0;
++	Stream_Read_UINT32_BE(s, sourceAck);
++	Stream_Read_UINT16_BE(s, window);
++	Stream_Read_UINT16_BE(s, flags);
++	WINPR_UNUSED(window);
++
++	if ((flags & RDPUDP_FLAG_ACK) != 0)
++	{
++		if (!rdpudp1_handle_ack(connection, s, sourceAck))
++			return -1;
++	}
++
++	if ((flags & RDPUDP_FLAG_ACK_OF_ACKS) != 0)
++	{
++		if (!Stream_SafeSeek(s, 4))
++			return -1;
++	}
++
++	if ((flags & RDPUDP_FLAG_DATA) == 0)
++		return 0;
++	if ((flags & RDPUDP_FLAG_FEC) != 0)
++		return 0;
++
++	if (!Stream_CheckAndLogRequiredLength(TAG, s, 8))
++		return -1;
++
++	UINT32 codedSeq = 0;
++	UINT32 sourceSeq = 0;
++	Stream_Read_UINT32_BE(s, codedSeq);
++	Stream_Read_UINT32_BE(s, sourceSeq);
++	WINPR_UNUSED(codedSeq);
++
++	const size_t payloadLength = Stream_GetRemainingLength(s);
++	if (!rdpudp1_queue_source_payload(connection, sourceSeq, Stream_Pointer(s), payloadLength))
++		return -1;
++
++	if (!rdpudp_send_connection_ack(connection))
++		return -1;
++
++	return rdpudp1_read_buffered_payload(connection, data, length);
++}
++
++static int rdpudp_connection_write_payload(rdpUdpConnection* connection, const BYTE* data,
++                                           size_t length)
++{
++	WINPR_ASSERT(connection);
++
++	if (connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_1 ||
++	    connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_2)
++	{
++		const size_t maxPayload = RDPUDP_DEFAULT_MTU - 32;
++		if (connection->lossy)
++		{
++			if (length == 0)
++				return 0;
++			if (length > maxPayload)
++			{
++				WLog_WARN(TAG,
++				          "RDP-UDP-L datagram length %" PRIuz
++				          " exceeds payload MTU %" PRIuz "; falling back to TCP",
++				          length, maxPayload);
++				return -1;
++			}
++
++			if (!rdpudp1_maintenance(connection))
++				return -1;
++
++			const UINT32 sourceSeq = connection->sendSequence++;
++			return rdpudp1_send_source_segment(connection, sourceSeq, data, length)
++			           ? WINPR_ASSERTING_INT_CAST(int, length)
++			           : -1;
++		}
++
++		size_t offset = 0;
++		while (offset < length)
++		{
++			if (!rdpudp1_maintenance(connection))
++				return -1;
++
++			const size_t chunk = ((length - offset) > maxPayload) ? maxPayload : (length - offset);
++			rdpUdpPendingPacket* pending = rdpudp2_pending_find_free(connection);
++			if (!pending)
++			{
++				if (!rdpudp1_retransmit_due(connection))
++					return -1;
++				pending = rdpudp2_pending_find_free(connection);
++				if (!pending)
++				{
++					WLog_WARN(TAG, "RDP-UDP send window is full; cannot queue %" PRIuz
++					               " bytes",
++					          chunk);
++					return -1;
++				}
++			}
++
++			BYTE* copy = (BYTE*)malloc(chunk);
++			if (!copy)
++				return -1;
++			memcpy(copy, data + offset, chunk);
++
++			const UINT32 sourceSeq = connection->sendSequence++;
++			if (!rdpudp1_send_source_segment(connection, sourceSeq, data + offset, chunk))
++			{
++				free(copy);
++				return -1;
++			}
++
++			pending->inUse = TRUE;
++			pending->dataSequence = sourceSeq;
++			pending->payload = copy;
++			pending->payloadLength = chunk;
++			pending->lastSentMs = GetTickCount64();
++			pending->retransmits = 0;
++			offset += chunk;
++		}
++
++		return WINPR_ASSERTING_INT_CAST(int, length);
++	}
++
++	if (connection->negotiatedVersion != RDPUDP_PROTOCOL_VERSION_3)
++		return -1;
++
++	const size_t maxPayload = RDPUDP_DEFAULT_MTU - 32;
++	size_t offset = 0;
++	while (offset < length)
++	{
++		if (!rdpudp2_maintenance(connection))
++			return -1;
++
++		const size_t chunk = ((length - offset) > maxPayload) ? maxPayload : (length - offset);
++		rdpUdpPendingPacket* pending = rdpudp2_pending_find_free(connection);
++		if (!pending)
++		{
++			if (!rdpudp2_retransmit_due(connection))
++				return -1;
++			pending = rdpudp2_pending_find_free(connection);
++			if (!pending)
++			{
++				WLog_WARN(TAG, "RDP-UDP2 send window is full; cannot queue %" PRIuz " bytes",
++				          chunk);
++				return -1;
++			}
++		}
++
++		BYTE* copy = (BYTE*)malloc(chunk);
++		if (!copy)
++			return -1;
++		memcpy(copy, data + offset, chunk);
++
++		const UINT16 channelSeq = connection->channelSequence++;
++		UINT16 dataSeq = 0;
++		UINT16 flags = RDPUDP2_FLAG_DATA;
++		if (!connection->sentDelayAckInfo)
++		{
++			flags |= RDPUDP2_FLAG_DELAYACKINFO;
++			connection->sentDelayAckInfo = TRUE;
++		}
++		if (!rdpudp2_send_data_segment(connection, flags, channelSeq, data + offset, chunk, &dataSeq))
++		{
++			free(copy);
++			return -1;
++		}
++
++		pending->inUse = TRUE;
++		pending->dataSequence = dataSeq;
++		pending->channelSequence = channelSeq;
++		pending->payload = copy;
++		pending->payloadLength = chunk;
++		pending->lastSentMs = GetTickCount64();
++		pending->retransmits = 0;
++		offset += chunk;
++	}
++
++	return WINPR_ASSERTING_INT_CAST(int, length);
++}
++
++static int rdpudp_connection_read_payload(rdpUdpConnection* connection, BYTE* data, size_t length,
++                                          int timeoutMs)
++{
++	WINPR_ASSERT(connection);
++
++	if (connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_1 ||
++	    connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_2)
++		return rdpudp1_recv_payload(connection, data, length, timeoutMs);
++
++	if (connection->negotiatedVersion != RDPUDP_PROTOCOL_VERSION_3)
++		return -1;
++
++	return rdpudp2_recv_payload(connection, data, length, timeoutMs);
++}
++
++typedef struct
++{
++	rdpUdpConnection* connection;
++	BOOL datagram;
++} BIO_RDPUDP;
++
++static int bio_rdpudp_write(BIO* bio, const char* buf, int size)
++{
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)BIO_get_data(bio);
++	if (!ptr || !ptr->connection || !buf || size < 0)
++		return -1;
++
++	BIO_clear_flags(bio, BIO_FLAGS_WRITE | BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
++	const int rc =
++	    rdpudp_connection_write_payload(ptr->connection, (const BYTE*)buf, (size_t)size);
++	if (rc < 0)
++		BIO_clear_flags(bio, BIO_FLAGS_SHOULD_RETRY);
++	return rc;
++}
++
++static int bio_rdpudp_read(BIO* bio, char* buf, int size)
++{
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)BIO_get_data(bio);
++	if (!ptr || !ptr->connection || !buf || size <= 0)
++		return -1;
++
++	BIO_clear_flags(bio, BIO_FLAGS_WRITE | BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
++	const int rc =
++	    rdpudp_connection_read_payload(ptr->connection, (BYTE*)buf, (size_t)size,
++	                                   ptr->connection->readTimeoutMs);
++	if (rc == 0)
++	{
++		BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
++		return -1;
++	}
++	if (rc < 0)
++		BIO_clear_flags(bio, BIO_FLAGS_SHOULD_RETRY);
++	return rc;
++}
++
++static int bio_rdpudp_puts(BIO* bio, const char* str)
++{
++	if (!str)
++		return 0;
++
++	const size_t max = (INT_MAX > SIZE_MAX) ? SIZE_MAX : INT_MAX;
++	const size_t size = strnlen(str, max);
++	if (size >= max)
++		return -1;
++	return BIO_write(bio, str, (int)size);
++}
++
++static int bio_rdpudp_gets(WINPR_ATTR_UNUSED BIO* bio, WINPR_ATTR_UNUSED char* str,
++                           WINPR_ATTR_UNUSED int size)
++{
++	return -2;
++}
++
++static long bio_rdpudp_ctrl(BIO* bio, int cmd, long arg1, void* arg2)
++{
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)BIO_get_data(bio);
++	rdpUdpConnection* connection = ptr ? ptr->connection : nullptr;
++
++	switch (cmd)
++	{
++		case BIO_CTRL_FLUSH:
++		case BIO_CTRL_DUP:
++			return 1;
++		case BIO_CTRL_PENDING:
++		case BIO_CTRL_WPENDING:
++			return 0;
++		case BIO_CTRL_GET_CLOSE:
++			return BIO_get_shutdown(bio);
++		case BIO_CTRL_SET_CLOSE:
++			BIO_set_shutdown(bio, (int)arg1);
++			return 1;
++#ifdef BIO_CTRL_DGRAM_QUERY_MTU
++		case BIO_CTRL_DGRAM_QUERY_MTU:
++#endif
++#ifdef BIO_CTRL_DGRAM_GET_MTU
++		case BIO_CTRL_DGRAM_GET_MTU:
++#endif
++#ifdef BIO_CTRL_DGRAM_GET_FALLBACK_MTU
++		case BIO_CTRL_DGRAM_GET_FALLBACK_MTU:
++#endif
++			return connection ? connection->mtu : (RDPUDP_DEFAULT_MTU - 64);
++#ifdef BIO_CTRL_DGRAM_SET_MTU
++		case BIO_CTRL_DGRAM_SET_MTU:
++			if (connection)
++				connection->mtu = arg1;
++			return arg1;
++#endif
++#ifdef BIO_CTRL_DGRAM_MTU_DISCOVER
++		case BIO_CTRL_DGRAM_MTU_DISCOVER:
++			return 1;
++#endif
++#ifdef BIO_CTRL_DGRAM_SET_RECV_TIMEOUT
++		case BIO_CTRL_DGRAM_SET_RECV_TIMEOUT:
++			if (connection && arg2)
++			{
++				const struct timeval* tv = (const struct timeval*)arg2;
++				const long timeoutMs = (tv->tv_sec * 1000L) + (tv->tv_usec / 1000L);
++				connection->recvTimeoutMs = timeoutMs;
++				if (timeoutMs > 0 && timeoutMs <= INT_MAX)
++					connection->readTimeoutMs = (int)timeoutMs;
++			}
++			return 1;
++#endif
++#ifdef BIO_CTRL_DGRAM_GET_RECV_TIMEOUT
++		case BIO_CTRL_DGRAM_GET_RECV_TIMEOUT:
++			if (connection && arg2)
++			{
++				struct timeval* tv = (struct timeval*)arg2;
++				tv->tv_sec = connection->recvTimeoutMs / 1000L;
++				tv->tv_usec = (connection->recvTimeoutMs % 1000L) * 1000L;
++			}
++			return 1;
++#endif
++#ifdef BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT
++		case BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT:
++			if (connection && arg2)
++			{
++				const struct timeval* tv = (const struct timeval*)arg2;
++				const long timeoutMs = (tv->tv_sec * 1000L) + (tv->tv_usec / 1000L);
++				if (timeoutMs > 0 && timeoutMs <= INT_MAX)
++					connection->readTimeoutMs = (int)timeoutMs;
++			}
++			return 1;
++#endif
++#ifdef BIO_CTRL_DGRAM_GET_RECV_TIMER_EXP
++		case BIO_CTRL_DGRAM_GET_RECV_TIMER_EXP:
++			return 0;
++#endif
++#ifdef BIO_CTRL_DGRAM_MTU_EXCEEDED
++		case BIO_CTRL_DGRAM_MTU_EXCEEDED:
++			return 0;
++#endif
++		default:
++			return 0;
++	}
++}
++
++static int bio_rdpudp_new(BIO* bio)
++{
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)calloc(1, sizeof(BIO_RDPUDP));
++	if (!ptr)
++		return 0;
++
++	BIO_set_data(bio, ptr);
++	BIO_set_init(bio, 1);
++	BIO_set_flags(bio, BIO_FLAGS_SHOULD_RETRY);
++	return 1;
++}
++
++static int bio_rdpudp_free(BIO* bio)
++{
++	if (!bio)
++		return 0;
++
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)BIO_get_data(bio);
++	free(ptr);
++	BIO_set_data(bio, nullptr);
++	BIO_set_init(bio, 0);
++	return 1;
++}
++
++static BIO_METHOD* BIO_s_rdpudp(BOOL datagram)
++{
++	static BIO_METHOD* streamBioMethods = nullptr;
++	static BIO_METHOD* datagramBioMethods = nullptr;
++	BIO_METHOD** bioMethods = datagram ? &datagramBioMethods : &streamBioMethods;
++	if (!*bioMethods)
++	{
++		*bioMethods = BIO_meth_new(datagram ? BIO_TYPE_DGRAM : BIO_TYPE_SOURCE_SINK,
++		                           datagram ? "RDPUDP-DGRAM" : "RDPUDP");
++		if (!*bioMethods)
++			return nullptr;
++		BIO_meth_set_write(*bioMethods, bio_rdpudp_write);
++		BIO_meth_set_read(*bioMethods, bio_rdpudp_read);
++		BIO_meth_set_puts(*bioMethods, bio_rdpudp_puts);
++		BIO_meth_set_gets(*bioMethods, bio_rdpudp_gets);
++		BIO_meth_set_ctrl(*bioMethods, bio_rdpudp_ctrl);
++		BIO_meth_set_create(*bioMethods, bio_rdpudp_new);
++		BIO_meth_set_destroy(*bioMethods, bio_rdpudp_free);
++	}
++	return *bioMethods;
++}
++
++static BIO* rdpudp_connection_new_bio(rdpUdpConnection* connection, BOOL datagram)
++{
++	BIO* bio = BIO_new(BIO_s_rdpudp(datagram));
++	if (!bio)
++		return nullptr;
++
++	BIO_RDPUDP* ptr = (BIO_RDPUDP*)BIO_get_data(bio);
++	if (!ptr)
++	{
++		BIO_free(bio);
++		return nullptr;
++	}
++
++	ptr->connection = connection;
++	ptr->datagram = datagram;
++	return bio;
++}
++
++static rdpUdpConnection* rdpudp_client_connect(rdpRdp* rdp, UINT32 requestId,
++                                               UINT16 requestedProtocol,
++                                               const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                               rdpUdpClientBootstrapResult* result)
++{
++	WINPR_ASSERT(rdp);
++	WINPR_ASSERT(cookie);
++	WINPR_ASSERT(result);
++
++	ZeroMemory(result, sizeof(*result));
++	result->requestedProtocol = requestedProtocol;
++	result->lossy = requestedProtocol == INITIATE_REQUEST_PROTOCOL_UDPFECL;
++
++	if (requestedProtocol != INITIATE_REQUEST_PROTOCOL_UDPFECR &&
++	    requestedProtocol != INITIATE_REQUEST_PROTOCOL_UDPFECL)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_UNSUPPORTED_PROTOCOL;
++		WLog_WARN(TAG, "unsupported RDP-UDP requestedProtocol=0x%04" PRIx16, requestedProtocol);
++		return nullptr;
++	}
++
++	rdpSettings* settings = rdp->settings;
++	WINPR_ASSERT(settings);
++
++	const char* hostname = freerdp_settings_get_string(settings, FreeRDP_ServerHostname);
++	const UINT32 port = freerdp_settings_get_uint32(settings, FreeRDP_ServerPort);
++	if (!hostname || port == 0 || port > UINT16_MAX)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_INVALID_ENDPOINT;
++		WLog_WARN(TAG, "invalid RDP-UDP endpoint host=%s port=%" PRIu32,
++		          hostname ? hostname : "(null)", port);
++		return nullptr;
++	}
++
++	wStream* syn = Stream_New(nullptr, RDPUDP_DEFAULT_MTU);
++	if (!syn)
++		return nullptr;
++
++	UINT32 initialSequence = 0;
++	if (!rdpudp_write_syn(syn, requestedProtocol, cookie, &initialSequence))
++	{
++		Stream_Free(syn, TRUE);
++		return nullptr;
++	}
++	result->initialSequence = initialSequence;
++
++	SOCKET sock = rdpudp_connect_socket(rdp, &result->lastSocketError);
++	if (sock == INVALID_SOCKET)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++		WLog_WARN(TAG, "RDP-UDP requestId=%" PRIu32 " connect to %s:%" PRIu32 " failed: %d",
++		          requestId, hostname, port, result->lastSocketError);
++		Stream_Free(syn, TRUE);
++		return nullptr;
++	}
++	result->socketOpened = TRUE;
++
++	BOOL ok = FALSE;
++	BYTE recvbuf[RDPUDP_RECV_BUFFER_SIZE] = { 0 };
++	const int synLength = WINPR_ASSERTING_INT_CAST(int, Stream_GetPosition(syn));
++	for (int attempt = 0; attempt < RDPUDP_SYN_SEND_ATTEMPTS && !ok; attempt++)
++	{
++		if (attempt > 0)
++			result->retransmits++;
++
++		const int sent = _send(sock, (const char*)Stream_Buffer(syn), synLength, 0);
++		if (sent != synLength)
++		{
++			result->failureStage = RDPUDP_CLIENT_FAILURE_SYN_SEND;
++			result->lastSocketError = rdpudp_socket_error();
++			WLog_WARN(TAG,
++			          "RDP-UDP requestId=%" PRIu32 " SYN send attempt %d/%d failed: sent=%d "
++			          "expected=%d error=%d",
++			          requestId, attempt + 1, RDPUDP_SYN_SEND_ATTEMPTS, sent, synLength,
++			          result->lastSocketError);
++			continue;
++		}
++
++		result->packetsSent++;
++		result->bytesSent += WINPR_ASSERTING_INT_CAST(UINT32, sent);
++		if (!rdpudp_wait_readable(sock, RDPUDP_SYN_TIMEOUT_MS))
++		{
++			result->failureStage = RDPUDP_CLIENT_FAILURE_SYN_TIMEOUT;
++			continue;
++		}
++
++		const int received = _recv(sock, (char*)recvbuf, sizeof(recvbuf), 0);
++		if (received <= 0)
++		{
++			result->failureStage = RDPUDP_CLIENT_FAILURE_SYN_RECV;
++			result->lastSocketError = rdpudp_socket_error();
++			continue;
++		}
++
++		result->packetsReceived++;
++		result->bytesReceived += WINPR_ASSERTING_INT_CAST(UINT32, received);
++		ok = rdpudp_parse_syn_ack(recvbuf, WINPR_ASSERTING_INT_CAST(size_t, received),
++		                          initialSequence, result);
++		if (!ok)
++			result->failureStage = RDPUDP_CLIENT_FAILURE_SYN_PARSE;
++	}
++
++	if (ok)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++		WLog_INFO(TAG,
++		          "RDP-UDP requestId=%" PRIu32 " SYN/SYN-ACK succeeded host=%s port=%" PRIu32
++		          " mode=%s udpVersion=0x%04" PRIx16 " sent=%" PRIu64 "/%" PRIu64
++		          " recv=%" PRIu64 "/%" PRIu64,
++		          requestId, hostname, port, result->lossy ? "UDP-L" : "UDP-R",
++		          result->negotiatedVersion, result->packetsSent, result->bytesSent,
++		          result->packetsReceived, result->bytesReceived);
++	}
++	else
++	{
++		WLog_WARN(TAG,
++		          "RDP-UDP requestId=%" PRIu32 " SYN bootstrap failed host=%s port=%" PRIu32
++		          " mode=%s sent=%" PRIu64 "/%" PRIu64 " recv=%" PRIu64 "/%" PRIu64
++		          " lastError=%d",
++		          requestId, hostname, port, result->lossy ? "UDP-L" : "UDP-R",
++		          result->packetsSent, result->bytesSent, result->packetsReceived,
++		          result->bytesReceived, result->lastSocketError);
++	}
++
++	Stream_Free(syn, TRUE);
++	if (!ok)
++	{
++		closesocket(sock);
++		return nullptr;
++	}
++
++	rdpUdpConnection* connection = (rdpUdpConnection*)calloc(1, sizeof(rdpUdpConnection));
++	if (!connection)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
++		closesocket(sock);
++		return nullptr;
++	}
++
++	connection->rdp = rdp;
++	connection->sock = sock;
++	connection->requestedProtocol = requestedProtocol;
++	connection->negotiatedVersion = result->negotiatedVersion;
++	connection->lossy = result->lossy;
++	connection->sendSequence = result->initialSequence + 1u;
++	connection->codedSequence = result->initialSequence + 1u;
++	connection->recvSequence = result->serverInitialSequence;
++	connection->recvReadSequence = result->serverInitialSequence;
++	connection->recvAckHigh = result->serverInitialSequence;
++	connection->channelSequence = 0;
++	connection->recvChannelSequence = 0;
++	connection->readTimeoutMs = RDPUDP_DATA_TIMEOUT_MS;
++	connection->mtu = RDPUDP_DEFAULT_MTU - 64;
++	connection->recvTimeoutMs = RDPUDP_DATA_TIMEOUT_MS;
++	connection->result = result;
++	connection->lastReceiveMs = GetTickCount64();
++
++	if (!rdpudp_send_connection_ack(connection))
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_FINAL_ACK;
++		WLog_WARN(TAG, "RDP-UDP requestId=%" PRIu32 " final ACK send failed", requestId);
++		rdpudp_connection_free(connection);
++		return nullptr;
++	}
++
++	return connection;
++}
++
++BOOL rdpudp_client_bootstrap(rdpRdp* rdp, UINT32 requestId, UINT16 requestedProtocol,
++                             const BYTE cookie[RDPUDP_COOKIE_LEN],
++                             rdpUdpClientBootstrapResult* result)
++{
++	rdpUdpConnection* connection =
++	    rdpudp_client_connect(rdp, requestId, requestedProtocol, cookie, result);
++	const BOOL ok = connection != nullptr;
++	rdpudp_connection_free(connection);
++	return ok;
++}
++
++static BOOL rdpemt_write_tunnel_header(wStream* s, UINT8 action, UINT16 payloadLength)
++{
++	WINPR_ASSERT(s);
++	if (!Stream_EnsureRemainingCapacity(s, RDPTUNNEL_HEADER_LENGTH + payloadLength))
++		return FALSE;
++
++	Stream_Write_UINT8(s, action & 0x0Fu);
++	Stream_Write_UINT16(s, payloadLength);
++	Stream_Write_UINT8(s, RDPTUNNEL_HEADER_LENGTH);
++	return TRUE;
++}
++
++BOOL rdpudp_test_write_create_request(wStream* s, UINT32 requestId,
++                                      const BYTE cookie[RDPUDP_COOKIE_LEN])
++{
++	WINPR_ASSERT(s);
++	WINPR_ASSERT(cookie);
++	if (!rdpemt_write_tunnel_header(s, RDPTUNNEL_ACTION_CREATEREQUEST,
++	                                RDPTUNNEL_CREATE_REQUEST_PAYLOAD_LENGTH))
++		return FALSE;
++	Stream_Write_UINT32(s, requestId);
++	Stream_Zero(s, 4);
++	Stream_Write(s, cookie, RDPUDP_COOKIE_LEN);
++	return TRUE;
++}
++
++static BOOL rdpemt_send_create_request(rdpTls* tls, UINT32 requestId,
++                                        const BYTE cookie[RDPUDP_COOKIE_LEN])
++{
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(cookie);
++
++	wStream* s = Stream_New(nullptr, RDPTUNNEL_HEADER_LENGTH +
++	                                     RDPTUNNEL_CREATE_REQUEST_PAYLOAD_LENGTH);
++	if (!s)
++		return FALSE;
++
++	if (!rdpudp_test_write_create_request(s, requestId, cookie))
++	{
++		Stream_Free(s, TRUE);
++		return FALSE;
++	}
++
++	const int written = freerdp_tls_write_all(tls, Stream_Buffer(s), Stream_GetPosition(s));
++	const BOOL ok = written == WINPR_ASSERTING_INT_CAST(int, Stream_GetPosition(s));
++	Stream_Free(s, TRUE);
++	return ok;
++}
++
++static int rdpemt_tls_read_exact(rdpTls* tls, BYTE* data, size_t length);
++static int rdpemt_tls_read_exact_timeout(rdpTls* tls, BYTE* data, size_t length,
++                                         UINT64 timeoutMs);
++
++static BOOL rdpemt_recv_create_response(rdpTls* tls, HRESULT* hr)
++{
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(hr);
++
++	BYTE header[RDPTUNNEL_HEADER_LENGTH] = { 0 };
++	const int headerStatus =
++	    rdpemt_tls_read_exact_timeout(tls, header, sizeof(header), RDPUDP_HANDSHAKE_TIMEOUT_MS);
++	if (headerStatus != RDPTUNNEL_HEADER_LENGTH)
++		return FALSE;
++
++	const UINT8 actionLow = header[0] & 0x0Fu;
++	const UINT8 actionHigh = (header[0] >> 4u) & 0x0Fu;
++	if (actionLow != RDPTUNNEL_ACTION_CREATERESPONSE &&
++	    actionHigh != RDPTUNNEL_ACTION_CREATERESPONSE)
++		return FALSE;
++
++	wStream sbuffer = { 0 };
++	wStream* s = Stream_StaticInit(&sbuffer, header, sizeof(header));
++	Stream_Seek(s, 1);
++	UINT16 payloadLength = 0;
++	UINT8 headerLength = 0;
++	Stream_Read_UINT16(s, payloadLength);
++	Stream_Read_UINT8(s, headerLength);
++	if (headerLength < RDPTUNNEL_HEADER_LENGTH ||
++	    payloadLength < RDPTUNNEL_CREATE_RESPONSE_PAYLOAD_LENGTH)
++		return FALSE;
++
++	if (headerLength > RDPTUNNEL_HEADER_LENGTH)
++	{
++		BYTE subheaders[256] = { 0 };
++		const size_t extra = headerLength - RDPTUNNEL_HEADER_LENGTH;
++		if (extra > sizeof(subheaders))
++			return FALSE;
++		const int subheaderStatus =
++		    rdpemt_tls_read_exact_timeout(tls, subheaders, extra, RDPUDP_HANDSHAKE_TIMEOUT_MS);
++		if (subheaderStatus != WINPR_ASSERTING_INT_CAST(int, extra))
++			return FALSE;
++	}
++
++	BYTE* payload = (BYTE*)malloc(payloadLength);
++	if (!payload)
++		return FALSE;
++
++	const int payloadStatus =
++	    rdpemt_tls_read_exact_timeout(tls, payload, payloadLength, RDPUDP_HANDSHAKE_TIMEOUT_MS);
++	if (payloadStatus != payloadLength)
++	{
++		free(payload);
++		return FALSE;
++	}
++
++	wStream payloadBuffer = { 0 };
++	s = Stream_StaticInit(&payloadBuffer, payload, payloadLength);
++	Stream_Read_INT32(s, *hr);
++	free(payload);
++	return TRUE;
++}
++
++static int rdpudp_tls_connect(rdpUdpConnection* connection, rdpTls* tls, BIO* bio)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(bio);
++
++	rdpSettings* settings = connection->rdp ? connection->rdp->settings : nullptr;
++	const BOOL dtls = connection->requestedProtocol == INITIATE_REQUEST_PROTOCOL_UDPFECL;
++	const int originalTimeoutMs = connection->readTimeoutMs;
++	const long originalRecvTimeoutMs = connection->recvTimeoutMs;
++	UINT16 originalMinVersion = 0;
++	UINT16 originalMaxVersion = 0;
++	BOOL restoreVersions = FALSE;
++
++	connection->readTimeoutMs = RDPUDP_TLS_HANDSHAKE_READ_TIMEOUT_MS;
++	connection->recvTimeoutMs = RDPUDP_TLS_HANDSHAKE_READ_TIMEOUT_MS;
++
++	if (dtls && settings)
++	{
++		originalMinVersion = freerdp_settings_get_uint16(settings, FreeRDP_TLSMinVersion);
++		originalMaxVersion = freerdp_settings_get_uint16(settings, FreeRDP_TLSMaxVersion);
++		restoreVersions = TRUE;
++#ifdef DTLS1_2_VERSION
++		if (!freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, DTLS1_2_VERSION))
++			goto fail_restore;
++#else
++		if (!freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, 0))
++			goto fail_restore;
++#endif
++		if (!freerdp_settings_set_uint16(settings, FreeRDP_TLSMaxVersion, 0))
++			goto fail_restore;
++	}
++
++	const SSL_METHOD* method = freerdp_tls_get_ssl_method(dtls, TRUE);
++	TlsHandshakeResult result = freerdp_tls_connect_ex(tls, bio, method);
++	if (restoreVersions)
++	{
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, originalMinVersion);
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMaxVersion, originalMaxVersion);
++	}
++
++	const UINT64 started = GetTickCount64();
++	while (result == TLS_HANDSHAKE_CONTINUE)
++	{
++		if (GetTickCount64() - started >= RDPUDP_HANDSHAKE_TIMEOUT_MS)
++			break;
++
++		HANDLE abort = nullptr;
++		if (tls->context)
++			abort = freerdp_abort_event(tls->context);
++		if (abort && WaitForSingleObject(abort, 10) == WAIT_OBJECT_0)
++			break;
++
++		result = freerdp_tls_handshake(tls);
++	}
++
++	connection->readTimeoutMs = originalTimeoutMs;
++	connection->recvTimeoutMs = originalRecvTimeoutMs;
++	return result == TLS_HANDSHAKE_SUCCESS ? 1 : -1;
++
++fail_restore:
++	if (restoreVersions)
++	{
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, originalMinVersion);
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMaxVersion, originalMaxVersion);
++	}
++	connection->readTimeoutMs = originalTimeoutMs;
++	connection->recvTimeoutMs = originalRecvTimeoutMs;
++	return -1;
++}
++
++static rdpUdpTunnel* rdpudp_tunnel_new(rdpUdpConnection* connection, rdpTls* tls,
++                                       UINT16 requestedProtocol,
++                                       const rdpUdpClientBootstrapResult* result)
++{
++	WINPR_ASSERT(connection);
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(result);
++
++	rdpUdpTunnel* tunnel = (rdpUdpTunnel*)calloc(1, sizeof(rdpUdpTunnel));
++	if (!tunnel)
++		return nullptr;
++
++	tunnel->connection = connection;
++	tunnel->tls = tls;
++	tunnel->requestedProtocol = requestedProtocol;
++	tunnel->result = *result;
++	connection->result = &tunnel->result;
++	InitializeCriticalSection(&tunnel->lock);
++	tunnel->lockInitialized = TRUE;
++	tunnel->state = RDPUDP_TUNNEL_STATE_READY;
++	return tunnel;
++}
++
++#include "rdpudp_async.inc"
++
++rdpUdpTunnel* rdpudp_client_open_tunnel(rdpRdp* rdp, UINT32 requestId, UINT16 requestedProtocol,
++                                        const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                        rdpUdpClientBootstrapResult* result)
++{
++	rdpUdpConnection* connection =
++	    rdpudp_client_connect(rdp, requestId, requestedProtocol, cookie, result);
++	if (!connection)
++		return nullptr;
++
++	rdpUdpTunnel* tunnel = nullptr;
++	rdpTls* tls = nullptr;
++	BIO* bio = nullptr;
++
++	if (connection->negotiatedVersion != RDPUDP_PROTOCOL_VERSION_1 &&
++	    connection->negotiatedVersion != RDPUDP_PROTOCOL_VERSION_2 &&
++	    connection->negotiatedVersion != RDPUDP_PROTOCOL_VERSION_3)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_UNSUPPORTED_VERSION;
++		WLog_WARN(TAG,
++		          "RDP-UDP negotiated unsupported version 0x%04" PRIx16
++		          "; falling back to TCP",
++		          connection->negotiatedVersion);
++		goto out;
++	}
++
++	tls = freerdp_tls_new(rdp->context);
++	bio = rdpudp_connection_new_bio(connection, result->lossy);
++	if (!tls || !bio)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
++		goto out;
++	}
++
++	const int tlsStatus = rdpudp_tls_connect(connection, tls, bio);
++	bio = nullptr; /* tls owns the BIO after tls_prepare succeeds. */
++	if (tlsStatus != 1)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_TLS_HANDSHAKE;
++		WLog_WARN(TAG,
++		          "RDP-UDP requestId=%" PRIu32 " %s over UDP version 0x%04" PRIx16
++		          " failed",
++		          requestId, result->lossy ? "DTLS" : "TLS", connection->negotiatedVersion);
++		goto out;
++	}
++	result->tlsHandshakeSucceeded = TRUE;
++
++	if (!rdpemt_send_create_request(tls, requestId, cookie))
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_TUNNEL_REQUEST;
++		WLog_WARN(TAG, "RDP-UDP requestId=%" PRIu32 " Tunnel Create Request send failed",
++		          requestId);
++		goto out;
++	}
++
++	HRESULT hr = E_ABORT;
++	if (!rdpemt_recv_create_response(tls, &hr))
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_TUNNEL_RESPONSE;
++		WLog_WARN(TAG, "RDP-UDP requestId=%" PRIu32 " Tunnel Create Response read failed",
++		          requestId);
++		goto out;
++	}
++
++	result->tunnelHr = hr;
++	result->tunnelCreateSucceeded = (hr == 0);
++	WLog_Print(WLog_Get(TAG), result->tunnelCreateSucceeded ? WLOG_INFO : WLOG_WARN,
++	           "RDP-UDP requestId=%" PRIu32 " Tunnel Create Response hr=0x%08" PRIx32,
++	           requestId, (UINT32)hr);
++	if (!result->tunnelCreateSucceeded)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_TUNNEL_HR;
++		goto out;
++	}
++
++	tunnel = rdpudp_tunnel_new(connection, tls, requestedProtocol, result);
++	if (!tunnel)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
++		goto out;
++	}
++
++	result->failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++	connection = nullptr;
++	tls = nullptr;
++
++out:
++	if (bio)
++		BIO_free(bio);
++	freerdp_tls_free(tls);
++	rdpudp_connection_free(connection);
++	return tunnel;
++}
++
++BOOL rdpudp_client_probe_tunnel(rdpRdp* rdp, UINT32 requestId, UINT16 requestedProtocol,
++                                const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                rdpUdpClientBootstrapResult* result)
++{
++	rdpUdpTunnel* tunnel =
++	    rdpudp_client_open_tunnel(rdp, requestId, requestedProtocol, cookie, result);
++	const BOOL ok = tunnel != nullptr;
++	rdpudp_tunnel_free(tunnel);
++	return ok;
++}
++
++void rdpudp_tunnel_set_interactive(rdpUdpTunnel* tunnel, BOOL interactive)
++{
++	if (!tunnel || !tunnel->connection)
++		return;
++
++	tunnel->connection->readTimeoutMs = interactive ? 150 : RDPUDP_DATA_TIMEOUT_MS;
++}
++
++static int rdpemt_tls_read_exact(rdpTls* tls, BYTE* data, size_t length)
++{
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(data || (length == 0));
++
++	size_t offset = 0;
++	UINT64 partialStartMs = 0;
++	while (offset < length)
++	{
++		if (length - offset > INT_MAX)
++			return -1;
++
++		const int status = BIO_read(tls->bio, data + offset, (int)(length - offset));
++		if (status <= 0)
++		{
++			if (BIO_should_retry(tls->bio))
++			{
++				if (offset == 0)
++					return 0;
++				if (partialStartMs == 0)
++					partialStartMs = GetTickCount64();
++				if (GetTickCount64() - partialStartMs > 1000)
++					return -1;
++				continue;
++			}
++			return status;
++		}
++
++		if (offset == 0)
++			partialStartMs = GetTickCount64();
++		offset += (size_t)status;
++	}
++
++	return WINPR_ASSERTING_INT_CAST(int, length);
++}
++
++static int rdpemt_tls_read_exact_timeout(rdpTls* tls, BYTE* data, size_t length,
++                                         UINT64 timeoutMs)
++{
++	WINPR_ASSERT(tls);
++	WINPR_ASSERT(data || (length == 0));
++
++	const UINT64 started = GetTickCount64();
++	for (;;)
++	{
++		const int status = rdpemt_tls_read_exact(tls, data, length);
++		if (status != 0)
++			return status;
++
++		if (GetTickCount64() - started >= timeoutMs)
++			return 0;
++
++		HANDLE abort = nullptr;
++		if (tls->context)
++			abort = freerdp_abort_event(tls->context);
++		if (abort && WaitForSingleObject(abort, 10) == WAIT_OBJECT_0)
++			return -1;
++	}
++}
++
++BOOL rdpudp_tunnel_write_data(rdpUdpTunnel* tunnel, const BYTE* data, size_t length)
++{
++	if (!tunnel || !tunnel->tls || tunnel->aborted || (!data && (length > 0)) ||
++	    length > UINT16_MAX)
++		return FALSE;
++
++	BOOL ok = FALSE;
++	wStream* s = Stream_New(nullptr, RDPTUNNEL_HEADER_LENGTH + length);
++	if (!s)
++		return FALSE;
++
++	if (!rdpemt_write_tunnel_header(s, RDPTUNNEL_ACTION_DATA, (UINT16)length))
++		goto out;
++	if (length > 0)
++		Stream_Write(s, data, length);
++
++	EnterCriticalSection(&tunnel->lock);
++	const int written = freerdp_tls_write_all(tunnel->tls, Stream_Buffer(s), Stream_GetPosition(s));
++	LeaveCriticalSection(&tunnel->lock);
++	ok = written == WINPR_ASSERTING_INT_CAST(int, Stream_GetPosition(s));
++
++out:
++	Stream_Free(s, TRUE);
++	return ok;
++}
++
++int rdpudp_tunnel_read_data(rdpUdpTunnel* tunnel, BYTE* data, size_t length, int timeoutMs)
++{
++	if (!tunnel || !tunnel->tls || tunnel->aborted || !data || length == 0)
++		return -1;
++
++	BYTE header[RDPTUNNEL_HEADER_LENGTH] = { 0 };
++	const int oldTimeout = tunnel->connection ? tunnel->connection->readTimeoutMs : 0;
++	if (tunnel->connection && timeoutMs > 0)
++		tunnel->connection->readTimeoutMs = timeoutMs;
++
++	EnterCriticalSection(&tunnel->lock);
++	int status = rdpemt_tls_read_exact(tunnel->tls, header, sizeof(header));
++	if (status <= 0)
++		goto out_unlock;
++
++	const UINT8 actionLow = header[0] & 0x0Fu;
++	const UINT8 actionHigh = (header[0] >> 4u) & 0x0Fu;
++	const UINT8 action = (actionLow != 0) ? actionLow : actionHigh;
++	const UINT16 payloadLength = (UINT16)(header[1] | ((UINT16)header[2] << 8u));
++	const UINT8 headerLength = header[3];
++	if (headerLength < RDPTUNNEL_HEADER_LENGTH)
++	{
++		status = -1;
++		goto out_unlock;
++	}
++
++	if (headerLength > RDPTUNNEL_HEADER_LENGTH)
++	{
++		BYTE subheaders[256] = { 0 };
++		const size_t extra = headerLength - RDPTUNNEL_HEADER_LENGTH;
++		if (extra > sizeof(subheaders))
++		{
++			status = -1;
++			goto out_unlock;
++		}
++		status = rdpemt_tls_read_exact(tunnel->tls, subheaders, extra);
++		if (status <= 0)
++			goto out_unlock;
++	}
++
++	if (payloadLength > length)
++	{
++		status = -1;
++		goto out_unlock;
++	}
++
++	status = rdpemt_tls_read_exact(tunnel->tls, data, payloadLength);
++	if (status <= 0)
++		goto out_unlock;
++
++	status = (action == RDPTUNNEL_ACTION_DATA) ? payloadLength : 0;
++
++out_unlock:
++	LeaveCriticalSection(&tunnel->lock);
++	if (tunnel->connection && timeoutMs > 0)
++		tunnel->connection->readTimeoutMs = oldTimeout;
++	return status;
++}
++
++void rdpudp_tunnel_abort(rdpUdpTunnel* tunnel)
++{
++	if (!tunnel || tunnel->aborted)
++		return;
++
++	tunnel->aborted = TRUE;
++	if (tunnel->connection && tunnel->connection->sock != INVALID_SOCKET)
++	{
++		closesocket(tunnel->connection->sock);
++		tunnel->connection->sock = INVALID_SOCKET;
++	}
++}
++
++const rdpUdpClientBootstrapResult* rdpudp_tunnel_stats(const rdpUdpTunnel* tunnel)
++{
++	return tunnel ? &tunnel->result : nullptr;
++}
++
++void rdpudp_tunnel_free(rdpUdpTunnel* tunnel)
++{
++	if (!tunnel)
++		return;
++
++	rdpudp_tunnel_abort(tunnel);
++	if (tunnel->socketEvent)
++		(void)WSACloseEvent(tunnel->socketEvent);
++	BIO_free(tunnel->pendingBio);
++	freerdp_tls_free(tunnel->tls);
++	rdpudp_connection_free(tunnel->connection);
++	while (tunnel->rxHead)
++	{
++		rdpUdpFrame* frame = tunnel->rxHead;
++		tunnel->rxHead = frame->next;
++		free(frame);
++	}
++	free(tunnel->wireBuffer);
++	if (tunnel->lockInitialized)
++		DeleteCriticalSection(&tunnel->lock);
++	free(tunnel);
++}
+diff --git a/libfreerdp/core/rdpudp.h b/libfreerdp/core/rdpudp.h
+new file mode 100644
+index 00000000..b4c3d8bc
+--- /dev/null
++++ b/libfreerdp/core/rdpudp.h
+@@ -0,0 +1,160 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * RDP-UDP client bootstrap
++ *
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#ifndef FREERDP_LIB_CORE_RDPUDP_H
++#define FREERDP_LIB_CORE_RDPUDP_H
++
++#include <freerdp/api.h>
++#include <freerdp/freerdp.h>
++
++#include <winpr/wtypes.h>
++#include <winpr/stream.h>
++
++#include "multitransport.h"
++
++typedef struct rdp_udp_tunnel rdpUdpTunnel;
++
++typedef enum
++{
++	RDPUDP_TUNNEL_STATE_IDLE = 0,
++	RDPUDP_TUNNEL_STATE_SYN_SENT = 1,
++	RDPUDP_TUNNEL_STATE_SECURITY_HANDSHAKE = 2,
++	RDPUDP_TUNNEL_STATE_RDPEMT_CREATE = 3,
++	RDPUDP_TUNNEL_STATE_READY = 4,
++	RDPUDP_TUNNEL_STATE_ACTIVE = 5,
++	RDPUDP_TUNNEL_STATE_FAILED = 6,
++	RDPUDP_TUNNEL_STATE_CLOSED = 7
++} rdpUdpTunnelState;
++
++typedef struct
++{
++	UINT32 kind;
++	UINT32 state;
++	UINT32 negotiatedVersion;
++	UINT64 bytesReceived;
++	UINT64 bytesSent;
++	UINT64 packetsReceived;
++	UINT64 packetsSent;
++	UINT64 retransmits;
++	UINT64 fecRecovered;
++	UINT64 droppedPackets;
++	UINT64 srttMicros;
++	UINT64 idleMillis;
++} rdpUdpTunnelSnapshot;
++
++enum
++{
++	RDPUDP_CLIENT_FAILURE_NONE = 0,
++	RDPUDP_CLIENT_FAILURE_UNSUPPORTED_PROTOCOL = 1,
++	RDPUDP_CLIENT_FAILURE_INVALID_ENDPOINT = 2,
++	RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT = 3,
++	RDPUDP_CLIENT_FAILURE_SYN_SEND = 4,
++	RDPUDP_CLIENT_FAILURE_SYN_TIMEOUT = 5,
++	RDPUDP_CLIENT_FAILURE_SYN_RECV = 6,
++	RDPUDP_CLIENT_FAILURE_SYN_PARSE = 7,
++	RDPUDP_CLIENT_FAILURE_RESOURCE = 8,
++	RDPUDP_CLIENT_FAILURE_FINAL_ACK = 9,
++	RDPUDP_CLIENT_FAILURE_UNSUPPORTED_VERSION = 10,
++	RDPUDP_CLIENT_FAILURE_TLS_HANDSHAKE = 11,
++	RDPUDP_CLIENT_FAILURE_TUNNEL_REQUEST = 12,
++	RDPUDP_CLIENT_FAILURE_TUNNEL_RESPONSE = 13,
++	RDPUDP_CLIENT_FAILURE_TUNNEL_HR = 14,
++	RDPUDP_CLIENT_FAILURE_TRANSPORT_TIMEOUT = 15
++};
++
++typedef struct
++{
++	BOOL socketOpened;
++	BOOL synAckReceived;
++	BOOL tlsHandshakeSucceeded;
++	BOOL tunnelCreateSucceeded;
++	BOOL lossy;
++	UINT16 requestedProtocol;
++	UINT16 negotiatedVersion;
++	UINT32 initialSequence;
++	UINT32 serverInitialSequence;
++	UINT64 packetsSent;
++	UINT64 packetsReceived;
++	UINT64 bytesSent;
++	UINT64 bytesReceived;
++	UINT64 retransmits;
++	UINT64 fecRecovered;
++	UINT64 droppedPackets;
++	UINT64 srttMicros;
++	UINT32 failureStage;
++	HRESULT tunnelHr;
++	int lastSocketError;
++} rdpUdpClientBootstrapResult;
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL rdpUdpTunnel* rdpudp_tunnel_begin(rdpRdp* rdp, UINT32 requestId,
++                                                UINT16 requestedProtocol,
++                                                const BYTE cookie[RDPUDP_COOKIE_LEN]);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL rdpudp_tunnel_poll(rdpUdpTunnel* tunnel);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL HANDLE rdpudp_tunnel_get_event(const rdpUdpTunnel* tunnel);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL rdpUdpTunnelState rdpudp_tunnel_get_state(const rdpUdpTunnel* tunnel);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL rdpudp_tunnel_pop_data(rdpUdpTunnel* tunnel, BYTE* data, size_t capacity,
++                                          size_t* length);
++
++FREERDP_LOCAL void rdpudp_tunnel_set_active(rdpUdpTunnel* tunnel);
++
++FREERDP_LOCAL void rdpudp_tunnel_snapshot(const rdpUdpTunnel* tunnel,
++                                          rdpUdpTunnelSnapshot* snapshot);
++
++/* Deterministic wire-codec entry points used by the native protocol tests and fuzz harnesses. */
++FREERDP_API BOOL rdpudp_test_write_syn(wStream* s, UINT16 requestedProtocol,
++                                       const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                       UINT32* initialSequence);
++FREERDP_API BOOL rdpudp_test_parse_syn_ack(const BYTE* data, size_t length,
++                                           UINT32 initialSequence,
++                                           rdpUdpClientBootstrapResult* result);
++FREERDP_API UINT16 rdpudp_test_sequence16_distance(UINT16 from, UINT16 to);
++FREERDP_API UINT32 rdpudp_test_sequence32_distance(UINT32 from, UINT32 to);
++FREERDP_API BOOL rdpudp_test_write_create_request(wStream* s, UINT32 requestId,
++                                                  const BYTE cookie[RDPUDP_COOKIE_LEN]);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL rdpudp_client_bootstrap(rdpRdp* rdp, UINT32 requestId, UINT16 requestedProtocol,
++                                           const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                           rdpUdpClientBootstrapResult* result);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL rdpudp_client_probe_tunnel(rdpRdp* rdp, UINT32 requestId,
++                                              UINT16 requestedProtocol,
++                                              const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                              rdpUdpClientBootstrapResult* result);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL rdpUdpTunnel* rdpudp_client_open_tunnel(rdpRdp* rdp, UINT32 requestId,
++                                                      UINT16 requestedProtocol,
++                                                      const BYTE cookie[RDPUDP_COOKIE_LEN],
++                                                      rdpUdpClientBootstrapResult* result);
++
++FREERDP_LOCAL void rdpudp_tunnel_set_interactive(rdpUdpTunnel* tunnel, BOOL interactive);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL rdpudp_tunnel_write_data(rdpUdpTunnel* tunnel, const BYTE* data, size_t length);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL int rdpudp_tunnel_read_data(rdpUdpTunnel* tunnel, BYTE* data, size_t length,
++                                          int timeoutMs);
++
++FREERDP_LOCAL void rdpudp_tunnel_abort(rdpUdpTunnel* tunnel);
++
++FREERDP_LOCAL const rdpUdpClientBootstrapResult* rdpudp_tunnel_stats(const rdpUdpTunnel* tunnel);
++
++FREERDP_LOCAL void rdpudp_tunnel_free(rdpUdpTunnel* tunnel);
++
++#endif /* FREERDP_LIB_CORE_RDPUDP_H */
+diff --git a/libfreerdp/core/rdpudp_async.inc b/libfreerdp/core/rdpudp_async.inc
+new file mode 100644
+index 00000000..91df7a9d
+--- /dev/null
++++ b/libfreerdp/core/rdpudp_async.inc
+@@ -0,0 +1,432 @@
++/* Main-loop-owned asynchronous RDP-UDP/RDPEMT state machine. Included by rdpudp.c after the
++ * wire codec, BIO adapter, TLS helpers and rdpUdpTunnel allocation helpers are defined. */
++
++static void rdpudp_async_fail(rdpUdpTunnel* tunnel, UINT32 stage)
++{
++	WINPR_ASSERT(tunnel);
++	if (tunnel->state == RDPUDP_TUNNEL_STATE_FAILED ||
++	    tunnel->state == RDPUDP_TUNNEL_STATE_CLOSED)
++		return;
++	tunnel->result.failureStage = stage;
++	tunnel->state = RDPUDP_TUNNEL_STATE_FAILED;
++}
++
++static BOOL rdpudp_async_queue(rdpUdpTunnel* tunnel, const BYTE* data, size_t length)
++{
++	if ((!data && length > 0) || length > UINT16_MAX ||
++	    tunnel->rxQueuedFrames >= RDPUDP_MAX_QUEUED_FRAMES ||
++	    length > RDPUDP_MAX_QUEUED_BYTES - tunnel->rxQueuedBytes)
++	{
++		tunnel->result.droppedPackets++;
++		return FALSE;
++	}
++	rdpUdpFrame* frame = (rdpUdpFrame*)malloc(sizeof(*frame) + length);
++	if (!frame)
++		return FALSE;
++	frame->next = nullptr;
++	frame->length = length;
++	if (length > 0)
++		memcpy(frame->data, data, length);
++	if (tunnel->rxTail)
++		tunnel->rxTail->next = frame;
++	else
++		tunnel->rxHead = frame;
++	tunnel->rxTail = frame;
++	tunnel->rxQueuedBytes += length;
++	tunnel->rxQueuedFrames++;
++	return TRUE;
++}
++
++static BOOL rdpudp_async_consume_wire(rdpUdpTunnel* tunnel)
++{
++	size_t offset = 0;
++	while (tunnel->wireLength - offset >= RDPTUNNEL_HEADER_LENGTH)
++	{
++		const BYTE* header = tunnel->wireBuffer + offset;
++		const UINT8 low = header[0] & 0x0Fu;
++		const UINT8 high = (header[0] >> 4u) & 0x0Fu;
++		const UINT8 action = low != 0 ? low : high;
++		const UINT16 payloadLength = (UINT16)(header[1] | ((UINT16)header[2] << 8u));
++		const UINT8 headerLength = header[3];
++		if (headerLength < RDPTUNNEL_HEADER_LENGTH)
++			return FALSE;
++		const size_t frameLength = (size_t)headerLength + payloadLength;
++		if (frameLength > RDPUDP_MAX_RDPEMT_FRAME)
++			return FALSE;
++		if (tunnel->wireLength - offset < frameLength)
++			break;
++		const BYTE* payload = header + headerLength;
++		if (tunnel->state == RDPUDP_TUNNEL_STATE_RDPEMT_CREATE)
++		{
++			if (action != RDPTUNNEL_ACTION_CREATERESPONSE ||
++			    payloadLength < RDPTUNNEL_CREATE_RESPONSE_PAYLOAD_LENGTH)
++				return FALSE;
++			wStream buffer = WINPR_C_ARRAY_INIT;
++			wStream* s = Stream_StaticInit(&buffer, (BYTE*)payload, payloadLength);
++			HRESULT hr = E_ABORT;
++			Stream_Read_INT32(s, hr);
++			tunnel->result.tunnelHr = hr;
++			tunnel->result.tunnelCreateSucceeded = hr == 0;
++			if (hr != 0)
++			{
++				tunnel->result.failureStage = RDPUDP_CLIENT_FAILURE_TUNNEL_HR;
++				return FALSE;
++			}
++			tunnel->result.failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++			tunnel->state = RDPUDP_TUNNEL_STATE_READY;
++			tunnel->stateStartedMs = GetTickCount64();
++		}
++		else if (action == RDPTUNNEL_ACTION_DATA)
++		{
++			if (!rdpudp_async_queue(tunnel, payload, payloadLength))
++				return FALSE;
++		}
++		else
++			return FALSE;
++		offset += frameLength;
++	}
++	if (offset > 0)
++	{
++		const size_t remaining = tunnel->wireLength - offset;
++		if (remaining > 0)
++			memmove(tunnel->wireBuffer, tunnel->wireBuffer + offset, remaining);
++		tunnel->wireLength = remaining;
++	}
++	return TRUE;
++}
++
++static BOOL rdpudp_async_read_plaintext(rdpUdpTunnel* tunnel)
++{
++	for (;;)
++	{
++		if (tunnel->wireCapacity - tunnel->wireLength < 4096)
++		{
++			size_t capacity = tunnel->wireCapacity ? tunnel->wireCapacity * 2 : 8192;
++			if (capacity > RDPUDP_MAX_RDPEMT_FRAME || capacity <= tunnel->wireCapacity)
++				capacity = RDPUDP_MAX_RDPEMT_FRAME;
++			if (capacity - tunnel->wireLength < 4096)
++				return FALSE;
++			BYTE* replacement = (BYTE*)realloc(tunnel->wireBuffer, capacity);
++			if (!replacement)
++				return FALSE;
++			tunnel->wireBuffer = replacement;
++			tunnel->wireCapacity = capacity;
++		}
++		const int rc = BIO_read(tunnel->tls->bio, tunnel->wireBuffer + tunnel->wireLength,
++		                        WINPR_ASSERTING_INT_CAST(int,
++		                                                   tunnel->wireCapacity - tunnel->wireLength));
++		if (rc > 0)
++		{
++			tunnel->wireLength += (size_t)rc;
++			if (!rdpudp_async_consume_wire(tunnel))
++				return FALSE;
++			continue;
++		}
++		if (BIO_should_retry(tunnel->tls->bio))
++			return TRUE;
++		return rc == 0;
++	}
++}
++
++rdpUdpTunnel* rdpudp_tunnel_begin(rdpRdp* rdp, UINT32 requestId, UINT16 requestedProtocol,
++                                  const BYTE cookie[RDPUDP_COOKIE_LEN])
++{
++	if (!rdp || !rdp->settings || !cookie)
++		return nullptr;
++	rdpUdpTunnel* tunnel = (rdpUdpTunnel*)calloc(1, sizeof(*tunnel));
++	rdpUdpConnection* connection = (rdpUdpConnection*)calloc(1, sizeof(*connection));
++	if (!tunnel || !connection)
++	{
++		free(tunnel);
++		free(connection);
++		return nullptr;
++	}
++	tunnel->connection = connection;
++	tunnel->requestId = requestId;
++	tunnel->requestedProtocol = requestedProtocol;
++	memcpy(tunnel->cookie, cookie, sizeof(tunnel->cookie));
++	tunnel->result.requestedProtocol = requestedProtocol;
++	tunnel->result.lossy = requestedProtocol == INITIATE_REQUEST_PROTOCOL_UDPFECL;
++	InitializeCriticalSection(&tunnel->lock);
++	tunnel->lockInitialized = TRUE;
++	connection->rdp = rdp;
++	connection->sock = INVALID_SOCKET;
++	connection->requestedProtocol = requestedProtocol;
++	connection->lossy = tunnel->result.lossy;
++	connection->readTimeoutMs = 0;
++	connection->recvTimeoutMs = 0;
++	connection->result = &tunnel->result;
++	if (requestedProtocol != INITIATE_REQUEST_PROTOCOL_UDPFECR &&
++	    requestedProtocol != INITIATE_REQUEST_PROTOCOL_UDPFECL)
++	{
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_UNSUPPORTED_PROTOCOL);
++		return tunnel;
++	}
++
++	const char* hostname = freerdp_settings_get_string(rdp->settings, FreeRDP_ServerHostname);
++	const UINT32 port = freerdp_settings_get_uint32(rdp->settings, FreeRDP_ServerPort);
++	if (!hostname || port == 0 || port > UINT16_MAX)
++	{
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_INVALID_ENDPOINT);
++		return tunnel;
++	}
++	wStream* syn = Stream_New(nullptr, RDPUDP_DEFAULT_MTU);
++	if (!syn || !rdpudp_write_syn(syn, requestedProtocol, cookie, &tunnel->result.initialSequence))
++	{
++		Stream_Free(syn, TRUE);
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_RESOURCE);
++		return tunnel;
++	}
++	tunnel->synPacketLength = Stream_GetPosition(syn);
++	memcpy(tunnel->synPacket, Stream_Buffer(syn), tunnel->synPacketLength);
++	Stream_Free(syn, TRUE);
++	connection->sock = rdpudp_connect_socket(rdp, &tunnel->result.lastSocketError);
++	if (connection->sock == INVALID_SOCKET)
++	{
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT);
++		return tunnel;
++	}
++	tunnel->result.socketOpened = TRUE;
++	tunnel->socketEvent = WSACreateEvent();
++	if (!tunnel->socketEvent ||
++	    WSAEventSelect(connection->sock, tunnel->socketEvent, FD_READ | FD_CLOSE) != 0)
++	{
++		tunnel->result.lastSocketError = WSAGetLastError();
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT);
++		return tunnel;
++	}
++	const int sent = _send(connection->sock, (const char*)tunnel->synPacket,
++	                       WINPR_ASSERTING_INT_CAST(int, tunnel->synPacketLength), 0);
++	if (sent != WINPR_ASSERTING_INT_CAST(int, tunnel->synPacketLength))
++	{
++		tunnel->result.lastSocketError = rdpudp_socket_error();
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SYN_SEND);
++		return tunnel;
++	}
++	tunnel->result.bytesSent += (UINT32)sent;
++	tunnel->result.packetsSent++;
++	tunnel->synAttempts = 1;
++	tunnel->lastSynMs = tunnel->stateStartedMs = GetTickCount64();
++	tunnel->state = RDPUDP_TUNNEL_STATE_SYN_SENT;
++	return tunnel;
++}
++
++static BOOL rdpudp_async_start_security(rdpUdpTunnel* tunnel)
++{
++	rdpUdpConnection* connection = tunnel->connection;
++	connection->negotiatedVersion = tunnel->result.negotiatedVersion;
++	connection->sendSequence = tunnel->result.initialSequence + 1u;
++	connection->codedSequence = tunnel->result.initialSequence + 1u;
++	connection->recvSequence = tunnel->result.serverInitialSequence;
++	connection->recvReadSequence = tunnel->result.serverInitialSequence;
++	connection->recvAckHigh = tunnel->result.serverInitialSequence;
++	connection->mtu = RDPUDP_DEFAULT_MTU - 64;
++	connection->lastReceiveMs = GetTickCount64();
++	if (!rdpudp_send_connection_ack(connection))
++		return FALSE;
++	tunnel->tls = freerdp_tls_new(connection->rdp->context);
++	tunnel->pendingBio = rdpudp_connection_new_bio(connection, connection->lossy);
++	if (!tunnel->tls || !tunnel->pendingBio)
++		return FALSE;
++
++	rdpSettings* settings = connection->rdp->settings;
++	const UINT16 oldMin = freerdp_settings_get_uint16(settings, FreeRDP_TLSMinVersion);
++	const UINT16 oldMax = freerdp_settings_get_uint16(settings, FreeRDP_TLSMaxVersion);
++	if (connection->lossy)
++	{
++#ifdef DTLS1_2_VERSION
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, DTLS1_2_VERSION);
++#else
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, 0);
++#endif
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMaxVersion, 0);
++	}
++	const SSL_METHOD* method = freerdp_tls_get_ssl_method(connection->lossy, TRUE);
++	const TlsHandshakeResult rc = freerdp_tls_connect_ex(tunnel->tls, tunnel->pendingBio, method);
++	tunnel->pendingBio = nullptr; /* freerdp_tls_connect_ex owns the BIO after prepare */
++	if (connection->lossy)
++	{
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMinVersion, oldMin);
++		(void)freerdp_settings_set_uint16(settings, FreeRDP_TLSMaxVersion, oldMax);
++	}
++	if (rc != TLS_HANDSHAKE_SUCCESS && rc != TLS_HANDSHAKE_CONTINUE)
++		return FALSE;
++	tunnel->state = RDPUDP_TUNNEL_STATE_SECURITY_HANDSHAKE;
++	tunnel->stateStartedMs = GetTickCount64();
++	if (rc == TLS_HANDSHAKE_SUCCESS)
++	{
++		tunnel->result.tlsHandshakeSucceeded = TRUE;
++		if (!rdpemt_send_create_request(tunnel->tls, tunnel->requestId, tunnel->cookie))
++			return FALSE;
++		tunnel->state = RDPUDP_TUNNEL_STATE_RDPEMT_CREATE;
++	}
++	return TRUE;
++}
++
++BOOL rdpudp_tunnel_poll(rdpUdpTunnel* tunnel)
++{
++	if (!tunnel || tunnel->aborted || tunnel->state == RDPUDP_TUNNEL_STATE_FAILED ||
++	    tunnel->state == RDPUDP_TUNNEL_STATE_CLOSED)
++		return FALSE;
++	const UINT64 now = GetTickCount64();
++	if (tunnel->state != RDPUDP_TUNNEL_STATE_READY &&
++	    tunnel->state != RDPUDP_TUNNEL_STATE_ACTIVE &&
++	    now - tunnel->stateStartedMs >= RDPUDP_ASYNC_HANDSHAKE_TIMEOUT_MS)
++	{
++		rdpudp_async_fail(tunnel, tunnel->state == RDPUDP_TUNNEL_STATE_SYN_SENT
++		                                ? RDPUDP_CLIENT_FAILURE_SYN_TIMEOUT
++		                                : RDPUDP_CLIENT_FAILURE_TUNNEL_RESPONSE);
++		return FALSE;
++	}
++	if (tunnel->state == RDPUDP_TUNNEL_STATE_SYN_SENT)
++	{
++		BYTE packet[RDPUDP_RECV_BUFFER_SIZE] = { 0 };
++		const int received = _recv(tunnel->connection->sock, (char*)packet, sizeof(packet), 0);
++		if (received > 0)
++		{
++			tunnel->result.bytesReceived += (UINT32)received;
++			tunnel->result.packetsReceived++;
++			if (rdpudp_parse_syn_ack(packet, (size_t)received, tunnel->result.initialSequence,
++			                         &tunnel->result))
++			{
++				if (!rdpudp_async_start_security(tunnel))
++					rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_TLS_HANDSHAKE);
++				return tunnel->state != RDPUDP_TUNNEL_STATE_FAILED;
++			}
++			tunnel->result.failureStage = RDPUDP_CLIENT_FAILURE_SYN_PARSE;
++		}
++		else if (received < 0)
++		{
++			const int error = WSAGetLastError();
++			if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS)
++			{
++				tunnel->result.lastSocketError = error;
++				rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SYN_RECV);
++				return FALSE;
++			}
++		}
++		if (now - tunnel->lastSynMs >= RDPUDP_SYN_TIMEOUT_MS)
++		{
++			if (tunnel->synAttempts >= RDPUDP_SYN_SEND_ATTEMPTS)
++			{
++				rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SYN_TIMEOUT);
++				return FALSE;
++			}
++			const int sent = _send(tunnel->connection->sock, (const char*)tunnel->synPacket,
++			                       WINPR_ASSERTING_INT_CAST(int, tunnel->synPacketLength), 0);
++			if (sent <= 0)
++			{
++				tunnel->result.lastSocketError = rdpudp_socket_error();
++				rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SYN_SEND);
++				return FALSE;
++			}
++			tunnel->result.bytesSent += (UINT32)sent;
++			tunnel->result.packetsSent++;
++			tunnel->result.retransmits++;
++			tunnel->synAttempts++;
++			tunnel->lastSynMs = now;
++		}
++		return TRUE;
++	}
++	if (tunnel->state == RDPUDP_TUNNEL_STATE_SECURITY_HANDSHAKE)
++	{
++		const TlsHandshakeResult rc = freerdp_tls_handshake(tunnel->tls);
++		if (rc != TLS_HANDSHAKE_SUCCESS && rc != TLS_HANDSHAKE_CONTINUE)
++		{
++			rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_TLS_HANDSHAKE);
++			return FALSE;
++		}
++		if (rc == TLS_HANDSHAKE_SUCCESS)
++		{
++			tunnel->result.tlsHandshakeSucceeded = TRUE;
++			if (!rdpemt_send_create_request(tunnel->tls, tunnel->requestId, tunnel->cookie))
++			{
++				rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_TUNNEL_REQUEST);
++				return FALSE;
++			}
++			tunnel->state = RDPUDP_TUNNEL_STATE_RDPEMT_CREATE;
++			tunnel->stateStartedMs = now;
++		}
++		return TRUE;
++	}
++	if (!rdpudp_async_read_plaintext(tunnel))
++	{
++		rdpudp_async_fail(tunnel, tunnel->state == RDPUDP_TUNNEL_STATE_RDPEMT_CREATE
++		                                ? RDPUDP_CLIENT_FAILURE_TUNNEL_RESPONSE
++		                                : RDPUDP_CLIENT_FAILURE_SYN_RECV);
++		return FALSE;
++	}
++	BOOL maintenanceOk = TRUE;
++	if (tunnel->connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_1 ||
++	    tunnel->connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_2)
++		maintenanceOk = rdpudp1_maintenance(tunnel->connection);
++	else if (tunnel->connection->negotiatedVersion == RDPUDP_PROTOCOL_VERSION_3)
++		maintenanceOk = rdpudp2_maintenance(tunnel->connection);
++	if (!maintenanceOk)
++	{
++		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_TRANSPORT_TIMEOUT);
++		return FALSE;
++	}
++	return TRUE;
++}
++
++HANDLE rdpudp_tunnel_get_event(const rdpUdpTunnel* tunnel)
++{
++	return tunnel ? tunnel->socketEvent : nullptr;
++}
++
++rdpUdpTunnelState rdpudp_tunnel_get_state(const rdpUdpTunnel* tunnel)
++{
++	return tunnel ? tunnel->state : RDPUDP_TUNNEL_STATE_CLOSED;
++}
++
++BOOL rdpudp_tunnel_pop_data(rdpUdpTunnel* tunnel, BYTE* data, size_t capacity, size_t* length)
++{
++	if (length)
++		*length = 0;
++	if (!tunnel || !data || !length || !tunnel->rxHead)
++		return FALSE;
++	rdpUdpFrame* frame = tunnel->rxHead;
++	if (frame->length > capacity)
++		return FALSE;
++	tunnel->rxHead = frame->next;
++	if (!tunnel->rxHead)
++		tunnel->rxTail = nullptr;
++	memcpy(data, frame->data, frame->length);
++	*length = frame->length;
++	tunnel->rxQueuedBytes -= frame->length;
++	tunnel->rxQueuedFrames--;
++	free(frame);
++	return TRUE;
++}
++
++void rdpudp_tunnel_set_active(rdpUdpTunnel* tunnel)
++{
++	if (tunnel && tunnel->state == RDPUDP_TUNNEL_STATE_READY)
++		tunnel->state = RDPUDP_TUNNEL_STATE_ACTIVE;
++}
++
++void rdpudp_tunnel_snapshot(const rdpUdpTunnel* tunnel, rdpUdpTunnelSnapshot* snapshot)
++{
++	if (!snapshot)
++		return;
++	ZeroMemory(snapshot, sizeof(*snapshot));
++	if (!tunnel)
++		return;
++	snapshot->kind = tunnel->result.requestedProtocol == INITIATE_REQUEST_PROTOCOL_UDPFECL
++	                     ? 2u
++	                     : (tunnel->result.negotiatedVersion == RDPUDP_PROTOCOL_VERSION_3 ? 4u
++	                                                                                       : 1u);
++	snapshot->state = tunnel->state;
++	snapshot->negotiatedVersion = tunnel->result.negotiatedVersion;
++	snapshot->bytesReceived = tunnel->result.bytesReceived;
++	snapshot->bytesSent = tunnel->result.bytesSent;
++	snapshot->packetsReceived = tunnel->result.packetsReceived;
++	snapshot->packetsSent = tunnel->result.packetsSent;
++	snapshot->retransmits = tunnel->result.retransmits;
++	snapshot->fecRecovered = tunnel->result.fecRecovered;
++	snapshot->droppedPackets = tunnel->result.droppedPackets;
++	snapshot->srttMicros = tunnel->result.srttMicros;
++	if (tunnel->connection && tunnel->connection->lastReceiveMs > 0)
++		snapshot->idleMillis = GetTickCount64() - tunnel->connection->lastReceiveMs;
++}
+diff --git a/libfreerdp/core/test/TestFuzzRdpUdp.c b/libfreerdp/core/test/TestFuzzRdpUdp.c
+new file mode 100644
+index 00000000..8fcfd5d3
+--- /dev/null
++++ b/libfreerdp/core/test/TestFuzzRdpUdp.c
+@@ -0,0 +1,23 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * RDP-UDP wire parser fuzz entry point
++ *
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#include <stdint.h>
++#include <string.h>
++
++#include "../rdpudp.h"
++
++int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
++{
++	if (!data)
++		return 0;
++	rdpUdpClientBootstrapResult result = WINPR_C_ARRAY_INIT;
++	UINT32 expectedSequence = 0;
++	if (size >= sizeof(expectedSequence))
++		memcpy(&expectedSequence, data, sizeof(expectedSequence));
++	(void)rdpudp_test_parse_syn_ack(data, size, expectedSequence, &result);
++	return 0;
++}
+diff --git a/libfreerdp/core/test/TestRdpUdp.c b/libfreerdp/core/test/TestRdpUdp.c
+new file mode 100644
+index 00000000..125828d2
+--- /dev/null
++++ b/libfreerdp/core/test/TestRdpUdp.c
+@@ -0,0 +1,80 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * Deterministic RDP-UDP/RDPEMT wire-codec tests
++ *
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#include <string.h>
++
++#include <winpr/crt.h>
++#include <winpr/stream.h>
++
++#include "../rdpudp.h"
++
++static BOOL test_sequence_wrap(void)
++{
++	return (rdpudp_test_sequence16_distance(0xFFFEu, 1u) == 3u) &&
++	       (rdpudp_test_sequence32_distance(0xFFFFFFFEu, 1u) == 3u);
++}
++
++static BOOL test_syn_and_syn_ack(void)
++{
++	BYTE cookie[RDPUDP_COOKIE_LEN] = { 0 };
++	for (size_t x = 0; x < ARRAYSIZE(cookie); x++)
++		cookie[x] = (BYTE)x;
++	wStream* syn = Stream_New(nullptr, 1232);
++	if (!syn)
++		return FALSE;
++	UINT32 sequence = 0;
++	BOOL ok = rdpudp_test_write_syn(syn, INITIATE_REQUEST_PROTOCOL_UDPFECR, cookie, &sequence) &&
++	          Stream_GetPosition(syn) == 1232;
++	Stream_Free(syn, TRUE);
++	if (!ok)
++		return FALSE;
++
++	BYTE ack[20] = { 0 };
++	wStream sbuffer = WINPR_C_ARRAY_INIT;
++	wStream* s = Stream_StaticInit(&sbuffer, ack, sizeof(ack));
++	Stream_Write_UINT32_BE(s, sequence);
++	Stream_Write_UINT16_BE(s, 1024);
++	Stream_Write_UINT16_BE(s, 0x1005); /* SYN | ACK | SYNEX */
++	Stream_Write_UINT32_BE(s, 0xAABBCCDDu);
++	Stream_Write_UINT16_BE(s, 1232);
++	Stream_Write_UINT16_BE(s, 1132);
++	Stream_Write_UINT16_BE(s, 1);      /* VERSION_INFO_VALID */
++	Stream_Write_UINT16_BE(s, 0x0101); /* UDP2 v3 */
++
++	rdpUdpClientBootstrapResult result = WINPR_C_ARRAY_INIT;
++	ok = rdpudp_test_parse_syn_ack(ack, sizeof(ack), sequence, &result) &&
++	     result.synAckReceived && result.serverInitialSequence == 0xAABBCCDDu &&
++	     result.negotiatedVersion == 0x0101;
++	if (rdpudp_test_parse_syn_ack(ack, sizeof(ack) - 5, sequence, &result))
++		ok = FALSE;
++	ack[13] = 0; /* invalid upstream MTU */
++	if (rdpudp_test_parse_syn_ack(ack, sizeof(ack), sequence, &result))
++		ok = FALSE;
++	return ok;
++}
++
++static BOOL test_rdpemt_create_request(void)
++{
++	BYTE cookie[RDPUDP_COOKIE_LEN] = { 0 };
++	for (size_t x = 0; x < ARRAYSIZE(cookie); x++)
++		cookie[x] = (BYTE)(0xF0u + x);
++	BYTE buffer[28] = { 0 };
++	wStream sbuffer = WINPR_C_ARRAY_INIT;
++	wStream* s = Stream_StaticInit(&sbuffer, buffer, sizeof(buffer));
++	if (!rdpudp_test_write_create_request(s, 0x11223344u, cookie) ||
++	    Stream_GetPosition(s) != sizeof(buffer))
++		return FALSE;
++	const BYTE prefix[] = { 0x00, 0x18, 0x00, 0x04, 0x44, 0x33, 0x22, 0x11,
++	                        0x00, 0x00, 0x00, 0x00 };
++	return memcmp(buffer, prefix, sizeof(prefix)) == 0 &&
++	       memcmp(buffer + sizeof(prefix), cookie, sizeof(cookie)) == 0;
++}
++
++int TestRdpUdp(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
++{
++	return test_sequence_wrap() && test_syn_and_syn_ack() && test_rdpemt_create_request() ? 0 : -1;
++}

@@ -78,7 +78,7 @@
     <string name="connection_width">宽度</string>
     <string name="connection_height">高度</string>
     <string name="connection_multitransport_title">UDP 多路传输（实验性）</string>
-    <string name="connection_multitransport_desc">内置 FreeRDP 3.30 当前不会建立 UDP 通道；建议保持关闭。开启后只会尝试协商并回退 TCP。</string>
+    <string name="connection_multitransport_desc">开启后协商 RDP-UDP/UDP2；不可用时保持 TCP，活动隧道中断时自动重连 TCP。默认关闭。</string>
     <string name="connection_section_redirection">重定向</string>
     <string name="connection_clipboard_title">剪贴板双向同步</string>
     <string name="connection_clipboard_desc">手机与电脑间双向同步复制的文字（暂不支持图片）。</string>

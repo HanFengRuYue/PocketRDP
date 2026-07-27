@@ -15,7 +15,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $freeRdpDir = Join-Path $repoRoot "third_party\FreeRDP"
 $patchPath = Join-Path $repoRoot "patches\freerdp\pocketrdp-3.30.patch"
 $expectedBase = "6b107f0aadbabc47941c5a5b893b88c01792af6d"
-$expectedPatchSha256 = "c4b3d2abc2e43352b697e6618e2a3b52a8f61cfdc9fac2769294e73177a56fea"
+$expectedPatchSha256 = "a01a44fdd45fd1f29d3e4510b679cff698f809ef6ee507890a2ef20df6e76ea5"
 
 if (-not (Test-Path -LiteralPath (Join-Path $freeRdpDir ".git"))) {
     throw "FreeRDP submodule is not initialized. Run: git submodule update --init third_party/FreeRDP"
@@ -43,8 +43,8 @@ if ($LASTEXITCODE -ne 0) {
 if ($status.Count -gt 0) {
     # A reverse-applicable patch is not sufficient proof: the worktree could contain the expected
     # patch plus an unrelated tracked or untracked change. Require the complete HEAD-relative diff
-    # to equal the audited patch byte-for-byte after newline normalization, and reject all
-    # untracked files. This also covers a patch that was staged before running the helper.
+    # to equal the audited patch byte-for-byte after newline normalization. New files are folded
+    # into that canonical diff explicitly because `git diff HEAD` does not include untracked files.
     $currentDiffLines = @(& git -C $freeRdpDir diff --binary HEAD --)
     if ($LASTEXITCODE -ne 0) {
         throw "Could not inspect the FreeRDP submodule diff."
@@ -54,8 +54,21 @@ if ($status.Count -gt 0) {
         $patchPath,
         $utf8NoBom
     )).Replace("`r`n", "`n").TrimEnd("`n")
-    $hasUntrackedFiles = $status | Where-Object { $_.StartsWith("??") }
-    if (-not $hasUntrackedFiles -and $currentDiff -ceq $expectedDiff) {
+    $untrackedFiles = @($status | Where-Object { $_.StartsWith("??") } | ForEach-Object {
+        $_.Substring(3)
+    } | Sort-Object)
+    foreach ($relativePath in $untrackedFiles) {
+        $newFileDiff = @(& git -c core.autocrlf=false -c core.safecrlf=false -C $freeRdpDir `
+            diff --no-index --binary -- /dev/null $relativePath 2>$null)
+        if ($LASTEXITCODE -notin 0, 1) {
+            throw "Could not inspect new FreeRDP file: $relativePath"
+        }
+        if ($newFileDiff.Count -gt 0) {
+            $currentDiffLines += $newFileDiff
+        }
+    }
+    $currentDiff = ($currentDiffLines -join "`n").TrimEnd("`n")
+    if ($currentDiff -ceq $expectedDiff) {
         Write-Host "PocketRDP FreeRDP 3.30 patch is already applied."
         exit 0
     }

@@ -58,8 +58,7 @@ data class ConnectionEditUiState(
     // — like preferAvc420 above — let new connections render uncapped at the phone's full resolution,
     // the second half of the same default-inconsistency 操控延迟 bug.
     val dynamicResMax: Int = 1080,
-    // FreeRDP 3.30's client handler currently rejects the UDP bootstrap request, so leave this
-    // experimental capability off unless a user explicitly wants to probe a future server/client.
+    // UDP remains explicit opt-in. A failed negotiation keeps the session on TCP safely.
     val useMultitransport: Boolean = false,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,

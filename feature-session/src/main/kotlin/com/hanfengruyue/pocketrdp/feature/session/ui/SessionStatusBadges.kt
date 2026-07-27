@@ -63,8 +63,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer
-import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
-import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportStats
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportFailure
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportPhase
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
+import com.hanfengruyue.pocketrdp.core.rdp.RdpUdpKind
+import com.hanfengruyue.pocketrdp.core.rdp.RdpUdpTunnelSnapshot
 import com.hanfengruyue.pocketrdp.feature.session.R
 import com.hanfengruyue.pocketrdp.feature.session.SessionConnectionStatus
 import com.hanfengruyue.pocketrdp.feature.session.input.UserTransform
@@ -84,7 +87,7 @@ import kotlin.math.roundToInt
  * and a **采样** row (accepted vs discarded discrete-input samples: a high discard ratio means presses
  * aren't producing frames, i.e. the cost is server-side/inert-screen, not the client).
  */
-@Suppress("LongParameterList") // Compose title slot receives independently changing UI state values.
+@Suppress("LongMethod", "LongParameterList") // One cohesive, scrollable session-status surface.
 @Composable
 fun SessionStatusTitle(
     status: SessionConnectionStatus,
@@ -98,8 +101,7 @@ fun SessionStatusTitle(
     networkRttMs: Int,
     latencyAccepted: Int,
     latencyDiscarded: Int,
-    transport: RdpTransport,
-    transportStats: RdpTransportStats,
+    transportSnapshot: RdpTransportSnapshot,
     host: String?,
     stickyModifierLabels: List<String>,
     lastError: String?,
@@ -223,7 +225,10 @@ fun SessionStatusTitle(
                                 onClick = { expanded = false },
                             ) {
                                 MenuText(
-                                    stringResource(R.string.session_status_transport, transportLabel(transport)),
+                                    stringResource(
+                                        R.string.session_status_transport,
+                                        transportLabel(transportSnapshot),
+                                    ),
                                     menuContentColor,
                                 )
                             }
@@ -275,27 +280,32 @@ fun SessionStatusTitle(
                                     onClick = { expanded = false },
                                 )
                             }
-                            if (transportStats != RdpTransportStats()) {
+                            val reliable = transportSnapshot.reliable
+                            val lossy = transportSnapshot.lossy
+                            if (reliable.kind != RdpUdpKind.UNKNOWN) {
                                 StatusMetricRow(
                                     icon = Icons.Default.SettingsEthernet,
-                                    text = stringResource(
-                                        R.string.session_status_transport_stats,
-                                        transportStats.inBytes,
-                                        transportStats.outBytes,
-                                        transportStats.retransmits,
-                                    ),
+                                    text = tunnelDiagnostic(reliable),
                                     contentColor = menuContentColor,
                                     onClick = { expanded = false },
                                 )
                             }
-                            if (transportStats.hasFailureDetails()) {
+                            if (lossy.kind != RdpUdpKind.UNKNOWN) {
+                                StatusMetricRow(
+                                    icon = Icons.Default.SettingsEthernet,
+                                    text = tunnelDiagnostic(lossy),
+                                    contentColor = menuContentColor,
+                                    onClick = { expanded = false },
+                                )
+                            }
+                            if (transportSnapshot.hasFailureDetails()) {
                                 StatusMetricRow(
                                     icon = Icons.Default.ErrorOutline,
                                     text = stringResource(
                                         R.string.session_status_transport_error,
-                                        transportStats.failureStage,
-                                        java.lang.Long.toHexString(transportStats.tunnelHr),
-                                        transportStats.socketError,
+                                        transportSnapshot.failure.name,
+                                        java.lang.Long.toHexString(transportSnapshot.tunnelHresult),
+                                        transportSnapshot.socketError,
                                     ),
                                     contentColor = menuContentColor,
                                     onClick = { expanded = false },
@@ -360,8 +370,24 @@ private fun StatusMetricRow(
     }
 }
 
-private fun RdpTransportStats.hasFailureDetails(): Boolean =
-    failureStage != 0L || tunnelHr != 0L || socketError != 0L
+private fun RdpTransportSnapshot.hasFailureDetails(): Boolean =
+    failure != RdpTransportFailure.NONE || tunnelHresult != 0L || socketError != 0L
+
+private fun tunnelDiagnostic(tunnel: RdpUdpTunnelSnapshot): String = buildString {
+    append(tunnel.kind.name)
+    append(" v0x")
+    append(tunnel.protocolVersion.toString(16))
+    append(": ")
+    append(tunnel.receivedBytes)
+    append(" B↓ / ")
+    append(tunnel.sentBytes)
+    append(" B↑, RTT ")
+    append(tunnel.smoothedRttMicros / MICROS_PER_MILLISECOND)
+    append(" ms, RTX ")
+    append(tunnel.retransmits)
+    append(", FEC ")
+    append(tunnel.fecRecovered)
+}
 
 @Composable
 private fun StatusMenuGlassBackground(
@@ -515,13 +541,26 @@ private fun totalLatencyLabel(vararg values: Int): String {
 }
 
 @Composable
-private fun transportLabel(transport: RdpTransport): String = when (transport) {
-    RdpTransport.TCP,
-    RdpTransport.TCP_FALLBACK -> "TCP"
-    RdpTransport.UDP_R,
-    RdpTransport.UDP_L,
-    RdpTransport.UDP2 -> "UDP"
-    RdpTransport.UNKNOWN -> stringResource(R.string.session_status_measuring)
+private fun transportLabel(snapshot: RdpTransportSnapshot): String {
+    if (!snapshot.knownVersion) return stringResource(R.string.session_status_measuring)
+    return when (snapshot.phase) {
+        RdpTransportPhase.NEGOTIATING -> stringResource(R.string.session_transport_negotiating_udp)
+        RdpTransportPhase.WAITING_SOFT_SYNC -> stringResource(R.string.session_transport_waiting_soft_sync)
+        RdpTransportPhase.UDP_FAILED -> stringResource(R.string.session_transport_udp_interrupted)
+        RdpTransportPhase.RECONNECTING_TCP -> stringResource(R.string.session_transport_reconnecting_tcp)
+        RdpTransportPhase.ACTIVE,
+        RdpTransportPhase.TCP,
+        -> transportCombinationLabel(snapshot)
+        RdpTransportPhase.UNKNOWN -> stringResource(R.string.session_status_measuring)
+    }
+}
+
+internal fun transportCombinationLabel(snapshot: RdpTransportSnapshot): String = buildString {
+    append("TCP")
+    if (snapshot.phase != RdpTransportPhase.ACTIVE) return@buildString
+    if (snapshot.activeMask and RdpTransportSnapshot.MASK_UDP2 != 0L) append(" + UDP2")
+    if (snapshot.activeMask and RdpTransportSnapshot.MASK_UDP_R != 0L) append(" + UDP-R")
+    if (snapshot.activeMask and RdpTransportSnapshot.MASK_UDP_L != 0L) append(" + UDP-L")
 }
 
 @Composable
@@ -565,3 +604,4 @@ private const val STATUS_MENU_TINT_MULTIPLIER = 0.7f
 private const val STATUS_MENU_EDGE_ALPHA = 0.28f
 private const val STATUS_MENU_HIGHLIGHT_ALPHA = 0.14f
 private const val STATUS_MENU_SHADOW_ALPHA = 0.18f
+private const val MICROS_PER_MILLISECOND = 1000L

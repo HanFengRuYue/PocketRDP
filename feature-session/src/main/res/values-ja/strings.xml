@@ -34,7 +34,11 @@
     <string name="session_status_network_rtt">ネットワーク往復: %1$s</string>
     <string name="session_status_samples">サンプル: 有効 %1$d / 破棄 %2$d</string>
     <string name="session_status_transport_stats">通信量: 受信 %1$d B / 送信 %2$d B、再送 %3$d</string>
-    <string name="session_status_transport_error">転送エラー: 段階 %1$d、トンネル 0x%2$s、ソケット %3$d</string>
+    <string name="session_status_transport_error">転送エラー: %1$s、トンネル 0x%2$s、ソケット %3$d</string>
+    <string name="session_transport_negotiating_udp">TCP · UDP をネゴシエート中</string>
+    <string name="session_transport_waiting_soft_sync">TCP · Soft-Sync を待機中</string>
+    <string name="session_transport_udp_interrupted">UDP が中断されました</string>
+    <string name="session_transport_reconnecting_tcp">UDP 中断、TCP を再接続中</string>
     <string name="session_status_sticky_modifiers">固定修飾キー: %1$s</string>
     <string name="session_status_last_error">最新のエラー: %1$s</string>
     <string name="session_status_measuring">測定中…</string>

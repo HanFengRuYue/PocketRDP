@@ -75,7 +75,7 @@
     <string name="connection_width">너비</string>
     <string name="connection_height">높이</string>
     <string name="connection_multitransport_title">UDP 다중 전송(실험적)</string>
-    <string name="connection_multitransport_desc">포함된 FreeRDP 3.30은 현재 UDP 채널을 설정하지 않습니다. 꺼 두세요. 켜도 협상 후 TCP로 되돌아갑니다.</string>
+    <string name="connection_multitransport_desc">RDP-UDP/UDP2를 협상합니다. UDP를 사용할 수 없거나 중단되면 TCP를 유지하거나 다시 연결합니다. 기본값은 꺼짐입니다.</string>
     <string name="connection_section_redirection">리디렉션</string>
     <string name="connection_clipboard_title">클립보드 양방향 동기화</string>
     <string name="connection_clipboard_desc">휴대폰과 PC 간 복사한 텍스트를 동기화합니다. 이미지는 아직 지원하지 않습니다.</string>

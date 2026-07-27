@@ -34,7 +34,11 @@
     <string name="session_status_network_rtt">网络往返：%1$s</string>
     <string name="session_status_samples">采样：有效 %1$d / 丢弃 %2$d</string>
     <string name="session_status_transport_stats">流量：下行 %1$d B / 上行 %2$d B，重传 %3$d</string>
-    <string name="session_status_transport_error">链路错误：阶段 %1$d，隧道 0x%2$s，套接字 %3$d</string>
+    <string name="session_status_transport_error">链路错误：%1$s，隧道 0x%2$s，套接字 %3$d</string>
+    <string name="session_transport_negotiating_udp">TCP · 正在协商 UDP</string>
+    <string name="session_transport_waiting_soft_sync">TCP · 等待 Soft-Sync</string>
+    <string name="session_transport_udp_interrupted">UDP 中断</string>
+    <string name="session_transport_reconnecting_tcp">UDP 中断，正在重连 TCP</string>
     <string name="session_status_sticky_modifiers">粘滞修饰键：%1$s</string>
     <string name="session_status_last_error">最近错误：%1$s</string>
     <string name="session_status_measuring">测量中…</string>

@@ -471,6 +471,31 @@ stage_built_libraries() {
     rmdir "$stage_dir"
 }
 
+invalidate_freerdp_build_stamps() {
+    local abi="$1"
+    local cxx_root="$PROJECT_ROOT/core-rdp/.cxx/Debug"
+    local stamp_root stamp root_real stamp_real
+
+    root_real=$(realpath -m "$cxx_root")
+    while IFS= read -r stamp_root; do
+        stamp_real=$(realpath -m "$stamp_root")
+        case "$stamp_real" in
+            "$root_real"/*/"$abi"/freerdp-prefix/src/freerdp-stamp) ;;
+            *)
+                echo "  !! refusing unexpected FreeRDP stamp directory: $stamp_real" >&2
+                return 1
+                ;;
+        esac
+        for stamp in freerdp-build freerdp-install freerdp-done; do
+            rm -f -- "$stamp_root/$stamp"
+        done
+        echo "  Invalidated cached FreeRDP build/install stamps for $abi."
+    done < <(
+        find "$cxx_root" -type d \
+            -path "*/$abi/freerdp-prefix/src/freerdp-stamp" -print 2>/dev/null
+    )
+}
+
 # 7. Build each ABI in its own gradle invocation, then stage its .so
 for ABI in $ABIS; do
     TRIPLE=$(ndk_triple "$ABI")
@@ -486,6 +511,10 @@ for ABI in $ABIS; do
     # download step, finds the seeded tarball, and proceeds. ExternalProject stamps make the
     # retry skip everything already built.
     seed_tarballs "$ABI"
+    # ExternalProject completion stamps do not track edits inside the pinned FreeRDP source tree.
+    # Invalidate only the active ABI's build/install completion markers so every explicit rebuild
+    # relinks the audited source instead of silently restaging an older library set.
+    invalidate_freerdp_build_stamps "$ABI"
     if ! ./gradlew :core-rdp:externalNativeBuildDebug -PnativeAbi="$ABI" \
             --no-configuration-cache --console=plain --no-daemon; then
         echo "  >> first attempt failed — re-seeding download cache and retrying once"

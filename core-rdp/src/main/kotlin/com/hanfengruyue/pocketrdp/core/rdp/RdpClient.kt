@@ -496,29 +496,10 @@ class RdpClient @Inject constructor(
         }
     }
 
-    /**
-     * Negotiated transport bitfield (see [LibFreeRDP.getTransportInfo]); -1 when no live session.
-     * bits 0..3 = actual transport state (TCP/UDP-R/UDP-L/UDP2), bit 8 = UDP requested but
-     * fallback, bit 9 = server requested multitransport, bits 4..7 = selected security protocol.
-     */
-    fun transportInfo(): Int {
-        return withLiveInstance { inst -> LibFreeRDP.getTransportInfo(inst) } ?: -1
-    }
-
-    /** UDP transport counters: bytes/packets counted below TLS, so they should track frp UDP traffic. */
-    fun transportStats(): RdpTransportStats {
-        val raw = withLiveInstance { inst -> LibFreeRDP.getTransportStats(inst) }
-            ?: return RdpTransportStats()
-        return RdpTransportStats(
-            inBytes = raw.getOrElse(TRANSPORT_STATS_IN_BYTES) { 0L },
-            outBytes = raw.getOrElse(TRANSPORT_STATS_OUT_BYTES) { 0L },
-            inPackets = raw.getOrElse(TRANSPORT_STATS_IN_PACKETS) { 0L },
-            outPackets = raw.getOrElse(TRANSPORT_STATS_OUT_PACKETS) { 0L },
-            retransmits = raw.getOrElse(TRANSPORT_STATS_RETRANSMITS) { 0L },
-            failureStage = raw.getOrElse(TRANSPORT_STATS_FAILURE_STAGE) { 0L },
-            tunnelHr = raw.getOrElse(TRANSPORT_STATS_TUNNEL_HR) { 0L },
-            socketError = raw.getOrElse(TRANSPORT_STATS_SOCKET_ERROR) { 0L },
-        )
+    /** One atomic, versioned view of TCP plus both possible RDP-UDP tunnels. */
+    fun transportSnapshot(): RdpTransportSnapshot {
+        val raw = withLiveInstance { inst -> LibFreeRDP.getTransportSnapshot(inst) }
+        return RdpTransportSnapshot.decode(raw)
     }
 
     fun sendClipboard(data: String) {
@@ -956,14 +937,6 @@ class RdpClient @Inject constructor(
         // pattern (which is what we need to investigate "input → disconnect" timing) without
         // flooding logs when the user holds a key or pastes long text.
         private const val KEY_LOG_LIMIT = 50
-        private const val TRANSPORT_STATS_IN_BYTES = 0
-        private const val TRANSPORT_STATS_OUT_BYTES = 1
-        private const val TRANSPORT_STATS_IN_PACKETS = 2
-        private const val TRANSPORT_STATS_OUT_PACKETS = 3
-        private const val TRANSPORT_STATS_RETRANSMITS = 4
-        private const val TRANSPORT_STATS_FAILURE_STAGE = 5
-        private const val TRANSPORT_STATS_TUNNEL_HR = 6
-        private const val TRANSPORT_STATS_SOCKET_ERROR = 7
         private const val DEFAULT_RDP_PORT = 3389
         private const val LATENCY_PROBE_TIMEOUT_MS = 2000
         private const val NANOS_PER_MILLI = 1_000_000L

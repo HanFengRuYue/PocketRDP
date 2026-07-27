@@ -81,7 +81,7 @@
     <string name="connection_width">Largeur</string>
     <string name="connection_height">Hauteur</string>
     <string name="connection_multitransport_title">Multitransport UDP (expérimental)</string>
-    <string name="connection_multitransport_desc">FreeRDP 3.30 intégré n’établit actuellement aucun canal UDP. Laissez cette option désactivée ; l’activation ne fait que négocier puis revenir à TCP.</string>
+    <string name="connection_multitransport_desc">Négocie RDP-UDP/UDP2. Si UDP est indisponible ou interrompu, la session reste ou se reconnecte en TCP. Désactivé par défaut.</string>
     <string name="connection_section_redirection">Redirection</string>
     <string name="connection_clipboard_title">Synchronisation presse-papiers bidirectionnelle</string>
     <string name="connection_clipboard_desc">Synchronise le texte copié entre le téléphone et le PC. Les images ne sont pas encore prises en charge.</string>

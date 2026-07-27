@@ -18,8 +18,8 @@ import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.core.rdp.RdpDriveRedirectionPlan
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
-import com.hanfengruyue.pocketrdp.core.rdp.RdpTransport
-import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportStats
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportPhase
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.core.rdp.planRdpDriveRedirection
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
@@ -89,8 +89,7 @@ data class SessionUiState(
     val latencyAccepted: Int = 0,
     val latencyDiscarded: Int = 0,
     /** Negotiated network transport (TCP / RDP-UDP multitransport) for the status badge (issue #2). */
-    val transport: RdpTransport = RdpTransport.UNKNOWN,
-    val transportStats: RdpTransportStats = RdpTransportStats(),
+    val transportSnapshot: RdpTransportSnapshot = RdpTransportSnapshot(),
     val targetFrameRate: Int = 0,
     /**
      * Whether this connection has folder redirection on (整盘共享). When true, SessionScreen prompts
@@ -267,6 +266,7 @@ class SessionViewModel @Inject constructor(
     private var reconnectAttempt: Int = 0
     private var reconnectJob: Job? = null
     private var certificateDecisionPending: Boolean = false
+    private var udpDowngradedForSession: Boolean = false
 
     init {
         observeEvents()
@@ -613,8 +613,15 @@ class SessionViewModel @Inject constructor(
                     val dur = (now - current.connectedAtMs) / 1000L
                     // transportInfo() is a cheap in-memory native getter. Polling each tick lets
                     // the badge flip only when a real UDP/UDP2 tunnel state appears.
-                    val transport = decodeTransport(rdpClient.transportInfo())
-                    val transportStats = rdpClient.transportStats()
+                    val transportSnapshot = rdpClient.transportSnapshot()
+                    if (!udpDowngradedForSession &&
+                        (transportSnapshot.downgradedToTcp ||
+                            transportSnapshot.phase == RdpTransportPhase.RECONNECTING_TCP)
+                    ) {
+                        udpDowngradedForSession = true
+                        lastParams = lastParams?.copy(useMultitransport = false)
+                        PocketLogger.w(TAG, "UDP tunnel failed; all app-level retries for this session are TCP-only")
+                    }
                     _state.update {
                         it.copy(
                             fps = fpsCounter.snapshot(),
@@ -629,8 +636,7 @@ class SessionViewModel @Inject constructor(
                             presentLagMs = rdpClient.presentLagMs(),
                             latencyAccepted = rdpClient.latencyAccepted(),
                             latencyDiscarded = rdpClient.latencyDiscarded(),
-                            transport = transport,
-                            transportStats = transportStats,
+                            transportSnapshot = transportSnapshot,
                         )
                     }
                 } else {
@@ -640,8 +646,7 @@ class SessionViewModel @Inject constructor(
                         current.latencyMs != -1 || current.controlLatencyMs != -1 ||
                         current.presentLagMs != -1 || current.latencyAccepted != 0 ||
                         current.latencyDiscarded != 0 ||
-                        current.transport != RdpTransport.UNKNOWN ||
-                        current.transportStats != RdpTransportStats()
+                        current.transportSnapshot != RdpTransportSnapshot()
                     if (hasStaleMetrics) {
                         _state.update {
                             it.copy(
@@ -652,8 +657,7 @@ class SessionViewModel @Inject constructor(
                                 presentLagMs = -1,
                                 latencyAccepted = 0,
                                 latencyDiscarded = 0,
-                                transport = RdpTransport.UNKNOWN,
-                                transportStats = RdpTransportStats(),
+                                transportSnapshot = RdpTransportSnapshot(),
                             )
                         }
                     }
@@ -714,23 +718,6 @@ class SessionViewModel @Inject constructor(
         thumbnailStore.save(st.connectionId, snap)
     }
 
-    /** Decode the native [RdpClient.transportInfo] bitfield. */
-    private fun decodeTransport(raw: Int): RdpTransport {
-        if (raw < 0) return RdpTransport.UNKNOWN
-        val state = raw and TRANSPORT_STATE_MASK
-        return when (state) {
-            TRANSPORT_STATE_TCP ->
-                if (raw and TRANSPORT_FLAG_UDP_FALLBACK != 0) {
-                    RdpTransport.TCP_FALLBACK
-                } else {
-                    RdpTransport.TCP
-                }
-            TRANSPORT_STATE_UDP_R -> RdpTransport.UDP_R
-            TRANSPORT_STATE_UDP_L -> RdpTransport.UDP_L
-            TRANSPORT_STATE_UDP2 -> RdpTransport.UDP2
-            else -> RdpTransport.UNKNOWN
-        }
-    }
 
     /**
      * Cap the requested dynamic-resolution size. [dynamicResMaxShortEdge] is the SHORT-edge cap in px
@@ -898,6 +885,7 @@ class SessionViewModel @Inject constructor(
             userInitiatedDisconnect = false
             certificateDecisionPending = false
             reconnectAttempt = 0
+            udpDowngradedForSession = false
             reconnectJob?.cancel()
             rdpClient.connect(params)
             // Promote the process to a foreground service NOW, while we're still visible (Android
@@ -1385,12 +1373,6 @@ class SessionViewModel @Inject constructor(
         // Store) shows ~1:1 on phones and stays ~100–200 KB. snapshot() never upscales beyond the
         // framebuffer, so a sub-1280 remote desktop just stores at its own size.
         private const val THUMB_MAX_DIM = 1280
-        private const val TRANSPORT_STATE_MASK = 0x0F
-        private const val TRANSPORT_STATE_TCP = 0x01
-        private const val TRANSPORT_STATE_UDP_R = 0x02
-        private const val TRANSPORT_STATE_UDP_L = 0x03
-        private const val TRANSPORT_STATE_UDP2 = 0x04
-        private const val TRANSPORT_FLAG_UDP_FALLBACK = 0x100
         // Dynamic-resolution default initial size (issue: 1920×1080 fallback).
         private const val DEFAULT_DYNAMIC_WIDTH = 1920
         private const val DEFAULT_DYNAMIC_HEIGHT = 1080

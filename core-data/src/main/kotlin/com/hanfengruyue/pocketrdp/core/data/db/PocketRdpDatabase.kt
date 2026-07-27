@@ -93,8 +93,7 @@ abstract class PocketRdpDatabase : RoomDatabase() {
          * v7 to v8 marks legacy ciphertext that was authenticated without record-specific AAD.
          * The repository upgrades each legacy credential after its first successful decryption,
          * binding future decryptions to host, port, username and domain. It also disables the
-         * historical multitransport default: FreeRDP 3.30 rejects client UDP bootstrap with E_ABORT,
-         * so advertising it currently only produces a TCP fallback.
+         * historical multitransport default so UDP remains explicit opt-in for existing rows.
          */
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {

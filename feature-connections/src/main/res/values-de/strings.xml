@@ -78,7 +78,7 @@
     <string name="connection_width">Breite</string>
     <string name="connection_height">Höhe</string>
     <string name="connection_multitransport_title">UDP-Multitransport (experimentell)</string>
-    <string name="connection_multitransport_desc">Das enthaltene FreeRDP 3.30 baut derzeit keinen UDP-Kanal auf. Lassen Sie dies deaktiviert; die Aktivierung handelt nur aus und fällt auf TCP zurück.</string>
+    <string name="connection_multitransport_desc">Handelt RDP-UDP/UDP2 aus. Wenn UDP nicht verfügbar ist oder ausfällt, bleibt bzw. verbindet die Sitzung über TCP. Standardmäßig aus.</string>
     <string name="connection_section_redirection">Umleitung</string>
     <string name="connection_clipboard_title">Zwischenablage beidseitig synchronisieren</string>
     <string name="connection_clipboard_desc">Synchronisiert kopierten Text zwischen Telefon und PC. Bilder werden noch nicht unterstützt.</string>

@@ -105,13 +105,8 @@ public class LibFreeRDP {
     // Native RDPEI multi-touch: forwards one touch contact (action 0=down/1=move/2=up). Requires
     // the rdpei dynamic channel (negotiated via /multitouch) — returns false until it's up.
     private static native boolean freerdp_send_touch(long inst, int contactId, int x, int y, int action);
-    // Transport bitfield (see RdpClient.transportInfo): bits 0..3 = actual transport state
-    // (TCP/UDP-R/UDP-L/UDP2), bit 8 = UDP requested but fell back to TCP, bit 9 =
-    // multitransport requested, bits 4..7 = selected security protocol.
-    private static native int freerdp_get_transport_info(long inst);
-    // UDP transport counters/diagnostics:
-    // [inBytes, outBytes, inPackets, outPackets, retransmits, failureStage, tunnelHr, socketError].
-    private static native long[] freerdp_get_transport_stats(long inst);
+    // Atomic versioned transport snapshot. The native contract is exactly 36 longs.
+    private static native long[] freerdp_get_transport_snapshot(long inst);
     public static native long freerdp_get_last_error_code(long inst);
     public static native String freerdp_get_last_error_string(long inst);
 
@@ -219,11 +214,8 @@ public class LibFreeRDP {
     public static boolean sendTouch(long inst, int contactId, int x, int y, int action) {
         return freerdp_send_touch(inst, contactId, x, y, action);
     }
-    public static int getTransportInfo(long inst) {
-        return freerdp_get_transport_info(inst);
-    }
-    public static long[] getTransportStats(long inst) {
-        return freerdp_get_transport_stats(inst);
+    public static long[] getTransportSnapshot(long inst) {
+        return freerdp_get_transport_snapshot(inst);
     }
 
     // ============================================================

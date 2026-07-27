@@ -34,9 +34,8 @@ data class ConnectionEntity(
     // 1080p roughly halves that cost. Existing connections keep their stored value (0 = uncapped);
     // users can pick 跟随设备 for full res.
     @ColumnInfo(name = "dynamic_res_max") val dynamicResMax: Int = 1080,
-    // FreeRDP 3.30 advertises the capability but its client-side handler rejects the UDP
-    // bootstrap request with E_ABORT. Keep the setting for future upstream support, but default it
-    // off so normal connections do not perform a misleading negotiation that always falls back.
+    // Opt-in RDP-UDP multitransport. It stays off for new records and existing stored records; the
+    // user must explicitly enable negotiation for each connection.
     @ColumnInfo(name = "use_multitransport") val useMultitransport: Boolean = false,
     @ColumnInfo(name = "redirect_clipboard") val redirectClipboard: Boolean = true,
     @ColumnInfo(name = "redirect_files") val redirectFiles: Boolean = false,
