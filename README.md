@@ -7,16 +7,19 @@
 
   基于 Kotlin、Jetpack Compose Material 3 与 FreeRDP 构建，支持远程桌面、H.264、动态分辨率、触控输入、剪贴板、文件重定向、远程音频与可选 RDP-UDP 多传输。
 
-  [![Stars](https://img.shields.io/github/stars/HanFengRuYue/PocketRDP?style=flat-square&logo=github&label=Stars&color=4f7cff)](https://github.com/HanFengRuYue/PocketRDP/stargazers)
-  [![Forks](https://img.shields.io/github/forks/HanFengRuYue/PocketRDP?style=flat-square&logo=github&label=Forks&color=7b61ff)](https://github.com/HanFengRuYue/PocketRDP/forks)
-  [![Issues](https://img.shields.io/github/issues/HanFengRuYue/PocketRDP?style=flat-square&logo=github&label=Issues&color=f0a202)](https://github.com/HanFengRuYue/PocketRDP/issues)
-  [![Last commit](https://img.shields.io/github/last-commit/HanFengRuYue/PocketRDP?style=flat-square&logo=git&label=Last%20commit&color=2da44e)](https://github.com/HanFengRuYue/PocketRDP/commits/main)
-  [![License](https://img.shields.io/github/license/HanFengRuYue/PocketRDP?style=flat-square&label=License&color=00897b)](LICENSE)
-  [![Repo size](https://img.shields.io/github/repo-size/HanFengRuYue/PocketRDP?style=flat-square&label=Repo%20size&color=607d8b)](https://github.com/HanFengRuYue/PocketRDP)
-
-  [![Android 12+](https://img.shields.io/badge/Android-12%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://developer.android.com/about/versions/12)
-  [![Kotlin 2.4.10](https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](gradle/libs.versions.toml)
-  [![FreeRDP 3.30.0](https://img.shields.io/badge/FreeRDP-3.30.0-2B579A?style=flat-square)](https://github.com/FreeRDP/FreeRDP/tree/3.30.0)
+  <p>
+    <a href="https://github.com/HanFengRuYue/PocketRDP/stargazers"><img src="https://img.shields.io/github/stars/HanFengRuYue/PocketRDP?style=flat-square&amp;logo=github&amp;label=Stars&amp;color=4f7cff" alt="Stars" /></a>
+    <a href="https://github.com/HanFengRuYue/PocketRDP/forks"><img src="https://img.shields.io/github/forks/HanFengRuYue/PocketRDP?style=flat-square&amp;logo=github&amp;label=Forks&amp;color=7b61ff" alt="Forks" /></a>
+    <a href="https://github.com/HanFengRuYue/PocketRDP/issues"><img src="https://img.shields.io/github/issues/HanFengRuYue/PocketRDP?style=flat-square&amp;logo=github&amp;label=Issues&amp;color=f0a202" alt="Issues" /></a>
+    <a href="https://github.com/HanFengRuYue/PocketRDP/commits/main"><img src="https://img.shields.io/github/last-commit/HanFengRuYue/PocketRDP?style=flat-square&amp;logo=git&amp;label=Last%20commit&amp;color=2da44e" alt="Last commit" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/HanFengRuYue/PocketRDP?style=flat-square&amp;label=License&amp;color=00897b" alt="License" /></a>
+    <a href="https://github.com/HanFengRuYue/PocketRDP"><img src="https://img.shields.io/github/repo-size/HanFengRuYue/PocketRDP?style=flat-square&amp;label=Repo%20size&amp;color=607d8b" alt="Repo size" /></a>
+  </p>
+  <p>
+    <a href="https://developer.android.com/about/versions/12"><img src="https://img.shields.io/badge/Android-12%2B-3DDC84?style=flat-square&amp;logo=android&amp;logoColor=white" alt="Android 12+" /></a>
+    <a href="gradle/libs.versions.toml"><img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?style=flat-square&amp;logo=kotlin&amp;logoColor=white" alt="Kotlin 2.4.10" /></a>
+    <a href="https://github.com/FreeRDP/FreeRDP/tree/3.30.0"><img src="https://img.shields.io/badge/FreeRDP-3.30.0-2B579A?style=flat-square" alt="FreeRDP 3.30.0" /></a>
+  </p>
 
   [功能特色](#-功能特色) · [快速开始](#-快速开始) · [项目架构](#-项目架构) · [原生构建](#-freerdp-原生构建) · [参与贡献](#-参与贡献)
 </div>
