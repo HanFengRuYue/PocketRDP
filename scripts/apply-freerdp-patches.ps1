@@ -15,6 +15,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $freeRdpDir = Join-Path $repoRoot "third_party\FreeRDP"
 $patchPath = Join-Path $repoRoot "patches\freerdp\pocketrdp-3.30.patch"
 $expectedBase = "6b107f0aadbabc47941c5a5b893b88c01792af6d"
+$expectedIntegratedCommit = "4ff131db41ef8159b9b234be23f625c98a4821ba"
 $expectedPatchSha256 = "1c662ed1f34e710bcd1665e931600d7a0c42fdbedc63e59521b6f0c5b666ecee"
 
 if (-not (Test-Path -LiteralPath (Join-Path $freeRdpDir ".git"))) {
@@ -32,14 +33,21 @@ $head = (& git -C $freeRdpDir rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "Could not read the FreeRDP submodule HEAD."
 }
-if ($head -ne $expectedBase) {
-    throw "FreeRDP must be at official 3.30.0 commit $expectedBase; found $head."
-}
-
 $status = @(& git -C $freeRdpDir status --porcelain --untracked-files=all)
 if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect the FreeRDP submodule worktree."
 }
+if ($head -eq $expectedIntegratedCommit) {
+    if ($status.Count -gt 0) {
+        throw "The integrated PocketRDP FreeRDP commit has uncommitted changes."
+    }
+    Write-Host "PocketRDP FreeRDP custom commit is checked out cleanly."
+    exit 0
+}
+if ($head -ne $expectedBase) {
+    throw "FreeRDP must be at PocketRDP commit $expectedIntegratedCommit or official 3.30.0 base $expectedBase; found $head."
+}
+
 if ($status.Count -gt 0) {
     # A reverse-applicable patch is not sufficient proof: the worktree could contain the expected
     # patch plus an unrelated tracked or untracked change. Require the complete HEAD-relative diff
