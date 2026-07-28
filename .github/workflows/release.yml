@@ -1,0 +1,260 @@
+name: Release signed APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable MAJOR.MINOR.PATCH version used for build validation only
+        required: true
+        default: 1.0.0
+        type: string
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: pocketrdp-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build and verify signed APK
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      asset_name: ${{ steps.metadata.outputs.asset_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      version_code: ${{ steps.metadata.outputs.version_code }}
+      version_name: ${{ steps.metadata.outputs.version_name }}
+    steps:
+      - name: Resolve and validate release version
+        id: metadata
+        shell: bash
+        env:
+          RAW_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          raw_version = os.environ["RAW_VERSION"].strip()
+          is_tag_build = os.environ["GITHUB_EVENT_NAME"] == "push"
+          pattern = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+          if is_tag_build:
+              if not raw_version.startswith("v"):
+                  raise SystemExit("Release tags must start with 'v'.")
+              version_name = raw_version[1:]
+          else:
+              version_name = raw_version
+
+          match = re.fullmatch(pattern, version_name)
+          if not match:
+              raise SystemExit("Version must use stable MAJOR.MINOR.PATCH SemVer without leading zeroes.")
+
+          major, minor, patch = (int(value) for value in match.groups())
+          if minor > 999 or patch > 999:
+              raise SystemExit("MINOR and PATCH must each be between 0 and 999.")
+          version_code = major * 1_000_000 + minor * 1_000 + patch
+          if not 1 <= version_code <= 2_100_000_000:
+              raise SystemExit("Computed Android versionCode must be between 1 and 2100000000.")
+
+          release_tag = f"v{version_name}"
+          asset_name = f"PocketRDP-{release_tag}.apk"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"asset_name={asset_name}\n")
+              output.write(f"release_tag={release_tag}\n")
+              output.write(f"version_code={version_code}\n")
+              output.write(f"version_name={version_name}\n")
+          PY
+
+      # actions/checkout v6
+      - name: Check out PocketRDP and FreeRDP
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: recursive
+
+      # actions/setup-java v5
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # gradle/actions/setup-gradle v6
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'push' }}
+
+      - name: Install audited Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "ndk;29.0.14206865"
+
+      - name: Decode release keystore
+        id: keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" || -z "$STORE_PASSWORD" ]]; then
+            echo "All four Android release-signing secrets must be configured." >&2
+            exit 1
+          fi
+          keystore_path="$RUNNER_TEMP/pocketrdp-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          test -s "$keystore_path"
+          echo "path=$keystore_path" >> "$GITHUB_OUTPUT"
+
+      - name: Verify audited FreeRDP integration
+        shell: pwsh
+        run: ./scripts/apply-freerdp-patches.ps1 -CheckOnly
+
+      - name: Test, lint, and assemble signed Release APK
+        shell: bash
+        env:
+          POCKETRDP_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          POCKETRDP_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          POCKETRDP_RELEASE_STORE_FILE: ${{ steps.keystore.outputs.path }}
+          POCKETRDP_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          POCKETRDP_VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
+          POCKETRDP_VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
+        run: |
+          ./gradlew \
+            testDebugUnitTest \
+            detekt \
+            lintRelease \
+            :app:assembleRelease \
+            --stacktrace \
+            --no-configuration-cache \
+            --no-daemon \
+            --console=plain
+
+      - name: Stage release payload
+        shell: bash
+        env:
+          ASSET_NAME: ${{ steps.metadata.outputs.asset_name }}
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/$ASSET_NAME"
+          cp app/build/outputs/apk/release/app-release.apk.idsig "dist/$ASSET_NAME.idsig"
+
+      - name: Verify signed APK package
+        shell: pwsh
+        env:
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_CERT_SHA256)) {
+              throw "Repository variable ANDROID_RELEASE_CERT_SHA256 is not configured."
+          }
+          ./scripts/verify-release-apk.ps1 `
+            -ApkPath "dist/${{ steps.metadata.outputs.asset_name }}" `
+            -MappingPath "app/build/outputs/mapping/release/mapping.txt" `
+            -ExpectedVersionName "${{ steps.metadata.outputs.version_name }}" `
+            -ExpectedVersionCode ${{ steps.metadata.outputs.version_code }} `
+            -ExpectedCertSha256 $env:EXPECTED_CERT_SHA256
+
+      # actions/upload-artifact v7
+      - name: Upload verified release payload
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pocketrdp-release-${{ steps.metadata.outputs.release_tag }}
+          path: |
+            dist/${{ steps.metadata.outputs.asset_name }}
+            dist/${{ steps.metadata.outputs.asset_name }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Remove temporary keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/pocketrdp-release.jks"
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # actions/download-artifact v7
+      - name: Download verified release payload
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: pocketrdp-release-${{ needs.build.outputs.release_tag }}
+          path: dist
+
+      - name: Recheck transferred artifact
+        shell: bash
+        working-directory: dist
+        run: sha256sum --check "${{ needs.build.outputs.asset_name }}.sha256"
+
+      - name: Prepare release notes
+        id: notes
+        shell: bash
+        env:
+          ASSET_NAME: ${{ needs.build.outputs.asset_name }}
+          VERSION_CODE: ${{ needs.build.outputs.version_code }}
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+        run: |
+          checksum="$(cut -d ' ' -f 1 "dist/$ASSET_NAME.sha256")"
+          notes_path="$RUNNER_TEMP/pocketrdp-release-notes.md"
+          cat > "$notes_path" <<EOF
+          此发行版由 GitHub Actions 使用 PocketRDP 正式签名证书自动构建并完成包级验证。
+
+          - Android 版本：\`$VERSION_NAME\`（versionCode \`$VERSION_CODE\`）
+          - 源提交：[\`${GITHUB_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
+          - APK SHA-256：\`$checksum\`
+
+          > 自动化构建与包级检查已通过；Windows/FRP 实机互操作仍待现场确认。
+          EOF
+          echo "path=$notes_path" >> "$GITHUB_OUTPUT"
+
+      - name: Create or resume draft and publish Release
+        shell: bash
+        env:
+          ASSET_NAME: ${{ needs.build.outputs.asset_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+        run: |
+          existing_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [[ "$existing_draft" == "false" ]]; then
+            echo "Release $RELEASE_TAG is already published; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          if [[ "$existing_draft" == "true" ]]; then
+            gh release upload "$RELEASE_TAG" \
+              "dist/$ASSET_NAME#PocketRDP $VERSION_NAME APK" \
+              "dist/$ASSET_NAME.sha256#SHA-256 checksum" \
+              --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          else
+            gh release create "$RELEASE_TAG" \
+              "dist/$ASSET_NAME#PocketRDP $VERSION_NAME APK" \
+              "dist/$ASSET_NAME.sha256#SHA-256 checksum" \
+              --verify-tag \
+              --generate-notes \
+              --latest \
+              --title "PocketRDP $RELEASE_TAG" \
+              --notes-file "${{ steps.notes.outputs.path }}"
+          fi
+
+          gh release view "$RELEASE_TAG" --json isDraft,isImmutable,name,tagName,url
