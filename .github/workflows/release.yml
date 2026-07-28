@@ -95,8 +95,13 @@ jobs:
       - name: Install audited Android SDK packages
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install \
+          sdkmanager_path="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager_path" ]]; then
+            echo "sdkmanager was not found under ANDROID_SDK_ROOT or ANDROID_HOME." >&2
+            exit 1
+          fi
+          yes | "$sdkmanager_path" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager_path" --install \
             "platforms;android-37.0" \
             "build-tools;37.0.0" \
             "ndk;29.0.14206865"
