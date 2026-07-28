@@ -235,6 +235,7 @@ jobs:
         shell: bash
         env:
           ASSET_NAME: ${{ needs.build.outputs.asset_name }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           VERSION_NAME: ${{ needs.build.outputs.version_name }}
