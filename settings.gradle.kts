@@ -1,27 +1,50 @@
 pluginManagement {
+    val isGitHubActions = System.getenv("GITHUB_ACTIONS").equals("true", ignoreCase = true)
+
     repositories {
+        if (isGitHubActions) {
+            google {
+                content {
+                    includeGroupByRegex("com\\.android.*")
+                    includeGroupByRegex("com\\.google.*")
+                    includeGroupByRegex("androidx.*")
+                }
+            }
+            mavenCentral()
+            gradlePluginPortal()
+        }
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/public")
         maven("https://maven.aliyun.com/repository/gradle-plugin")
-        google {
-            content {
-                includeGroupByRegex("com\\.android.*")
-                includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx.*")
+        if (!isGitHubActions) {
+            google {
+                content {
+                    includeGroupByRegex("com\\.android.*")
+                    includeGroupByRegex("com\\.google.*")
+                    includeGroupByRegex("androidx.*")
+                }
             }
+            mavenCentral()
+            gradlePluginPortal()
         }
-        mavenCentral()
-        gradlePluginPortal()
     }
 }
 
 dependencyResolutionManagement {
+    val isGitHubActions = System.getenv("GITHUB_ACTIONS").equals("true", ignoreCase = true)
+
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        if (isGitHubActions) {
+            google()
+            mavenCentral()
+        }
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/public")
-        google()
-        mavenCentral()
+        if (!isGitHubActions) {
+            google()
+            mavenCentral()
+        }
     }
 }
 
