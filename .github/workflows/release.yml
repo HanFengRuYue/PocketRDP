@@ -227,7 +227,6 @@ jobs:
           - 源提交：[\`${GITHUB_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           - APK SHA-256：\`$checksum\`
 
-          > 自动化构建与包级检查已通过；Windows/FRP 实机互操作仍待现场确认。
           EOF
           echo "path=$notes_path" >> "$GITHUB_OUTPUT"
 
