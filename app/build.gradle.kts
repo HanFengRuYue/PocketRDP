@@ -12,9 +12,57 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 val releaseSigningKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
-val releaseStorePath = keystoreProps.getProperty("storeFile")
-val releaseSigningReady = releaseSigningKeys.all { !keystoreProps.getProperty(it).isNullOrBlank() } &&
+val releaseSigningEnvironment = mapOf(
+    "storeFile" to "POCKETRDP_RELEASE_STORE_FILE",
+    "storePassword" to "POCKETRDP_RELEASE_STORE_PASSWORD",
+    "keyAlias" to "POCKETRDP_RELEASE_KEY_ALIAS",
+    "keyPassword" to "POCKETRDP_RELEASE_KEY_PASSWORD",
+)
+val environmentSigningValues = releaseSigningEnvironment.mapValues { (_, environmentName) ->
+    providers.environmentVariable(environmentName).orNull?.takeIf { it.isNotBlank() }
+}
+val environmentSigningRequested = environmentSigningValues.values.any { it != null }
+if (environmentSigningRequested && environmentSigningValues.values.any { it == null }) {
+    throw GradleException(
+        "PocketRDP CI release signing variables must be provided as a complete set. " +
+            "The release variant remains unavailable when the set is incomplete.",
+    )
+}
+fun releaseSigningValue(key: String): String? =
+    if (environmentSigningRequested) environmentSigningValues.getValue(key) else keystoreProps.getProperty(key)
+
+val releaseStorePath = releaseSigningValue("storeFile")
+val releaseSigningReady = releaseSigningKeys.all { !releaseSigningValue(it).isNullOrBlank() } &&
     releaseStorePath?.let { rootProject.file(it).isFile } == true
+
+val ciVersionName = providers.environmentVariable("POCKETRDP_VERSION_NAME").orNull?.takeIf { it.isNotBlank() }
+val ciVersionCode = providers.environmentVariable("POCKETRDP_VERSION_CODE").orNull?.takeIf { it.isNotBlank() }
+if ((ciVersionName == null) != (ciVersionCode == null)) {
+    throw GradleException("POCKETRDP_VERSION_NAME and POCKETRDP_VERSION_CODE must be provided together.")
+}
+val releaseVersionName = ciVersionName ?: "1.0.0"
+val releaseVersionMatch = Regex(
+    "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)",
+).matchEntire(releaseVersionName) ?: throw GradleException(
+    "PocketRDP release version names must use stable MAJOR.MINOR.PATCH SemVer.",
+)
+val releaseVersionParts = releaseVersionMatch.groupValues.drop(1).map { component ->
+    component.toLongOrNull() ?: throw GradleException("PocketRDP release version components are too large.")
+}
+val (releaseMajor, releaseMinor, releasePatch) = releaseVersionParts
+if (releaseMinor > 999 || releasePatch > 999) {
+    throw GradleException("PocketRDP MINOR and PATCH versions must each be between 0 and 999.")
+}
+val derivedVersionCode = releaseMajor * 1_000_000L + releaseMinor * 1_000L + releasePatch
+if (derivedVersionCode !in 1L..2_100_000_000L) {
+    throw GradleException("The PocketRDP SemVer-derived version code must be between 1 and 2100000000.")
+}
+val releaseVersionCode = ciVersionCode?.toIntOrNull() ?: derivedVersionCode.toInt()
+if (releaseVersionCode.toLong() != derivedVersionCode) {
+    throw GradleException(
+        "POCKETRDP_VERSION_CODE must equal MAJOR*1000000 + MINOR*1000 + PATCH.",
+    )
+}
 fun isReleaseArtifactTask(taskName: String): Boolean {
     val leaf = taskName.substringAfterLast(':').lowercase()
     val localArtifact = leaf.contains("release") &&
@@ -41,17 +89,17 @@ android {
         applicationId = "com.hanfengruyue.pocketrdp"
         minSdk = 31
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
     }
 
     signingConfigs {
         if (releaseSigningReady) {
             create("release") {
                 storeFile = rootProject.file(requireNotNull(releaseStorePath))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+                storePassword = releaseSigningValue("storePassword")
+                keyAlias = releaseSigningValue("keyAlias")
+                keyPassword = releaseSigningValue("keyPassword")
                 // Keep every supported signing scheme explicit. Android 12+ verifies the v3
                 // block; v1/v2 remain present for tooling and distribution compatibility, and
                 // v4 produces the companion .idsig used by incremental installation.

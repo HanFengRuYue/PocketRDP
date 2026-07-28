@@ -12,8 +12,8 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = $utf8NoBom
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$freeRdpDir = Join-Path $repoRoot "third_party\FreeRDP"
-$patchPath = Join-Path $repoRoot "patches\freerdp\pocketrdp-3.30.patch"
+$freeRdpDir = Join-Path $repoRoot "third_party/FreeRDP"
+$patchPath = Join-Path $repoRoot "patches/freerdp/pocketrdp-3.30.patch"
 $expectedBase = "6b107f0aadbabc47941c5a5b893b88c01792af6d"
 $expectedIntegratedCommit = "4ff131db41ef8159b9b234be23f625c98a4821ba"
 $expectedPatchSha256 = "1c662ed1f34e710bcd1665e931600d7a0c42fdbedc63e59521b6f0c5b666ecee"
