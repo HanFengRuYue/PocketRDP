@@ -81,6 +81,19 @@ class RdpClient @Inject constructor(
     @Volatile private var certificatePromptOutstanding: Boolean = false
     @Volatile private var certificateFatalFailureOutstanding: Boolean = false
 
+    // RDP-UDP diagnostics are derived from the native atomic snapshot and written through
+    // PocketLogger so a user-exported application log contains the negotiation history. Only
+    // protocol state, numeric errors and aggregate counters are retained; endpoint/security data
+    // is never accepted by the formatter.
+    private val transportDiagnosticLock = Any()
+    private var multitransportRequestedForConnection: Boolean = false
+    private var transportConnectedAtMs: Long = 0L
+    private var transportRequestObserved: Boolean = false
+    private var missingTransportRequestLogged: Boolean = false
+    private var incompatibleTransportSnapshotLogged: Boolean = false
+    private var lastLoggedTransportControl: String? = null
+    private var lastTransportTrafficLogMs: Long = 0L
+
     // Host/port of the active session — used by [measureLatencyMs] for the latency probe.
     @Volatile private var lastHost: String? = null
     @Volatile private var lastPort: Int = DEFAULT_RDP_PORT
@@ -147,7 +160,7 @@ class RdpClient @Inject constructor(
         PocketLogger.i(
             TAG,
             "connect() endpoint=<redacted> h264=${params.useH264} gfx=${params.useGfx} " +
-                "dynRes=${params.dynamicResolution}",
+                "dynRes=${params.dynamicResolution} multitransport=${params.useMultitransport}",
         )
         if (!LibFreeRDP.isNativeReady()) {
             PocketLogger.e(TAG, "native FreeRDP not ready — refusing connect")
@@ -164,6 +177,16 @@ class RdpClient @Inject constructor(
             PocketLogger.w(TAG, "connect() called while previous native instance still alive — closing it first")
             closeNativeInstance(previous)
             buffer.release()
+        }
+
+        resetTransportDiagnostics(params.useMultitransport)
+        if (params.useMultitransport) {
+            PocketLogger.i(
+                TAG,
+                "RDP-UDP diagnostic: enabled for this attempt; waiting for a server multitransport request",
+            )
+        } else {
+            PocketLogger.i(TAG, "RDP-UDP diagnostic: disabled for this attempt; TCP-only requested")
         }
 
         emit(RdpEvent.Connecting)
@@ -221,6 +244,7 @@ class RdpClient @Inject constructor(
             val ok = withSpecificLiveInstance(inst) { LibFreeRDP.connect(inst) } ?: false
             if (!ok) {
                 val failure = withSpecificLiveInstance(inst) {
+                    captureAndLogTransportSnapshot(inst, source = "connect-return", force = true)
                     LibFreeRDP.freerdp_get_last_error_code(inst) to
                         LibFreeRDP.freerdp_get_last_error_string(inst)
                 }
@@ -499,7 +523,7 @@ class RdpClient @Inject constructor(
     /** One atomic, versioned view of TCP plus both possible RDP-UDP tunnels. */
     fun transportSnapshot(): RdpTransportSnapshot {
         val raw = withLiveInstance { inst -> LibFreeRDP.getTransportSnapshot(inst) }
-        return RdpTransportSnapshot.decode(raw)
+        return decodeAndLogTransportSnapshot(raw, source = "metrics-poll", force = false)
     }
 
     fun sendClipboard(data: String) {
@@ -588,6 +612,135 @@ class RdpClient @Inject constructor(
         }
     }
 
+    private fun resetTransportDiagnostics(requestedByApp: Boolean) {
+        synchronized(transportDiagnosticLock) {
+            multitransportRequestedForConnection = requestedByApp
+            transportConnectedAtMs = 0L
+            transportRequestObserved = false
+            missingTransportRequestLogged = false
+            incompatibleTransportSnapshotLogged = false
+            lastLoggedTransportControl = null
+            lastTransportTrafficLogMs = 0L
+        }
+    }
+
+    private fun captureAndLogTransportSnapshot(
+        inst: Long,
+        source: String,
+        force: Boolean,
+    ): RdpTransportSnapshot = decodeAndLogTransportSnapshot(
+        raw = LibFreeRDP.getTransportSnapshot(inst),
+        source = source,
+        force = force,
+    )
+
+    private fun decodeAndLogTransportSnapshot(
+        raw: LongArray?,
+        source: String,
+        force: Boolean,
+    ): RdpTransportSnapshot {
+        val snapshot = RdpTransportSnapshot.decode(raw)
+        val shouldTrack = synchronized(transportDiagnosticLock) {
+            multitransportRequestedForConnection || snapshot.hasTransportEvidence()
+        }
+        if (!shouldTrack || raw == null) return snapshot
+
+        if (!snapshot.knownVersion) {
+            val shouldLog = synchronized(transportDiagnosticLock) {
+                if (incompatibleTransportSnapshotLogged) {
+                    false
+                } else {
+                    incompatibleTransportSnapshotLogged = true
+                    true
+                }
+            }
+            if (shouldLog) {
+                val version = raw.firstOrNull()?.toString() ?: "missing"
+                PocketLogger.w(
+                    TAG,
+                    "RDP-UDP diagnostic source=$source incompatible snapshot " +
+                        "fieldCount=${raw.size} version=$version " +
+                        "expectedFieldCount=${RdpTransportSnapshot.FIELD_COUNT} " +
+                        "expectedVersion=${RdpTransportSnapshot.VERSION}; treating transport as TCP/unknown",
+                )
+            }
+            return snapshot
+        }
+
+        logTransportSnapshot(snapshot, source, force)
+        return snapshot
+    }
+
+    private fun logTransportSnapshot(
+        snapshot: RdpTransportSnapshot,
+        source: String,
+        force: Boolean,
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        val control = snapshot.controlDiagnostic()
+        var logMissingRequest = false
+        var logControlState = false
+        var logTrafficHeartbeat = false
+        synchronized(transportDiagnosticLock) {
+            if (snapshot.hasTransportEvidence()) transportRequestObserved = true
+            if (markMissingTransportRequestIfOverdue(now)) {
+                logMissingRequest = true
+            }
+
+            if (force || control != lastLoggedTransportControl) {
+                lastLoggedTransportControl = control
+                lastTransportTrafficLogMs = now
+                logControlState = true
+            } else if (snapshot.udpActive &&
+                now - lastTransportTrafficLogMs >= TRANSPORT_TRAFFIC_LOG_INTERVAL_MS
+            ) {
+                lastTransportTrafficLogMs = now
+                logTrafficHeartbeat = true
+            }
+        }
+
+        if (logMissingRequest) {
+            PocketLogger.w(
+                TAG,
+                "RDP-UDP diagnostic: no server multitransport request was observed within " +
+                    "${MULTITRANSPORT_REQUEST_WAIT_MS / MILLIS_PER_SECOND}s after TCP connected; " +
+                    "the server or network path may not be offering RDP-UDP",
+            )
+        }
+
+        if (logControlState) {
+            val message =
+                "RDP-UDP diagnostic source=$source $control; ${snapshot.trafficDiagnostic()}"
+            val failed = snapshot.failure != RdpTransportFailure.NONE ||
+                snapshot.phase == RdpTransportPhase.UDP_FAILED ||
+                snapshot.phase == RdpTransportPhase.RECONNECTING_TCP ||
+                snapshot.downgradedToTcp
+            if (failed) PocketLogger.w(TAG, message) else PocketLogger.i(TAG, message)
+        } else if (logTrafficHeartbeat) {
+            PocketLogger.d(
+                TAG,
+                "RDP-UDP traffic heartbeat ${snapshot.trafficDiagnostic()}",
+            )
+        }
+    }
+
+    /** Must be called while [transportDiagnosticLock] is held. */
+    private fun markMissingTransportRequestIfOverdue(now: Long): Boolean {
+        if (!multitransportRequestedForConnection ||
+            transportRequestObserved ||
+            missingTransportRequestLogged
+        ) {
+            return false
+        }
+        if (transportConnectedAtMs <= 0L ||
+            now - transportConnectedAtMs < MULTITRANSPORT_REQUEST_WAIT_MS
+        ) {
+            return false
+        }
+        missingTransportRequestLogged = true
+        return true
+    }
+
     private val eventListener = object : LibFreeRDP.EventListener {
         override fun OnPreConnect(inst: Long) {
             withSpecificLiveInstance(inst) {
@@ -599,12 +752,17 @@ class RdpClient @Inject constructor(
                 certificatePromptOutstanding = false
                 certificateFatalFailureOutstanding = false
                 PocketLogger.i(TAG, "OnConnectionSuccess inst=$inst")
+                synchronized(transportDiagnosticLock) {
+                    transportConnectedAtMs = SystemClock.elapsedRealtime()
+                }
+                captureAndLogTransportSnapshot(inst, source = "connected", force = true)
                 sessionRegistry.markConnected(this@RdpClient)
                 emit(RdpEvent.Connected)
             }
         }
         override fun OnConnectionFailure(inst: Long) {
             val handled = withSpecificLiveInstance(inst) {
+                captureAndLogTransportSnapshot(inst, source = "connection-failure", force = true)
                 when (
                     certificateTerminalDisposition(
                         promptOutstanding = certificatePromptOutstanding,
@@ -655,6 +813,7 @@ class RdpClient @Inject constructor(
         }
         override fun OnDisconnected(inst: Long) {
             val handled = withSpecificLiveInstance(inst) {
+                captureAndLogTransportSnapshot(inst, source = "disconnected", force = true)
                 // A certificate callback can reject the connection before FreeRDP's main event
                 // loop starts. Depending on the native exit status, that rejection can surface as
                 // OnDisconnected rather than OnConnectionFailure. Preserve the certificate
@@ -961,6 +1120,14 @@ class RdpClient @Inject constructor(
         private const val PRESENT_LAG_MAX_MS = 1000L
         // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
         private const val GFX_LOG_INTERVAL_MS = 2000L
+        // A server normally sends its multitransport request shortly after the TCP desktop becomes
+        // active. Keep this long enough to avoid warning during ordinary channel startup, but short
+        // enough that a single exported reproduction log clearly shows a missing request.
+        private const val MULTITRANSPORT_REQUEST_WAIT_MS = 10_000L
+        private const val MILLIS_PER_SECOND = 1_000L
+        // Active tunnel counters are useful evidence, but a 1 Hz line would rotate away the actual
+        // negotiation. State transitions log immediately; steady traffic is sampled at this rate.
+        private const val TRANSPORT_TRAFFIC_LOG_INTERVAL_MS = 30_000L
         private const val MAX_CLIPBOARD_CHARS = 256 * 1024
         private const val MAX_CURSOR_DIMENSION = 512
     }

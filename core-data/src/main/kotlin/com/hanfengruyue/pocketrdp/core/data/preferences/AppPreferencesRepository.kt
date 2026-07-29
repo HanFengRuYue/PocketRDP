@@ -189,7 +189,7 @@ const val DEFAULT_CHROME_ALPHA = 0.7f
 private const val MIN_ALPHA = 0f
 private const val MAX_ALPHA = 1f
 
-const val DEFAULT_SIMULATED_CURSOR_SCALE = 1f
+const val DEFAULT_SIMULATED_CURSOR_SCALE = 1.5f
 const val MIN_SIMULATED_CURSOR_SCALE = 0.75f
 const val MAX_SIMULATED_CURSOR_SCALE = 2f
 

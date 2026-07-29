@@ -5,6 +5,11 @@ import org.junit.Test
 
 class AppPreferencesValidationTest {
     @Test
+    fun simulatedCursorDefaultsToOneHundredFiftyPercent() {
+        assertEquals(1.5f, DEFAULT_SIMULATED_CURSOR_SCALE)
+    }
+
+    @Test
     fun nonFiniteValuesFallBackToDefault() {
         assertEquals(0.7f, sanitizeFinitePreference(Float.NaN, 0.7f, 0f, 1f))
         assertEquals(0.7f, sanitizeFinitePreference(Float.POSITIVE_INFINITY, 0.7f, 0f, 1f))

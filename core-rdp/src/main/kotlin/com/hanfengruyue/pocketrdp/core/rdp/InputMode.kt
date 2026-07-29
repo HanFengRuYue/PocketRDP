@@ -146,6 +146,7 @@ data class RdpTransportSnapshot(
 ) {
     val udpActive: Boolean get() = knownVersion && phase == RdpTransportPhase.ACTIVE && activeMask != 0L
     val downgradedToTcp: Boolean get() = flags and FLAG_DOWNGRADED_TO_TCP != 0L
+    val reconnectRequested: Boolean get() = flags and FLAG_RECONNECT_REQUESTED != 0L
 
     companion object {
         const val FIELD_COUNT = 36
@@ -154,6 +155,7 @@ data class RdpTransportSnapshot(
         const val MASK_UDP_L = 2L
         const val MASK_UDP2 = 4L
         const val FLAG_DOWNGRADED_TO_TCP = 1L
+        const val FLAG_RECONNECT_REQUESTED = 2L
 
         fun decode(raw: LongArray?): RdpTransportSnapshot {
             if (raw == null || raw.size != FIELD_COUNT || raw[0] != VERSION) return RdpTransportSnapshot()

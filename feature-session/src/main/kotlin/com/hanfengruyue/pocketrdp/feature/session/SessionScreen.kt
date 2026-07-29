@@ -61,8 +61,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
@@ -916,6 +914,15 @@ private const val MIN_CHROME_ALPHA = 0f
 private const val MAX_CHROME_ALPHA = 1f
 private val TOOLBAR_BG = Color.Black.copy(alpha = CHROME_ALPHA)
 private val TOOLBAR_CONTENT = Color.White
+private val TOOLBAR_KEY_FILL = Color.White.copy(alpha = 0.12f)
+private val TOOLBAR_KEY_BORDER = Color.White.copy(alpha = 0.68f)
+private val TOOLBAR_COMBO_FILL = Color(0xFF3569B8).copy(alpha = 0.72f)
+private val TOOLBAR_COMBO_BORDER = Color(0xFFA9CBFF)
+private val TOOLBAR_ACTION_FILL = Color(0xFF187A68).copy(alpha = 0.78f)
+private val TOOLBAR_ACTION_BORDER = Color(0xFF92E5D3)
+private val TOOLBAR_MODIFIER_FILL = Color(0xFF51478B).copy(alpha = 0.78f)
+private val TOOLBAR_MODIFIER_BORDER = Color(0xFFC6BCFF)
+private val TOOLBAR_MODIFIER_ACTIVE = Color(0xFFC6BCFF)
 private const val GLASS_EDGE_ALPHA = 0.22f
 private const val GLASS_HIGHLIGHT_ALPHA = 0.14f
 private const val GLASS_SHADOW_ALPHA = 0.16f
@@ -934,9 +941,6 @@ private const val DEFAULT_CURSOR_TAIL_OUTER_Y = 24f
 private const val DEFAULT_CURSOR_SHAFT_RIGHT_X = 12f
 private const val DEFAULT_CURSOR_RIGHT_X = 19f
 private const val DEFAULT_CURSOR_OUTLINE_WIDTH = 2f
-// Outline alpha for an inactive (un-pressed) key pill on the translucent black bar.
-private const val KEY_BORDER_ALPHA = 0.55f
-
 private enum class GlassChromeEdge { Top, Bottom }
 
 @Composable
@@ -1326,6 +1330,23 @@ private const val VK_V = 0x56
 private const val VK_X = 0x58
 private const val VK_Z = 0x5A
 
+private val letterKeyRows: List<List<ToolbarKeySpec>> = ('A'..'Z')
+    .map { letter -> ToolbarKeySpec("key_${letter.lowercaseChar()}", letter.toString(), letter.code) }
+    .chunked(TOOLBAR_GRID_COLUMNS)
+
+private val numberKeyRows: List<List<ToolbarKeySpec>> = ('0'..'9')
+    .map { digit -> ToolbarKeySpec("key_$digit", digit.toString(), digit.code) }
+    .chunked(TOOLBAR_GRID_COLUMNS)
+
+private val commonChordKeyRows: List<List<ToolbarKeySpec>> = listOf(
+    listOf(
+        ToolbarKeySpec("key_space", "Space", ScancodeMap.VK.SPACE),
+        ToolbarKeySpec("key_esc", "Esc", ScancodeMap.VK.ESCAPE),
+        ToolbarKeySpec("key_tab", "Tab", ScancodeMap.VK.TAB),
+        ToolbarKeySpec("key_enter", "Enter", ScancodeMap.VK.RETURN),
+    ),
+)
+
 private val quickComboRows: List<List<ToolbarComboSpec>> = listOf(
     listOf(
         ToolbarComboSpec("combo_ctrl_c", "Ctrl+C", VK_C, ScancodeMap.Modifier.CTRL),
@@ -1379,6 +1400,14 @@ private data class ToolbarComboSpec(
 
 private data class ToolbarModifierSpec(val id: String, val label: String, val flag: Int)
 
+private data class ToolbarExpandedActions(
+    val onPage: (ToolbarPage) -> Unit,
+    val onLongKey: (ToolbarKeySpec) -> Unit,
+    val onEditQuickRow: () -> Unit,
+    val onAddQuickCombo: () -> Unit,
+    val onMomentaryAction: () -> Unit,
+)
+
 private data class ToolbarActionSpec(
     val id: String,
     val label: String,
@@ -1392,7 +1421,7 @@ private val allToolbarActions: List<ToolbarActionSpec> = buildList {
     toolbarModifierSpecs.forEach { spec ->
         add(ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag))
     }
-    (quickKeyRows + navigationKeyRows + functionKeyRows).flatten().forEach { key ->
+    (quickKeyRows + navigationKeyRows + functionKeyRows + letterKeyRows + numberKeyRows).flatten().forEach { key ->
         add(ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk))
     }
     quickComboRows.flatten().forEach { combo ->
@@ -1409,7 +1438,8 @@ private val allToolbarActions: List<ToolbarActionSpec> = buildList {
 }.distinctBy { it.id }
 
 private val toolbarActionsById: Map<String, ToolbarActionSpec> = allToolbarActions.associateBy { it.id }
-private val chordKeyActions: List<ToolbarActionSpec> = (quickKeyRows + navigationKeyRows + functionKeyRows)
+private val chordKeyActions: List<ToolbarActionSpec> =
+    (commonChordKeyRows + letterKeyRows + numberKeyRows + navigationKeyRows + functionKeyRows)
     .flatten()
     .distinctBy { it.id }
     .map { key -> ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk) }
@@ -1425,30 +1455,22 @@ private fun sanitizeQuickToolbarActionIds(ids: List<String>): List<String> {
 private fun resolveToolbarAction(id: String): ToolbarActionSpec? =
     toolbarActionsById[id] ?: parseToolbarChordAction(id)
 
-private fun encodeToolbarChordId(modifierMask: Int, keyId: String): String =
-    "chord_${modifierMask}_$keyId"
-
 private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
-    if (!id.startsWith("chord_")) return null
-    val payload = id.removePrefix("chord_")
-    val separator = payload.indexOf('_')
-    if (separator <= 0 || separator == payload.lastIndex) return null
-    val mask = payload.substring(0, separator).toIntOrNull() ?: return null
-    if (mask == 0) return null
-    val keyId = payload.substring(separator + 1)
-    val key = chordKeyActions.firstOrNull { it.id == keyId } ?: return null
+    val encoded = decodeToolbarChordId(id) ?: return null
+    val key = chordKeyActions.firstOrNull { it.id == encoded.keyId } ?: return null
     val vk = key.vk ?: return null
     return ToolbarActionSpec(
         id = id,
-        label = buildChordLabel(mask, key.label),
+        label = buildChordLabel(encoded.modifierMask, key.label),
         vk = vk,
-        modifiers = mask,
+        modifiers = encoded.modifierMask,
     )
 }
 
 /**
  * Function-key toolbar shown while the soft keyboard is up. It deliberately avoids horizontal scrolling:
- * fixed pages keep every key tappable, while long-pressing any regular key opens a one-shot chord builder.
+ * fixed pages keep every key tappable. The quick-row editor exposes a guided chord builder, while
+ * long-pressing any regular key remains a shortcut for sending a one-shot chord.
  * The background layer consumes only the empty gaps so toolbar touches never leak into the session canvas.
  */
 @Composable
@@ -1471,11 +1493,13 @@ private fun SessionToolbar(
         var page by remember { mutableStateOf(ToolbarPage.QUICK) }
         var expanded by remember { mutableStateOf(false) }
         var editingQuickRow by remember { mutableStateOf(false) }
+        var addingQuickCombo by remember { mutableStateOf(false) }
         var comboTarget by remember { mutableStateOf<ToolbarKeySpec?>(null) }
         var comboMask by remember { mutableIntStateOf(ScancodeMap.Modifier.CTRL) }
         val openCombo: (ToolbarKeySpec) -> Unit = { target ->
             expanded = true
             editingQuickRow = false
+            addingQuickCombo = false
             comboTarget = target
             comboMask = state.stickyModifiers.takeIf { it != 0 } ?: ScancodeMap.Modifier.CTRL
         }
@@ -1517,7 +1541,18 @@ private fun SessionToolbar(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    if (editingQuickRow) {
+                    if (addingQuickCombo) {
+                        SavedToolbarChordBuilder(
+                            existingIds = quickActions.map { it.id },
+                            onAdd = { id ->
+                                val updatedIds = (quickActions.map { it.id } + id).distinct()
+                                viewModel.setFunctionToolbarQuickIds(updatedIds)
+                                addingQuickCombo = false
+                                expanded = false
+                            },
+                            onCancel = { addingQuickCombo = false },
+                        )
+                    } else if (editingQuickRow) {
                         QuickToolbarEditor(
                             selectedIds = quickActions.map { it.id },
                             onApply = { ids ->
@@ -1541,12 +1576,15 @@ private fun SessionToolbar(
                     } else {
                         ToolbarExpandedPanel(
                             page = page,
-                            onPage = { selected -> page = selected },
                             state = state,
                             viewModel = viewModel,
-                            onLongKey = openCombo,
-                            onEditQuickRow = { editingQuickRow = true },
-                            onMomentaryAction = { expanded = false },
+                            actions = ToolbarExpandedActions(
+                                onPage = { selected -> page = selected },
+                                onLongKey = openCombo,
+                                onEditQuickRow = { editingQuickRow = true },
+                                onAddQuickCombo = { addingQuickCombo = true },
+                                onMomentaryAction = { expanded = false },
+                            ),
                         )
                     }
                 }
@@ -1562,6 +1600,7 @@ private fun SessionToolbar(
                     expanded = !expanded
                     comboTarget = null
                     editingQuickRow = false
+                    addingQuickCombo = false
                 },
             )
         }
@@ -1601,28 +1640,23 @@ private fun CompactToolbarRow(
                 )
             }
         }
-        IconButton(
+        ToolbarKey(
+            label = stringResource(
+                if (expanded) R.string.session_toolbar_collapse else R.string.session_toolbar_more,
+            ),
             onClick = onToggleExpanded,
-            modifier = Modifier.size(42.dp),
-        ) {
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
-                contentDescription = null,
-                tint = TOOLBAR_CONTENT,
-            )
-        }
+            modifier = Modifier.widthIn(min = 64.dp),
+            tone = ToolbarKeyTone.Action,
+        )
     }
 }
 
 @Composable
 private fun ToolbarExpandedPanel(
     page: ToolbarPage,
-    onPage: (ToolbarPage) -> Unit,
     state: SessionUiState,
     viewModel: SessionViewModel,
-    onLongKey: (ToolbarKeySpec) -> Unit,
-    onEditQuickRow: () -> Unit,
-    onMomentaryAction: () -> Unit,
+    actions: ToolbarExpandedActions,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1632,16 +1666,29 @@ private fun ToolbarExpandedPanel(
             ToolbarToggleChip(
                 label = stringResource(item.labelRes),
                 active = page == item,
-                onClick = { onPage(item) },
+                onClick = { actions.onPage(item) },
                 modifier = Modifier.weight(1f),
+                useModifierPalette = false,
             )
         }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         ToolbarKey(
-            label = "编辑",
-            onClick = onEditQuickRow,
+            label = stringResource(R.string.session_toolbar_add_combo),
+            onClick = actions.onAddQuickCombo,
+            modifier = Modifier.weight(TOOLBAR_PRIMARY_ACTION_WEIGHT),
+            tone = ToolbarKeyTone.Action,
+        )
+        ToolbarKey(
+            label = stringResource(R.string.session_toolbar_edit_quick),
+            onClick = actions.onEditQuickRow,
             modifier = Modifier.weight(1f),
         )
     }
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_sticky_hint))
     ToolbarModifierRow(
         stickyMask = state.stickyModifiers,
         onToggle = viewModel::toggleStickyModifier,
@@ -1652,15 +1699,15 @@ private fun ToolbarExpandedPanel(
                 rows = quickKeyRows,
                 onKey = {
                     viewModel.sendKey(it)
-                    onMomentaryAction()
+                    actions.onMomentaryAction()
                 },
-                onLongKey = onLongKey,
+                onLongKey = actions.onLongKey,
             )
             ToolbarComboRows(
                 rows = quickComboRows,
                 onCombo = { combo ->
                     dispatchToolbarCombo(combo, viewModel)
-                    onMomentaryAction()
+                    actions.onMomentaryAction()
                 },
             )
         }
@@ -1669,9 +1716,9 @@ private fun ToolbarExpandedPanel(
                 rows = navigationKeyRows,
                 onKey = {
                     viewModel.sendKey(it)
-                    onMomentaryAction()
+                    actions.onMomentaryAction()
                 },
-                onLongKey = onLongKey,
+                onLongKey = actions.onLongKey,
             )
         }
         ToolbarPage.FUNCTION -> {
@@ -1679,9 +1726,9 @@ private fun ToolbarExpandedPanel(
                 rows = functionKeyRows,
                 onKey = {
                     viewModel.sendKey(it)
-                    onMomentaryAction()
+                    actions.onMomentaryAction()
                 },
-                onLongKey = onLongKey,
+                onLongKey = actions.onLongKey,
             )
         }
     }
@@ -1696,58 +1743,34 @@ private fun QuickToolbarEditor(
     var draftIds by remember(selectedIds) { mutableStateOf(selectedIds) }
     var showComboBuilder by remember { mutableStateOf(false) }
     val selectedScroll = rememberScrollState()
-    ToolbarPreviewChip(label = "编辑常用", modifier = Modifier.fillMaxWidth())
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        ToolbarKey(
-            label = if (showComboBuilder) "添加" else "组合",
-            onClick = { showComboBuilder = !showComboBuilder },
-            modifier = Modifier.weight(1f),
-        )
-        ToolbarKey(
-            label = "重置",
-            onClick = {
-                draftIds = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
-                showComboBuilder = false
-            },
-            modifier = Modifier.weight(1f),
-        )
-        ToolbarKey(
-            label = "完成",
-            onClick = { onApply(sanitizeQuickToolbarActionIds(draftIds)) },
-            modifier = Modifier.weight(1f),
-        )
-        ToolbarKey(label = "取消", onClick = onDone, modifier = Modifier.weight(1f))
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(selectedScroll),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        draftIds.forEachIndexed { index, id ->
-            val action = resolveToolbarAction(id) ?: return@forEachIndexed
-            EditableQuickChip(
-                action = action,
-                index = index,
-                totalCount = draftIds.size,
-                onMove = { from, to ->
-                    draftIds = draftIds.toMutableList().also { list ->
-                        val moved = list.removeAt(from)
-                        list.add(to, moved)
-                    }
-                },
-                onDelete = {
-                    draftIds = draftIds.toMutableList().also { it.removeAt(index) }
-                        .ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
-                },
-            )
-        }
-    }
+    ToolbarSectionHeader(
+        title = stringResource(R.string.session_toolbar_edit_quick_title),
+        subtitle = stringResource(R.string.session_toolbar_edit_quick_hint),
+    )
+    QuickToolbarEditorControls(
+        showComboBuilder = showComboBuilder,
+        onToggleBuilder = { showComboBuilder = !showComboBuilder },
+        onReset = {
+            draftIds = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+            showComboBuilder = false
+        },
+        onApply = { onApply(sanitizeQuickToolbarActionIds(draftIds)) },
+        onDone = onDone,
+    )
+    SelectedQuickActionRow(
+        ids = draftIds,
+        scrollState = selectedScroll,
+        onMove = { from, to ->
+            draftIds = draftIds.toMutableList().also { list ->
+                val moved = list.removeAt(from)
+                list.add(to, moved)
+            }
+        },
+        onDelete = { index ->
+            draftIds = draftIds.toMutableList().also { it.removeAt(index) }
+                .ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
+        },
+    )
 
     if (showComboBuilder) {
         ToolbarChordBuilder(
@@ -1759,9 +1782,8 @@ private fun QuickToolbarEditor(
             },
         )
     } else {
-        ToolbarPreviewChip(label = "添加到常用", modifier = Modifier.fillMaxWidth())
-        ToolbarActionGrid(
-            actions = allToolbarActions.filterNot { it.id in draftIds },
+        QuickToolbarRegularKeyPicker(
+            selectedIds = draftIds,
             onAction = { action ->
                 if (draftIds.size < MAX_FUNCTION_TOOLBAR_QUICK_IDS) {
                     draftIds = draftIds + action.id
@@ -1769,6 +1791,130 @@ private fun QuickToolbarEditor(
             },
         )
     }
+}
+
+@Composable
+private fun QuickToolbarEditorControls(
+    showComboBuilder: Boolean,
+    onToggleBuilder: () -> Unit,
+    onReset: () -> Unit,
+    onApply: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ToolbarKey(
+            label = stringResource(
+                if (showComboBuilder) R.string.session_toolbar_add_regular else R.string.session_toolbar_add_combo,
+            ),
+            onClick = onToggleBuilder,
+            modifier = Modifier.weight(TOOLBAR_PRIMARY_ACTION_WEIGHT),
+            tone = ToolbarKeyTone.Action,
+        )
+        ToolbarKey(
+            label = stringResource(R.string.session_toolbar_reset),
+            onClick = onReset,
+            modifier = Modifier.weight(1f),
+        )
+        ToolbarKey(
+            label = stringResource(R.string.session_toolbar_done),
+            onClick = onApply,
+            modifier = Modifier.weight(1f),
+        )
+        ToolbarKey(
+            label = stringResource(R.string.session_toolbar_cancel),
+            onClick = onDone,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun SelectedQuickActionRow(
+    ids: List<String>,
+    scrollState: androidx.compose.foundation.ScrollState,
+    onMove: (Int, Int) -> Unit,
+    onDelete: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(scrollState),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ids.forEachIndexed { index, id ->
+            val action = resolveToolbarAction(id) ?: return@forEachIndexed
+            EditableQuickChip(
+                action = action,
+                index = index,
+                totalCount = ids.size,
+                onMove = onMove,
+                onDelete = { onDelete(index) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickToolbarRegularKeyPicker(
+    selectedIds: List<String>,
+    onAction: (ToolbarActionSpec) -> Unit,
+) {
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_add_regular_hint))
+    ToolbarEditorActionSection(
+        title = stringResource(R.string.session_toolbar_modifiers),
+        actions = toolbarModifierSpecs.map { spec ->
+            ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag)
+        },
+        selectedIds = selectedIds,
+        onAction = onAction,
+    )
+    ToolbarEditorActionSection(
+        title = stringResource(R.string.session_toolbar_combo_common),
+        actions = quickKeyRows.flatten().map(::toolbarActionForKey),
+        selectedIds = selectedIds,
+        onAction = onAction,
+    )
+    ToolbarEditorActionSection(
+        title = stringResource(R.string.session_toolbar_combo_navigation),
+        actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
+        selectedIds = selectedIds,
+        onAction = onAction,
+    )
+    ToolbarEditorActionSection(
+        title = stringResource(R.string.session_toolbar_combo_function),
+        actions = functionKeyRows.flatten().map(::toolbarActionForKey),
+        selectedIds = selectedIds,
+        onAction = onAction,
+    )
+    ToolbarEditorActionSection(
+        title = stringResource(R.string.session_toolbar_saved_combos),
+        actions = quickComboRows.flatten().map { combo ->
+            ToolbarActionSpec(
+                id = combo.id,
+                label = combo.label,
+                vk = combo.keyVk,
+                modifiers = combo.modifiers,
+                isCtrlAltDel = combo.isCtrlAltDel,
+            )
+        },
+        selectedIds = selectedIds,
+        onAction = onAction,
+    )
+}
+
+@Composable
+private fun ToolbarEditorActionSection(
+    title: String,
+    actions: List<ToolbarActionSpec>,
+    selectedIds: List<String>,
+    onAction: (ToolbarActionSpec) -> Unit,
+) {
+    val availableActions = actions.filterNot { it.id in selectedIds }
+    if (availableActions.isEmpty()) return
+    ToolbarSectionLabel(text = title, compact = true)
+    ToolbarActionGrid(actions = availableActions, onAction = onAction)
 }
 
 @Composable
@@ -1783,7 +1929,11 @@ private fun EditableQuickChip(
         modifier = Modifier
             .quickChipReorderGesture(index = index, totalCount = totalCount, onMove = onMove),
     ) {
-        ToolbarPreviewChip(label = action.label, modifier = Modifier.widthIn(min = compactCellWidth(action.label)))
+        ToolbarPreviewChip(
+            label = action.label,
+            modifier = Modifier.widthIn(min = compactCellWidth(action.label)),
+            tone = toolbarToneForAction(action),
+        )
         Surface(
             onClick = onDelete,
             modifier = Modifier
@@ -1810,28 +1960,51 @@ private fun ToolbarChordBuilder(
     existingIds: List<String>,
     onAdd: (String) -> Unit,
 ) {
-    var modifierMask by remember { mutableIntStateOf(ScancodeMap.Modifier.CTRL) }
+    var modifierMask by remember { mutableIntStateOf(0) }
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_modifiers))
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         toolbarModifierSpecs.forEach { spec ->
             ToolbarToggleChip(
                 label = spec.label,
                 active = modifierMask and spec.flag != 0,
-                onClick = {
-                    val next = modifierMask xor spec.flag
-                    modifierMask = next.takeIf { it != 0 } ?: spec.flag
-                },
+                onClick = { modifierMask = modifierMask xor spec.flag },
                 modifier = Modifier.weight(1f),
             )
         }
     }
-    ToolbarPreviewChip(label = "选择组合键目标", modifier = Modifier.fillMaxWidth())
-    ToolbarActionGrid(
-        actions = chordKeyActions,
-        isSelected = { action -> encodeToolbarChordId(modifierMask, action.id) in existingIds },
-        onAction = { action -> onAdd(encodeToolbarChordId(modifierMask, action.id)) },
+    ToolbarPreviewChip(
+        label = if (modifierMask == 0) {
+            stringResource(R.string.session_toolbar_combo_preview_empty)
+        } else {
+            stringResource(R.string.session_toolbar_combo_preview, buildChordLabel(modifierMask, "…"))
+        },
+        modifier = Modifier.fillMaxWidth(),
+        tone = ToolbarKeyTone.Combination,
+    )
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_letters),
+        actions = letterKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_numbers),
+        actions = numberKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_common),
+        actions = commonChordKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
     )
 }
 
@@ -1840,6 +2013,7 @@ private fun ToolbarActionGrid(
     actions: List<ToolbarActionSpec>,
     onAction: (ToolbarActionSpec) -> Unit,
     isSelected: (ToolbarActionSpec) -> Boolean = { false },
+    isEnabled: (ToolbarActionSpec) -> Boolean = { true },
 ) {
     actions.chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
         Row(
@@ -1848,12 +2022,18 @@ private fun ToolbarActionGrid(
         ) {
             row.forEach { action ->
                 if (isSelected(action)) {
-                    ToolbarPreviewChip(label = action.label, modifier = Modifier.weight(1f))
+                    ToolbarPreviewChip(
+                        label = action.label,
+                        modifier = Modifier.weight(1f),
+                        tone = toolbarToneForAction(action),
+                    )
                 } else {
                     ToolbarKey(
                         label = action.label,
                         onClick = { onAction(action) },
                         modifier = Modifier.weight(1f),
+                        enabled = isEnabled(action),
+                        tone = toolbarToneForAction(action),
                     )
                 }
             }
@@ -1932,6 +2112,7 @@ private const val TOOLBAR_REORDER_LONG_PRESS_MS = 350L
 private const val TOOLBAR_REORDER_SLOP_PX = 8f
 private const val TOOLBAR_REORDER_STEP_PX = 56f
 private const val TOOLBAR_GRID_COLUMNS = 4
+private const val TOOLBAR_PRIMARY_ACTION_WEIGHT = 1.35f
 private val TOOLBAR_KEY_MIN_HEIGHT = 36.dp
 private val TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT = 244.dp
 
@@ -1964,6 +2145,7 @@ private fun ToolbarActionButton(
             },
             onLongClick = keySpec?.let { { onLongKey(it) } },
             modifier = modifier,
+            tone = toolbarToneForAction(action),
         )
     }
 }
@@ -2191,6 +2373,101 @@ private fun clampPillOffset(base: Offset, dx: Float, dy: Float, container: IntSi
     return Offset((base.x + dx).coerceIn(minX, 0f), (base.y + dy).coerceIn(-maxY, maxY))
 }
 
+@Composable
+private fun SavedToolbarChordBuilder(
+    existingIds: List<String>,
+    onAdd: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var modifierMask by remember { mutableIntStateOf(0) }
+    ToolbarSectionHeader(
+        title = stringResource(R.string.session_toolbar_add_combo_title),
+        subtitle = stringResource(R.string.session_toolbar_add_combo_example),
+        onClose = onCancel,
+    )
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_modifiers))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        toolbarModifierSpecs.forEach { spec ->
+            ToolbarToggleChip(
+                label = spec.label,
+                active = modifierMask and spec.flag != 0,
+                onClick = { modifierMask = modifierMask xor spec.flag },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    ToolbarPreviewChip(
+        label = if (modifierMask == 0) {
+            stringResource(R.string.session_toolbar_combo_preview_empty)
+        } else {
+            stringResource(R.string.session_toolbar_combo_preview, buildChordLabel(modifierMask, "…"))
+        },
+        modifier = Modifier.fillMaxWidth(),
+        tone = ToolbarKeyTone.Combination,
+    )
+    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_letters),
+        actions = letterKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_numbers),
+        actions = numberKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_common),
+        actions = commonChordKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_navigation),
+        actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+    ToolbarChordKeySection(
+        title = stringResource(R.string.session_toolbar_combo_function),
+        actions = functionKeyRows.flatten().map(::toolbarActionForKey),
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        onAdd = onAdd,
+    )
+}
+
+private fun toolbarActionForKey(key: ToolbarKeySpec): ToolbarActionSpec =
+    ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk)
+
+@Composable
+private fun ToolbarChordKeySection(
+    title: String,
+    actions: List<ToolbarActionSpec>,
+    modifierMask: Int,
+    existingIds: List<String>,
+    onAdd: (String) -> Unit,
+) {
+    ToolbarSectionLabel(text = title, compact = true)
+    ToolbarActionGrid(
+        actions = actions,
+        isSelected = { action ->
+            modifierMask != 0 && encodeToolbarChordId(modifierMask, action.id) in existingIds
+        },
+        isEnabled = { modifierMask != 0 },
+        onAction = { action -> onAdd(encodeToolbarChordId(modifierMask, action.id)) },
+    )
+}
+
 private fun clampCenteredControlOffset(
     base: Offset,
     dx: Float,
@@ -2389,6 +2666,7 @@ private fun ToolbarComboRows(rows: List<List<ToolbarComboSpec>>, onCombo: (Toolb
                     label = combo.label,
                     onClick = { onCombo(combo) },
                     modifier = Modifier.weight(1f),
+                    tone = ToolbarKeyTone.Combination,
                 )
             }
             repeat(TOOLBAR_GRID_COLUMNS - row.size) {
@@ -2415,6 +2693,7 @@ private fun ToolbarComboBuilder(
             ToolbarPreviewChip(
                 label = buildChordLabel(selectedMask, target.label),
                 modifier = Modifier.weight(1.4f),
+                tone = ToolbarKeyTone.Combination,
             )
             ToolbarKey(
                 label = stringResource(R.string.session_toolbar_send),
@@ -2447,6 +2726,24 @@ private fun buildChordLabel(mask: Int, keyLabel: String): String =
     (toolbarModifierSpecs.filter { spec -> mask and spec.flag != 0 }.map { it.label } + keyLabel)
         .joinToString("+")
 
+private enum class ToolbarKeyTone {
+    Standard,
+    Combination,
+    Action,
+}
+
+private fun toolbarToneForAction(action: ToolbarActionSpec): ToolbarKeyTone = when {
+    action.modifiers != 0 || action.isCtrlAltDel || action.id.startsWith("chord_") -> ToolbarKeyTone.Combination
+    action.modifierFlag != 0 -> ToolbarKeyTone.Action
+    else -> ToolbarKeyTone.Standard
+}
+
+private fun toolbarToneColors(tone: ToolbarKeyTone): Pair<Color, Color> = when (tone) {
+    ToolbarKeyTone.Standard -> TOOLBAR_KEY_FILL to TOOLBAR_KEY_BORDER
+    ToolbarKeyTone.Combination -> TOOLBAR_COMBO_FILL to TOOLBAR_COMBO_BORDER
+    ToolbarKeyTone.Action -> TOOLBAR_ACTION_FILL to TOOLBAR_ACTION_BORDER
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ToolbarKey(
@@ -2454,16 +2751,20 @@ private fun ToolbarKey(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    tone: ToolbarKeyTone = ToolbarKeyTone.Standard,
 ) {
+    val (fillColor, borderColor) = toolbarToneColors(tone)
     Surface(
         modifier = modifier.combinedClickable(
+            enabled = enabled,
             onClick = onClick,
             onLongClick = onLongClick,
         ),
         shape = RoundedCornerShape(8.dp),
-        color = Color.Transparent,
-        contentColor = TOOLBAR_CONTENT,
-        border = BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+        color = if (enabled) fillColor else Color.White.copy(alpha = 0.04f),
+        contentColor = if (enabled) TOOLBAR_CONTENT else TOOLBAR_CONTENT.copy(alpha = 0.38f),
+        border = BorderStroke(1.dp, if (enabled) borderColor else TOOLBAR_CONTENT.copy(alpha = 0.18f)),
     ) {
         Box(
             modifier = Modifier
@@ -2483,18 +2784,27 @@ private fun ToolbarKey(
 }
 
 /**
- * A latching modifier key (Ctrl/Alt/Shift) on the black bar. Inactive = white-outline pill with white
- * text; active = SOLID white fill with black text, so the latched state reads clearly (用户需求: 黑底白字).
+ * A latching modifier key (Ctrl/Alt/Shift/Win). It uses a dedicated purple family so modifiers are
+ * immediately distinguishable from ordinary keys; the selected state flips to a solid light fill.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ToolbarToggleChip(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun ToolbarToggleChip(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    useModifierPalette: Boolean = true,
+) {
+    val inactiveFill = if (useModifierPalette) TOOLBAR_MODIFIER_FILL else TOOLBAR_KEY_FILL
+    val activeFill = if (useModifierPalette) TOOLBAR_MODIFIER_ACTIVE else TOOLBAR_ACTION_BORDER
+    val outline = if (useModifierPalette) TOOLBAR_MODIFIER_BORDER else TOOLBAR_KEY_BORDER
     Surface(
         modifier = modifier.combinedClickable(onClick = onClick),
         shape = RoundedCornerShape(8.dp),
-        color = if (active) TOOLBAR_CONTENT else Color.Transparent,
+        color = if (active) activeFill else inactiveFill,
         contentColor = if (active) TOOLBAR_BG else TOOLBAR_CONTENT,
-        border = if (active) null else BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+        border = BorderStroke(1.dp, outline),
     ) {
         Box(
             modifier = Modifier
@@ -2514,13 +2824,18 @@ private fun ToolbarToggleChip(label: String, active: Boolean, onClick: () -> Uni
 }
 
 @Composable
-private fun ToolbarPreviewChip(label: String, modifier: Modifier = Modifier) {
+private fun ToolbarPreviewChip(
+    label: String,
+    modifier: Modifier = Modifier,
+    tone: ToolbarKeyTone = ToolbarKeyTone.Standard,
+) {
+    val (fillColor, borderColor) = toolbarToneColors(tone)
     Surface(
         modifier = modifier.widthIn(min = 96.dp),
         shape = RoundedCornerShape(8.dp),
-        color = TOOLBAR_CONTENT.copy(alpha = 0.16f),
+        color = fillColor,
         contentColor = TOOLBAR_CONTENT,
-        border = BorderStroke(1.dp, TOOLBAR_CONTENT.copy(alpha = KEY_BORDER_ALPHA)),
+        border = BorderStroke(1.dp, borderColor),
     ) {
         Box(
             modifier = Modifier
@@ -2537,4 +2852,51 @@ private fun ToolbarPreviewChip(label: String, modifier: Modifier = Modifier) {
             )
         }
     }
+}
+
+@Composable
+private fun ToolbarSectionHeader(
+    title: String,
+    subtitle: String,
+    onClose: (() -> Unit)? = null,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = Color.Black.copy(alpha = 0.38f),
+        border = BorderStroke(1.dp, TOOLBAR_ACTION_BORDER.copy(alpha = 0.7f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 9.dp, bottom = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(text = title, color = TOOLBAR_CONTENT, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = subtitle,
+                    color = TOOLBAR_CONTENT.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (onClose != null) {
+                IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = stringResource(R.string.session_toolbar_cancel),
+                        tint = TOOLBAR_CONTENT,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolbarSectionLabel(text: String, compact: Boolean = false) {
+    Text(
+        text = text,
+        modifier = Modifier.padding(start = 4.dp, top = if (compact) 2.dp else 5.dp),
+        color = TOOLBAR_CONTENT.copy(alpha = if (compact) 0.78f else 0.92f),
+        style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+    )
 }

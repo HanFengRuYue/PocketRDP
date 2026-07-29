@@ -15,6 +15,7 @@ class RdpTransportSnapshotTest {
         raw[3] = 6
         raw[4] = RdpTransportSnapshot.MASK_UDP2 or RdpTransportSnapshot.MASK_UDP_L
         raw[5] = raw[4]
+        raw[6] = RdpTransportSnapshot.FLAG_RECONNECT_REQUESTED
         raw[8] = 3
         raw[12] = RdpUdpKind.UDP2.mask
         raw[13] = RdpUdpTunnelState.ACTIVE.wireValue
@@ -32,6 +33,7 @@ class RdpTransportSnapshotTest {
 
         assertTrue(decoded.knownVersion)
         assertTrue(decoded.udpActive)
+        assertTrue(decoded.reconnectRequested)
         assertEquals(6, decoded.activeMask)
         assertEquals(RdpUdpKind.UDP2, decoded.reliable.kind)
         assertEquals(1234, decoded.reliable.receivedBytes)
