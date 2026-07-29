@@ -17,18 +17,27 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -37,6 +46,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -53,6 +63,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,7 +76,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
@@ -94,19 +107,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -115,12 +133,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -130,6 +150,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -144,6 +165,7 @@ import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.data.preferences.MIN_SIMULATED_CURSOR_SCALE
+import com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
@@ -281,6 +303,13 @@ fun SessionScreen(
     // (The old approach hoisted zoom/pan into Compose state via a virtualPosition sampler that
     // could miss continuous control updates — the transform froze until the interaction ended.)
     val chromeTransformState = controller.userTransform.collectAsStateWithLifecycle()
+    val floatingGlassContext = FloatingGlassContext(
+        buffer = rdpClient.buffer,
+        viewportSize = chromeViewportSize.value,
+        viewportPositionOnScreen = chromeViewportPositionOnScreen.value,
+        frameTick = chromeFrameTick,
+        transformState = chromeTransformState,
+    )
 
     // Drive the system-bars (immersive) state.
     val view = LocalView.current
@@ -489,10 +518,10 @@ fun SessionScreen(
                             }
                         },
                         actions = {
-                            IconButton(
-                                onClick = viewModel::toggleIme,
-                                enabled = state.status is SessionConnectionStatus.Connected,
-                            ) {
+                    IconButton(
+                        onClick = viewModel::toggleIme,
+                        enabled = state.status is SessionConnectionStatus.Connected,
+                    ) {
                                 Icon(
                                     imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
                                     contentDescription = stringResource(R.string.session_cd_keyboard),
@@ -600,12 +629,22 @@ fun SessionScreen(
                     .windowInsetsPadding(WindowInsets.displayCutout)
                     .padding(12.dp),
             ) {
-                SmallFloatingActionButton(
-                    onClick = viewModel::toggleImmersive,
+                GlassControlContainer(
+                    glass = floatingGlassContext,
                     containerColor = toolbarBg,
-                    contentColor = TOOLBAR_CONTENT,
+                    shape = EXIT_FULLSCREEN_CONTROL_SHAPE,
                 ) {
-                    Icon(Icons.Default.FullscreenExit, contentDescription = stringResource(R.string.session_cd_exit_fullscreen))
+                    SmallFloatingActionButton(
+                        onClick = viewModel::toggleImmersive,
+                        shape = EXIT_FULLSCREEN_CONTROL_SHAPE,
+                        containerColor = Color.Transparent,
+                        contentColor = TOOLBAR_CONTENT,
+                    ) {
+                        Icon(
+                            Icons.Default.FullscreenExit,
+                            contentDescription = stringResource(R.string.session_cd_exit_fullscreen),
+                        )
+                    }
                 }
             }
 
@@ -630,6 +669,7 @@ fun SessionScreen(
                     controller = controller,
                     containerSize = overlaySize,
                     containerColor = controlBg,
+                    glass = floatingGlassContext,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .windowInsetsPadding(WindowInsets.displayCutout)
@@ -651,6 +691,7 @@ fun SessionScreen(
                         controller = controller,
                         containerSize = overlaySize,
                         containerColor = controlBg,
+                        glass = floatingGlassContext,
                         modifier = Modifier.align(Alignment.Center),
                     )
                 }
@@ -932,6 +973,14 @@ private const val GLASS_TINT_MULTIPLIER = 0.58f
 private const val GLASS_SAMPLE_INTERVAL_MS = 250L
 private val GLASS_BACKDROP_MIN_BLUR_RADIUS = 0.dp
 private val GLASS_BACKDROP_MAX_BLUR_RADIUS = 10.dp
+private val EXIT_FULLSCREEN_CONTROL_SHAPE = RoundedCornerShape(12.dp)
+private data class FloatingGlassContext(
+    val buffer: BitmapBuffer,
+    val viewportSize: IntSize,
+    val viewportPositionOnScreen: Offset,
+    val frameTick: State<Long>,
+    val transformState: State<UserTransform>,
+)
 private const val DEFAULT_CURSOR_HEIGHT = 26f
 private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
 private const val DEFAULT_CURSOR_TAIL_Y = 15f
@@ -1470,6 +1519,125 @@ private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
 }
 
 /**
+ * Positions a sampled framebuffer backdrop behind an individual floating control. Unlike a plain
+ * translucent container, this keeps the remote pixels spatially aligned with the control before
+ * blurring and tinting them. The wrapper leaves the foreground Material surface responsible for
+ * elevation, ripple and semantics while the backdrop itself is clipped to the exact control shape.
+ */
+@Composable
+private fun GlassControlContainer(
+    glass: FloatingGlassContext,
+    containerColor: Color,
+    shape: Shape,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    var controlPositionOnScreen by remember { mutableStateOf<Offset?>(null) }
+    Box(
+        modifier = modifier.onGloballyPositioned {
+            controlPositionOnScreen = it.positionOnScreen()
+        },
+    ) {
+        FloatingGlassBackground(
+            glass = glass,
+            controlPositionOnScreen = controlPositionOnScreen,
+            containerColor = containerColor,
+            shape = shape,
+            modifier = Modifier.matchParentSize(),
+        )
+        content()
+    }
+}
+
+@Composable
+private fun FloatingGlassBackground(
+    glass: FloatingGlassContext,
+    controlPositionOnScreen: Offset?,
+    containerColor: Color,
+    shape: Shape,
+    modifier: Modifier = Modifier,
+) {
+    val tick = glass.frameTick.value
+    val sampledFrame = remember(glass.buffer, tick) {
+        glass.buffer.peekFront()?.let { frame -> frame to frame.asImageBitmap() }
+    }
+    val hasViewport = glass.viewportSize.width > 0 && glass.viewportSize.height > 0
+    val canRenderBackdrop = containerColor.alpha > 0f && hasViewport
+    val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
+        .coerceIn(0f, 1f)
+    val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
+        (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
+    Box(modifier = modifier.clip(shape)) {
+        if (canRenderBackdrop && sampledFrame != null && controlPositionOnScreen != null) {
+            val (frame, frameImage) = sampledFrame
+            Canvas(
+                modifier = Modifier
+                    .matchParentSize()
+                    .blur(blurRadius),
+            ) {
+                val scale = minOf(
+                    glass.viewportSize.width.toFloat() / frame.width.toFloat(),
+                    glass.viewportSize.height.toFloat() / frame.height.toFloat(),
+                )
+                val baseWidth = frame.width * scale
+                val baseHeight = frame.height * scale
+                val baseLeft = (glass.viewportSize.width - baseWidth) / 2f
+                val baseTop = (glass.viewportSize.height - baseHeight) / 2f
+                val transform = glass.transformState.value
+                val centerX = glass.viewportSize.width / 2f
+                val centerY = glass.viewportSize.height / 2f
+                val transformedLeft = centerX + (baseLeft - centerX) * transform.zoom + transform.panX
+                val transformedTop = centerY + (baseTop - centerY) * transform.zoom +
+                    transform.panY + transform.offsetY
+                val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
+                val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
+                drawImage(
+                    image = frameImage,
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(frame.width, frame.height),
+                    dstOffset = IntOffset(
+                        transformedLeft.roundToInt() -
+                            (controlPositionOnScreen.x - glass.viewportPositionOnScreen.x).roundToInt(),
+                        transformedTop.roundToInt() -
+                            (controlPositionOnScreen.y - glass.viewportPositionOnScreen.y).roundToInt(),
+                    ),
+                    dstSize = IntSize(transformedWidth, transformedHeight),
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .floatingGlassTint(containerColor, shape),
+        )
+    }
+}
+
+private fun Modifier.floatingGlassTint(containerColor: Color, shape: Shape): Modifier =
+    this
+        .background(
+            color = containerColor.copy(
+                alpha = (containerColor.alpha * GLASS_TINT_MULTIPLIER).coerceIn(0f, 0.62f),
+            ),
+            shape = shape,
+        )
+        .background(
+            brush = Brush.verticalGradient(
+                listOf(
+                    TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
+                    TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.42f * containerColor.alpha),
+                    Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
+                ),
+            ),
+            shape = shape,
+        )
+        .border(
+            width = 1.dp,
+            color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA * containerColor.alpha),
+            shape = shape,
+        )
+
+/**
  * Function-key toolbar shown while the soft keyboard is up. It deliberately avoids horizontal scrolling:
  * fixed pages keep every key tappable. The quick-row editor exposes a guided chord builder, while
  * long-pressing any regular key remains a shortcut for sending a one-shot chord.
@@ -1532,15 +1700,53 @@ private fun SessionToolbar(
                 .fillMaxWidth()
                 .onSizeChanged { onBarHeightChanged(it.height) }
                 .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (expanded) {
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    expandFrom = Alignment.Bottom,
+                ) + slideInVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    initialOffsetY = { height -> height / 6 },
+                ) + fadeIn(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_FADE_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                ),
+                exit = shrinkVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    shrinkTowards = Alignment.Bottom,
+                ) + slideOutVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    targetOffsetY = { height -> height / 8 },
+                ) + fadeOut(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                ),
+            ) {
                 val target = comboTarget
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT)
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(rememberScrollState())
+                        .padding(bottom = TOOLBAR_SECTION_SPACING),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     if (addingQuickCombo) {
@@ -1549,7 +1755,6 @@ private fun SessionToolbar(
                             onAdd = { id ->
                                 val updatedIds = (quickActions.map { it.id } + id).distinct()
                                 viewModel.setFunctionToolbarQuickIds(updatedIds)
-                                addingQuickCombo = false
                                 expanded = false
                             },
                             onCancel = { addingQuickCombo = false },
@@ -1570,7 +1775,6 @@ private fun SessionToolbar(
                             onToggleModifier = { flag -> comboMask = comboMask xor flag },
                             onSend = {
                                 viewModel.sendKeyWithModifiers(target.vk, comboMask)
-                                comboTarget = null
                                 expanded = false
                             },
                             onCancel = { comboTarget = null },
@@ -1591,20 +1795,64 @@ private fun SessionToolbar(
                     }
                 }
             }
-            CompactToolbarRow(
-                actions = quickActions,
-                state = state,
-                viewModel = viewModel,
-                expanded = expanded,
-                onLongKey = openCombo,
-                onMomentaryAction = { },
-                onToggleExpanded = {
-                    expanded = !expanded
-                    comboTarget = null
-                    editingQuickRow = false
-                    addingQuickCombo = false
-                },
-            )
+            AnimatedVisibility(
+                visible = !editingQuickRow,
+                enter = expandVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    expandFrom = Alignment.Bottom,
+                ) + slideInVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    initialOffsetY = { height -> height / 2 },
+                ) + fadeIn(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_FADE_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                ),
+                exit = shrinkVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    shrinkTowards = Alignment.Bottom,
+                ) + slideOutVertically(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    targetOffsetY = { height -> height / 3 },
+                ) + fadeOut(
+                    animationSpec = tween(
+                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                ),
+            ) {
+                CompactToolbarRow(
+                    actions = quickActions,
+                    state = state,
+                    viewModel = viewModel,
+                    expanded = expanded,
+                    onLongKey = openCombo,
+                    onMomentaryAction = { },
+                    onToggleExpanded = {
+                        if (expanded) {
+                            expanded = false
+                        } else {
+                            comboTarget = null
+                            editingQuickRow = false
+                            addingQuickCombo = false
+                            expanded = true
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -1620,6 +1868,14 @@ private fun CompactToolbarRow(
     onToggleExpanded: () -> Unit,
 ) {
     val quickScroll = rememberScrollState()
+    val toggleRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(
+            durationMillis = TOOLBAR_TOGGLE_ICON_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        label = "FunctionToolbarToggleRotation",
+    )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1647,8 +1903,11 @@ private fun CompactToolbarRow(
             modifier = Modifier.size(42.dp),
         ) {
             Icon(
-                imageVector = if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
-                contentDescription = null,
+                imageVector = Icons.Default.ExpandLess,
+                contentDescription = stringResource(
+                    if (expanded) R.string.session_toolbar_collapse else R.string.session_toolbar_more,
+                ),
+                modifier = Modifier.graphicsLayer { rotationZ = toggleRotation },
                 tint = TOOLBAR_CONTENT,
             )
         }
@@ -1746,7 +2005,7 @@ private fun QuickToolbarEditor(
 ) {
     var draftIds by remember(selectedIds) { mutableStateOf(selectedIds) }
     var showComboBuilder by remember { mutableStateOf(false) }
-    val selectedScroll = rememberScrollState()
+    val selectedScroll = rememberLazyListState()
     ToolbarSectionHeader(
         title = stringResource(R.string.session_toolbar_edit_quick_title),
         subtitle = stringResource(R.string.session_toolbar_edit_quick_hint),
@@ -1764,14 +2023,18 @@ private fun QuickToolbarEditor(
     SelectedQuickActionRow(
         ids = draftIds,
         scrollState = selectedScroll,
-        onMove = { from, to ->
-            draftIds = draftIds.toMutableList().also { list ->
-                val moved = list.removeAt(from)
-                list.add(to, moved)
+        onMove = { id, direction ->
+            val fromIndex = draftIds.indexOf(id)
+            val toIndex = fromIndex + direction
+            if (fromIndex >= 0 && toIndex in draftIds.indices) {
+                draftIds = draftIds.toMutableList().also { list ->
+                    val moved = list.removeAt(fromIndex)
+                    list.add(toIndex, moved)
+                }
             }
         },
-        onDelete = { index ->
-            draftIds = draftIds.toMutableList().also { it.removeAt(index) }
+        onDelete = { id ->
+            draftIds = draftIds.filterNot { it == id }
                 .ifEmpty { DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS }
         },
     )
@@ -1836,25 +2099,152 @@ private fun QuickToolbarEditorControls(
     }
 }
 
+private data class QuickChipDragCallbacks(
+    val onSizeChanged: (Int) -> Unit,
+    val onDragStart: () -> Unit,
+    val onDrag: (Float) -> Unit,
+    val onDragEnd: () -> Unit,
+)
+
+internal data class QuickChipMove(val fromIndex: Int, val toIndex: Int)
+
+internal data class QuickChipDragUpdate(val offsetX: Float, val move: QuickChipMove?)
+
+internal fun calculateQuickChipDragUpdate(
+    ids: List<String>,
+    draggedId: String,
+    itemWidthsPx: Map<String, Int>,
+    itemSpacingPx: Float,
+    currentOffsetX: Float,
+    deltaX: Float,
+): QuickChipDragUpdate {
+    var nextOffsetX = currentOffsetX + deltaX
+    val workingIds = ids.toMutableList()
+    val initialIndex = workingIds.indexOf(draggedId)
+    var currentIndex = initialIndex
+    val activeWidth = itemWidthsPx[draggedId]?.toFloat()
+    while (activeWidth != null && currentIndex >= 0) {
+        val direction = when {
+            nextOffsetX > 0f && currentIndex < workingIds.lastIndex -> 1
+            nextOffsetX < 0f && currentIndex > 0 -> -1
+            else -> 0
+        }
+        val neighborIndex = currentIndex + direction
+        val neighborWidth = if (direction == 0) {
+            null
+        } else {
+            itemWidthsPx[workingIds[neighborIndex]]?.toFloat()
+        }
+        val swapThreshold = neighborWidth?.let { (activeWidth + it) / 2f + itemSpacingPx }
+        val crossedNeighbor = when {
+            direction > 0 && swapThreshold != null -> nextOffsetX > swapThreshold
+            direction < 0 && swapThreshold != null -> nextOffsetX < -swapThreshold
+            else -> false
+        }
+        if (!crossedNeighbor) break
+        val crossedNeighborWidth = checkNotNull(neighborWidth)
+        val movedId = workingIds.removeAt(currentIndex)
+        workingIds.add(neighborIndex, movedId)
+        currentIndex = neighborIndex
+        nextOffsetX -= direction * (crossedNeighborWidth + itemSpacingPx)
+    }
+    val move = if (currentIndex != initialIndex) {
+        QuickChipMove(fromIndex = initialIndex, toIndex = currentIndex)
+    } else {
+        null
+    }
+    return QuickChipDragUpdate(offsetX = nextOffsetX, move = move)
+}
+
 @Composable
 private fun SelectedQuickActionRow(
     ids: List<String>,
-    scrollState: androidx.compose.foundation.ScrollState,
-    onMove: (Int, Int) -> Unit,
-    onDelete: (Int) -> Unit,
+    scrollState: LazyListState,
+    onMove: (String, Int) -> Unit,
+    onDelete: (String) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(scrollState),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    var draggingId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    val itemWidthsPx = remember { mutableStateMapOf<String, Int>() }
+    val itemSpacingPx = with(LocalDensity.current) { TOOLBAR_EDITOR_ITEM_SPACING.toPx() }
+    val hapticFeedback = LocalHapticFeedback.current
+
+    LaunchedEffect(ids, draggingId) {
+        if (draggingId != null && draggingId !in ids) {
+            draggingId = null
+            dragOffsetX = 0f
+        }
+    }
+
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        state = scrollState,
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(TOOLBAR_EDITOR_ITEM_SPACING),
     ) {
-        ids.forEachIndexed { index, id ->
-            val action = resolveToolbarAction(id) ?: return@forEachIndexed
+        itemsIndexed(
+            items = ids,
+            key = { _, id -> id },
+        ) { _, id ->
+            val action = resolveToolbarAction(id) ?: return@itemsIndexed
+            val isDragging = draggingId == id
             EditableQuickChip(
                 action = action,
-                index = index,
-                totalCount = ids.size,
-                onMove = onMove,
-                onDelete = { onDelete(index) },
+                isDragging = isDragging,
+                dragOffsetX = if (isDragging) dragOffsetX else 0f,
+                modifier = Modifier.animateItem(
+                    fadeInSpec = tween(
+                        durationMillis = TOOLBAR_REORDER_FADE_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                    placementSpec = if (isDragging) {
+                        null
+                    } else {
+                        spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        )
+                    },
+                    fadeOutSpec = tween(
+                        durationMillis = TOOLBAR_REORDER_FADE_DURATION_MS,
+                        easing = TOOLBAR_MOTION_EASING,
+                    ),
+                ),
+                dragCallbacks = QuickChipDragCallbacks(
+                    onSizeChanged = { widthPx ->
+                        if (itemWidthsPx[id] != widthPx) itemWidthsPx[id] = widthPx
+                    },
+                    onDragStart = {
+                        draggingId = id
+                        dragOffsetX = 0f
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    },
+                    onDrag = drag@{ deltaX ->
+                        if (draggingId != id) return@drag
+                        val update = calculateQuickChipDragUpdate(
+                            ids = ids,
+                            draggedId = id,
+                            itemWidthsPx = itemWidthsPx,
+                            itemSpacingPx = itemSpacingPx,
+                            currentOffsetX = dragOffsetX,
+                            deltaX = deltaX,
+                        )
+                        update.move?.let { move ->
+                            val visibleIndex = scrollState.firstVisibleItemIndex
+                            val visibleOffset = scrollState.firstVisibleItemScrollOffset
+                            onMove(id, move.toIndex - move.fromIndex)
+                            scrollState.requestScrollToItem(visibleIndex, visibleOffset)
+                        }
+                        dragOffsetX = update.offsetX
+                    },
+                    onDragEnd = {
+                        if (draggingId == id) {
+                            draggingId = null
+                            dragOffsetX = 0f
+                        }
+                    },
+                ),
+                onDelete = { onDelete(id) },
             )
         }
     }
@@ -1924,14 +2314,57 @@ private fun ToolbarEditorActionSection(
 @Composable
 private fun EditableQuickChip(
     action: ToolbarActionSpec,
-    index: Int,
-    totalCount: Int,
-    onMove: (Int, Int) -> Unit,
+    isDragging: Boolean,
+    dragOffsetX: Float,
+    modifier: Modifier = Modifier,
+    dragCallbacks: QuickChipDragCallbacks,
     onDelete: () -> Unit,
 ) {
+    val currentDragCallbacks = rememberUpdatedState(dragCallbacks)
+    val animatedDragOffsetX by animateFloatAsState(
+        targetValue = if (isDragging) dragOffsetX else 0f,
+        animationSpec = if (isDragging) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = TOOLBAR_REORDER_SETTLE_DAMPING_RATIO,
+                stiffness = Spring.StiffnessMediumLow,
+            )
+        },
+        label = "QuickToolbarChipDragOffset",
+    )
+    val dragScale by animateFloatAsState(
+        targetValue = if (isDragging) TOOLBAR_REORDER_DRAG_SCALE else 1f,
+        animationSpec = spring(
+            dampingRatio = TOOLBAR_REORDER_PICKUP_DAMPING_RATIO,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "QuickToolbarChipDragScale",
+    )
+    val dragElevation by animateDpAsState(
+        targetValue = if (isDragging) TOOLBAR_REORDER_DRAG_ELEVATION else 0.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "QuickToolbarChipDragElevation",
+    )
     Box(
-        modifier = Modifier
-            .quickChipReorderGesture(index = index, totalCount = totalCount, onMove = onMove),
+        modifier = modifier
+            .zIndex(if (isDragging) 1f else 0f)
+            .graphicsLayer {
+                translationX = animatedDragOffsetX
+                scaleX = dragScale
+                scaleY = dragScale
+                shadowElevation = dragElevation.toPx()
+                shape = RoundedCornerShape(10.dp)
+            }
+            .onSizeChanged { dragCallbacks.onSizeChanged(it.width) }
+            .quickChipReorderGesture(
+                onDragStart = { currentDragCallbacks.value.onDragStart() },
+                onDrag = { deltaX -> currentDragCallbacks.value.onDrag(deltaX) },
+                onDragEnd = { currentDragCallbacks.value.onDragEnd() },
+            ),
     ) {
         ToolbarPreviewChip(
             label = action.label,
@@ -2049,58 +2482,52 @@ private fun ToolbarActionGrid(
 }
 
 private fun Modifier.quickChipReorderGesture(
-    index: Int,
-    totalCount: Int,
-    onMove: (Int, Int) -> Unit,
-): Modifier = pointerInput(index, totalCount) {
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+): Modifier = pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val startMs = SystemClock.uptimeMillis()
         var totalDx = 0f
         var totalDy = 0f
         var dragging = false
-        var currentIndex = index
         var tracking = true
-        while (tracking) {
-            val armLongPress = !dragging && abs(totalDx) + abs(totalDy) <= TOOLBAR_REORDER_SLOP_PX
-            val event = if (armLongPress) {
-                val remaining = (TOOLBAR_REORDER_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
-                    .coerceAtLeast(1L)
-                withTimeoutOrNull(remaining) { awaitPointerEvent() }
-            } else {
-                awaitPointerEvent()
-            }
-            if (event == null) {
-                dragging = true
-                down.consume()
-                continue
-            }
-            val change = event.changes.firstOrNull { it.id == down.id }
-            if (change == null || !change.pressed) {
-                change?.consume()
-                tracking = false
-            } else {
-                val delta = change.positionChange()
-                totalDx += delta.x
-                totalDy += delta.y
-                if (!dragging && abs(totalDx) + abs(totalDy) > TOOLBAR_REORDER_SLOP_PX) {
+        try {
+            while (tracking) {
+                val armLongPress = !dragging && abs(totalDx) + abs(totalDy) <= TOOLBAR_REORDER_SLOP_PX
+                val event = if (armLongPress) {
+                    val remaining = (
+                        TOOLBAR_REORDER_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs)
+                    ).coerceAtLeast(1L)
+                    withTimeoutOrNull(remaining) { awaitPointerEvent() }
+                } else {
+                    awaitPointerEvent()
+                }
+                if (event == null) {
+                    dragging = true
+                    onDragStart()
+                    down.consume()
+                    continue
+                }
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null || !change.pressed) {
+                    if (dragging) change?.consume()
                     tracking = false
-                } else if (dragging) {
-                    when {
-                        totalDx > TOOLBAR_REORDER_STEP_PX && currentIndex < totalCount - 1 -> {
-                            onMove(currentIndex, currentIndex + 1)
-                            currentIndex++
-                            totalDx = 0f
-                        }
-                        totalDx < -TOOLBAR_REORDER_STEP_PX && currentIndex > 0 -> {
-                            onMove(currentIndex, currentIndex - 1)
-                            currentIndex--
-                            totalDx = 0f
-                        }
+                } else {
+                    val delta = change.positionChange()
+                    totalDx += delta.x
+                    totalDy += delta.y
+                    if (!dragging && abs(totalDx) + abs(totalDy) > TOOLBAR_REORDER_SLOP_PX) {
+                        tracking = false
+                    } else if (dragging) {
+                        onDrag(delta.x)
+                        change.consume()
                     }
                 }
-                change.consume()
             }
+        } finally {
+            if (dragging) onDragEnd()
         }
     }
 }
@@ -2114,9 +2541,23 @@ private fun compactCellWidth(label: String): Dp = when {
 
 private const val TOOLBAR_REORDER_LONG_PRESS_MS = 350L
 private const val TOOLBAR_REORDER_SLOP_PX = 8f
-private const val TOOLBAR_REORDER_STEP_PX = 56f
+private const val TOOLBAR_REORDER_DRAG_SCALE = 1.06f
+private const val TOOLBAR_REORDER_PICKUP_DAMPING_RATIO = 0.72f
+private const val TOOLBAR_REORDER_SETTLE_DAMPING_RATIO = 0.78f
+private const val TOOLBAR_REORDER_FADE_DURATION_MS = 160
+private const val TOOLBAR_PANEL_ENTER_DURATION_MS = 280
+private const val TOOLBAR_PANEL_FADE_DURATION_MS = 180
+private const val TOOLBAR_PANEL_EXIT_DURATION_MS = 220
+private const val TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS = 220
+private const val TOOLBAR_COMPACT_ROW_FADE_DURATION_MS = 160
+private const val TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS = 180
+private const val TOOLBAR_TOGGLE_ICON_DURATION_MS = 260
 private const val TOOLBAR_GRID_COLUMNS = 4
 private const val TOOLBAR_PRIMARY_ACTION_WEIGHT = 1.35f
+private val TOOLBAR_MOTION_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private val TOOLBAR_SECTION_SPACING = 6.dp
+private val TOOLBAR_EDITOR_ITEM_SPACING = 8.dp
+private val TOOLBAR_REORDER_DRAG_ELEVATION = 10.dp
 private val TOOLBAR_KEY_MIN_HEIGHT = 36.dp
 private val TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT = 244.dp
 
@@ -2206,6 +2647,7 @@ private fun ZoomControls(
     controller: RdpInputController,
     containerSize: IntSize,
     containerColor: Color,
+    glass: FloatingGlassContext,
     modifier: Modifier = Modifier,
 ) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
@@ -2221,7 +2663,10 @@ private fun ZoomControls(
         handleOffset = clampPillOffset(handleOffset, 0f, 0f, containerSize, pillSize)
     }
 
-    Surface(
+    GlassControlContainer(
+        glass = glass,
+        containerColor = containerColor,
+        shape = CircleShape,
         modifier = modifier
             .onSizeChanged { pillSize = it }
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
@@ -2234,27 +2679,30 @@ private fun ZoomControls(
                 setDragging = { dragging = it },
                 setMovingSelf = { movingSelf = it },
             ),
-        shape = CircleShape,
-        color = containerColor,
-        tonalElevation = 3.dp,
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        Surface(
+            shape = CircleShape,
+            color = Color.Transparent,
+            tonalElevation = 3.dp,
         ) {
-            Icon(
-                imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.ZoomIn,
-                contentDescription = stringResource(R.string.session_zoom_cd),
-                tint = TOOLBAR_CONTENT,
-            )
-            // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
-            if (dragging || zoomed) {
-                Text(
-                    text = "$pct%",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TOOLBAR_CONTENT,
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.ZoomIn,
+                    contentDescription = stringResource(R.string.session_zoom_cd),
+                    tint = TOOLBAR_CONTENT,
                 )
+                // Live % only while dragging or zoomed in, so at 100% the handle stays minimal.
+                if (dragging || zoomed) {
+                    Text(
+                        text = "$pct%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TOOLBAR_CONTENT,
+                    )
+                }
             }
         }
     }
@@ -2515,6 +2963,7 @@ private fun PanHandle(
     controller: RdpInputController,
     containerSize: IntSize,
     containerColor: Color,
+    glass: FloatingGlassContext,
     modifier: Modifier = Modifier,
 ) {
     val transform by controller.userTransform.collectAsStateWithLifecycle()
@@ -2538,7 +2987,10 @@ private fun PanHandle(
     val keyboardLifted = transform.offsetY < 0f
     if (!zoomed && !keyboardLifted) return
 
-    Surface(
+    GlassControlContainer(
+        glass = glass,
+        containerColor = containerColor,
+        shape = CircleShape,
         modifier = modifier
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
             .size(PAN_HANDLE_SIZE_DP.dp)
@@ -2601,16 +3053,20 @@ private fun PanHandle(
                     }
                 }
             },
-        shape = CircleShape,
-        color = containerColor,
-        tonalElevation = 3.dp,
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
-                contentDescription = stringResource(R.string.session_pan_cd),
-                tint = TOOLBAR_CONTENT,
-            )
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            color = Color.Transparent,
+            tonalElevation = 3.dp,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (movingSelf) Icons.Default.DragIndicator else Icons.Default.OpenWith,
+                    contentDescription = stringResource(R.string.session_pan_cd),
+                    tint = TOOLBAR_CONTENT,
+                )
+            }
         }
     }
 }
