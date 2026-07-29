@@ -40,7 +40,7 @@ val ciVersionCode = providers.environmentVariable("POCKETRDP_VERSION_CODE").orNu
 if ((ciVersionName == null) != (ciVersionCode == null)) {
     throw GradleException("POCKETRDP_VERSION_NAME and POCKETRDP_VERSION_CODE must be provided together.")
 }
-val releaseVersionName = ciVersionName ?: "1.0.0"
+val releaseVersionName = ciVersionName ?: "1.0.1"
 val releaseVersionMatch = Regex(
     "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)",
 ).matchEntire(releaseVersionName) ?: throw GradleException(

@@ -61,6 +61,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
@@ -1640,14 +1642,16 @@ private fun CompactToolbarRow(
                 )
             }
         }
-        ToolbarKey(
-            label = stringResource(
-                if (expanded) R.string.session_toolbar_collapse else R.string.session_toolbar_more,
-            ),
+        IconButton(
             onClick = onToggleExpanded,
-            modifier = Modifier.widthIn(min = 64.dp),
-            tone = ToolbarKeyTone.Action,
-        )
+            modifier = Modifier.size(42.dp),
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                contentDescription = null,
+                tint = TOOLBAR_CONTENT,
+            )
+        }
     }
 }
 
