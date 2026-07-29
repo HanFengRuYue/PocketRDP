@@ -53,4 +53,13 @@ class RdpTransportSnapshotTest {
         assertFalse(wrongVersion.knownVersion)
         assertEquals(0, wrongVersion.activeMask)
     }
+
+    @Test
+    fun unsupportedUdpRouteFailureIsDecodedExplicitly() {
+        val raw = LongArray(RdpTransportSnapshot.FIELD_COUNT)
+        raw[0] = RdpTransportSnapshot.VERSION
+        raw[9] = RdpTransportFailure.UNSUPPORTED_ROUTE.wireValue
+
+        assertEquals(RdpTransportFailure.UNSUPPORTED_ROUTE, RdpTransportSnapshot.decode(raw).failure)
+    }
 }

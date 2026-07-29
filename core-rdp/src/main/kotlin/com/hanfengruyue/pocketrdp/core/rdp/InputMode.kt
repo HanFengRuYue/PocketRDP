@@ -101,6 +101,7 @@ enum class RdpTransportFailure(val wireValue: Long) {
     RDPEMT_RESPONSE(13),
     RDPEMT_REJECTED(14),
     TRANSPORT_TIMEOUT(15),
+    UNSUPPORTED_ROUTE(16),
     INVALID_DVC_ROUTE(101),
     DVC_DELIVERY(102),
     TUNNEL_POLL(103),

@@ -3848,6 +3848,45 @@ index 68e392d4..487b4599 100644
  	FREERDP_API void freerdp_get_version(int* major, int* minor, int* revision);
  
  	WINPR_ATTR_NODISCARD
+diff --git a/include/freerdp/transport_io.h b/include/freerdp/transport_io.h
+index 69e98f9b..deee6ba2 100644
+--- a/include/freerdp/transport_io.h
++++ b/include/freerdp/transport_io.h
+@@ -23,6 +23,7 @@
+ #define FREERDP_TRANSPORT_IO_H
+ 
+ #include <winpr/stream.h>
++#include <winpr/winsock.h>
+ 
+ #include <freerdp/api.h>
+ #include <freerdp/types.h>
+@@ -62,6 +63,16 @@ extern "C"
+ 	typedef BOOL (*pTransportLayerWait)(void* userContext, BOOL waitWrite, DWORD timeout);
+ 	typedef HANDLE (*pTransportLayerGetEvent)(void* userContext);
+ 
++	/**
++	 * @brief Borrow the connected socket owned by this transport layer.
++	 *
++	 * A successful callback stores a valid socket in @p socket. On failure it stores
++	 * @c INVALID_SOCKET. The returned handle is non-owning and is valid only until the layer
++	 * starts closing. Callers must use it immediately on the transport owner thread and must not
++	 * close it, change its options or blocking mode, or cache it.
++	 */
++	typedef BOOL (*pTransportLayerGetSocket)(void* userContext, SOCKET* socket);
++
+ 	/**
+ 	 * @since version 3.9.0
+ 	 */
+@@ -73,7 +84,8 @@ extern "C"
+ 		ALIGN64 pTransportLayerFkt Close;
+ 		WINPR_ATTR_NODISCARD ALIGN64 pTransportLayerWait Wait;
+ 		WINPR_ATTR_NODISCARD ALIGN64 pTransportLayerGetEvent GetEvent;
+-		UINT64 reserved[64 - 6]; /* Reserve some space for ABI compatibility */
++		WINPR_ATTR_NODISCARD ALIGN64 pTransportLayerGetSocket GetSocket;
++		UINT64 reserved[64 - 7]; /* Reserve some space for ABI compatibility */
+ 	} rdpTransportLayer;
+ 
+ 	typedef int (*pTCPConnect)(rdpContext* context, rdpSettings* settings, const char* hostname,
 diff --git a/libfreerdp/codec/h264_ffmpeg.c b/libfreerdp/codec/h264_ffmpeg.c
 index 049696aa..f157abee 100644
 --- a/libfreerdp/codec/h264_ffmpeg.c
@@ -4650,212 +4689,12 @@ index 12bfd029..21b2be69 100644
  	if (count < nCount + 2UL)
  		return 0;
  
-diff --git a/libfreerdp/core/test/CMakeLists.txt b/libfreerdp/core/test/CMakeLists.txt
-index f0251683..31b23408 100644
---- a/libfreerdp/core/test/CMakeLists.txt
-+++ b/libfreerdp/core/test/CMakeLists.txt
-@@ -7,13 +7,14 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
- 
- set(DRIVER ${MODULE_NAME}.c)
- 
--set(TESTS TestVersion.c TestSettings.c TestUtils.c)
-+set(TESTS TestVersion.c TestSettings.c TestUtils.c TestRdpUdp.c)
- 
- if(BUILD_TESTING_INTERNAL)
-   list(APPEND TESTS TestStreamDump.c TestRdstls.c)
- endif()
- 
--set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c)
-+set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c
-+            TestFuzzRdpUdp.c)
- 
- # Test not compatible with package tests, disable
- if(WITH_SAMPLE AND WITH_SERVER AND NOT WIN32 AND BUILD_TESTING_INTERNAL)
-diff --git a/libfreerdp/core/transport.c b/libfreerdp/core/transport.c
-index 5a074dfe..b9fe590e 100644
---- a/libfreerdp/core/transport.c
-+++ b/libfreerdp/core/transport.c
-@@ -1978,6 +1978,14 @@ HANDLE transport_get_front_bio(rdpTransport* transport)
- 	return hEvent;
- }
- 
-+BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket)
-+{
-+	if (!transport || !transport->frontBio || !socket)
-+		return FALSE;
-+	*socket = INVALID_SOCKET;
-+	return BIO_get_socket(transport->frontBio, socket) == 1 && *socket != INVALID_SOCKET;
-+}
-+
- BOOL transport_io_callback_set_event(rdpTransport* transport, BOOL set)
- {
- 	WINPR_ASSERT(transport);
-diff --git a/libfreerdp/core/transport.h b/libfreerdp/core/transport.h
-index b5cfae92..d2863264 100644
---- a/libfreerdp/core/transport.h
-+++ b/libfreerdp/core/transport.h
-@@ -152,6 +152,9 @@ FREERDP_LOCAL DWORD transport_get_event_handles(rdpTransport* transport, HANDLE*
- WINPR_ATTR_NODISCARD
- FREERDP_LOCAL HANDLE transport_get_front_bio(rdpTransport* transport);
- 
-+WINPR_ATTR_NODISCARD
-+FREERDP_LOCAL BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket);
-+
- WINPR_ATTR_NODISCARD
- FREERDP_LOCAL BOOL transport_set_blocking_mode(rdpTransport* transport, BOOL blocking);
- 
-diff --git a/libfreerdp/gdi/gfx.c b/libfreerdp/gdi/gfx.c
-index ec94f96e..9e85eef9 100644
---- a/libfreerdp/gdi/gfx.c
-+++ b/libfreerdp/gdi/gfx.c
-@@ -34,6 +34,47 @@
- #include <math.h>
- 
- #define TAG FREERDP_TAG("gdi")
-+#define GDI_GFX_MAX_DIMENSION 8192u
-+#define GDI_GFX_MAX_PIXELS 16777216ull
-+#define GDI_GFX_MAX_SURFACE_BYTES (128ull * 1024ull * 1024ull)
-+
-+static BOOL gdi_gfx_dimensions_safe(UINT32 width, UINT32 height)
-+{
-+	return width > 0 && height > 0 && width <= GDI_GFX_MAX_DIMENSION &&
-+	       height <= GDI_GFX_MAX_DIMENSION && (UINT64)width * height <= GDI_GFX_MAX_PIXELS;
-+}
-+
-+static BOOL gdi_gfx_surface_budget_allows(RdpgfxClientContext* context, UINT64 requested)
-+{
-+	WINPR_ASSERT(context);
-+	if (requested > GDI_GFX_MAX_SURFACE_BYTES || !context->GetSurfaceIds ||
-+	    !context->GetSurfaceData)
-+		return FALSE;
-+
-+	UINT16 count = 0;
-+	UINT16* surfaceIds = nullptr;
-+	if (context->GetSurfaceIds(context, &surfaceIds, &count) != CHANNEL_RC_OK)
-+		return FALSE;
-+
-+	UINT64 total = requested;
-+	for (UINT16 index = 0; index < count; index++)
-+	{
-+		const gdiGfxSurface* surface =
-+		    (const gdiGfxSurface*)context->GetSurfaceData(context, surfaceIds[index]);
-+		if (!surface)
-+			continue;
-+		const UINT64 bytes = (UINT64)surface->scanline * surface->height;
-+		if (bytes > GDI_GFX_MAX_SURFACE_BYTES || total > GDI_GFX_MAX_SURFACE_BYTES - bytes)
-+		{
-+			free(surfaceIds);
-+			return FALSE;
-+		}
-+		total += bytes;
-+	}
-+
-+	free(surfaceIds);
-+	return TRUE;
-+}
- 
- static BOOL is_rect_valid(const RECTANGLE_16* rect, size_t width, size_t height)
- {
-@@ -115,6 +156,12 @@ static UINT gdi_ResetGraphics(RdpgfxClientContext* context,
- 	const UINT32 DesktopHeight = resetGraphics->height;
- 
- 	WLog_DBG(TAG, "new size: %" PRIu32 "x%" PRIu32, DesktopWidth, DesktopHeight);
-+	if (!gdi_gfx_dimensions_safe(DesktopWidth, DesktopHeight))
-+	{
-+		WLog_ERR(TAG, "rejecting unsafe graphics reset size %" PRIu32 "x%" PRIu32, DesktopWidth,
-+		         DesktopHeight);
-+		goto fail;
-+	}
- 
- 	if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, DesktopWidth))
- 		goto fail;
-@@ -1259,10 +1306,23 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
- 	rdpGdi* gdi = nullptr;
- 	WINPR_ASSERT(context);
- 	WINPR_ASSERT(createSurface);
-+	if (!gdi_gfx_dimensions_safe(createSurface->width, createSurface->height))
-+	{
-+		WLog_ERR(TAG, "rejecting unsafe GFX surface size %" PRIu16 "x%" PRIu16,
-+		         createSurface->width, createSurface->height);
-+		return ERROR_INVALID_DATA;
-+	}
- 	gdi = (rdpGdi*)context->custom;
- 	WINPR_ASSERT(gdi);
- 	WINPR_ASSERT(gdi->context);
- 	EnterCriticalSection(&context->mux);
-+	if (context->GetSurfaceData &&
-+	    context->GetSurfaceData(context, createSurface->surfaceId) != nullptr)
-+	{
-+		WLog_ERR(TAG, "rejecting duplicate GFX surface id %" PRIu16, createSurface->surfaceId);
-+		rc = ERROR_INVALID_DATA;
-+		goto fail;
-+	}
- 	surface = (gdiGfxSurface*)calloc(1, sizeof(gdiGfxSurface));
- 
- 	if (!surface)
-@@ -1304,7 +1364,14 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
- 	}
- 
- 	surface->scanline = gfx_align_scanline(surface->width * 4UL, 16);
--	surface->data = (BYTE*)winpr_aligned_malloc(1ull * surface->scanline * surface->height, 16);
-+	const UINT64 surfaceBytes = (UINT64)surface->scanline * surface->height;
-+	if (!gdi_gfx_surface_budget_allows(context, surfaceBytes))
-+	{
-+		WLog_ERR(TAG, "rejecting GFX surface: aggregate memory budget exceeded");
-+		free(surface);
-+		goto fail;
-+	}
-+	surface->data = (BYTE*)winpr_aligned_malloc(surfaceBytes, 16);
- 
- 	if (!surface->data)
- 	{
-@@ -1317,6 +1384,12 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
- 
- 	WINPR_ASSERT(context->SetSurfaceData);
- 	rc = context->SetSurfaceData(context, surface->surfaceId, (void*)surface);
-+	if (rc != CHANNEL_RC_OK)
-+	{
-+		region16_uninit(&surface->invalidRegion);
-+		winpr_aligned_free(surface->data);
-+		free(surface);
-+	}
- fail:
- 	LeaveCriticalSection(&context->mux);
- 	return rc;
-diff --git a/winpr/libwinpr/thread/tls.c b/winpr/libwinpr/thread/tls.c
-index 416bebd7..a84045ad 100644
---- a/winpr/libwinpr/thread/tls.c
-+++ b/winpr/libwinpr/thread/tls.c
-@@ -40,9 +40,21 @@ DWORD TlsAlloc(void)
- 
- 	if (pthread_key_create(&key, nullptr) != 0)
- 		return TLS_OUT_OF_INDEXES;
--	if (key > UINT32_MAX)
-+
-+	/*
-+	 * pthread_key_t is opaque. Android's bionic encodes a validity flag in bit 31, so a valid
-+	 * key is negative when observed as its signed typedef. WINPR_ASSERTING_INT_CAST rejects that
-+	 * sign change even though DWORD preserves the complete 32-bit key. Validate the round trip
-+	 * instead and keep the opaque bit pattern intact for pthread_get/setspecific.
-+	 */
-+	const DWORD index = (DWORD)key;
-+	if ((index == TLS_OUT_OF_INDEXES) || ((pthread_key_t)index != key))
-+	{
-+		pthread_key_delete(key);
- 		return TLS_OUT_OF_INDEXES;
--	return WINPR_ASSERTING_INT_CAST(DWORD, key);
-+	}
-+
-+	return index;
- }
- 
- LPVOID TlsGetValue(DWORD dwTlsIndex)
 diff --git a/libfreerdp/core/rdpudp.c b/libfreerdp/core/rdpudp.c
 new file mode 100644
-index 00000000..94a8a1fb
+index 00000000..7403f9eb
 --- /dev/null
 +++ b/libfreerdp/core/rdpudp.c
-@@ -0,0 +1,2859 @@
+@@ -0,0 +1,2919 @@
 +/**
 + * FreeRDP: A Remote Desktop Protocol Implementation
 + * RDP-UDP client bootstrap
@@ -5205,10 +5044,42 @@ index 00000000..94a8a1fb
 +	return rdpudp_parse_syn_ack(data, length, initialSequence, result);
 +}
 +
-+static SOCKET rdpudp_connect_socket(rdpRdp* rdp, int* lastSocketError)
++static BOOL rdpudp_route_supports_udp(const rdpRdp* rdp, TRANSPORT_LAYER* transportLayer,
++                                      UINT32* proxyType)
++{
++	WINPR_ASSERT(rdp);
++	WINPR_ASSERT(rdp->settings);
++	WINPR_ASSERT(rdp->transport);
++	WINPR_ASSERT(transportLayer);
++	WINPR_ASSERT(proxyType);
++
++	*transportLayer = transport_get_layer(rdp->transport);
++	*proxyType = freerdp_settings_get_uint32(rdp->settings, FreeRDP_ProxyType);
++	if (*proxyType != PROXY_TYPE_NONE && *proxyType != PROXY_TYPE_IGNORE)
++		return FALSE;
++
++	return *transportLayer == TRANSPORT_LAYER_TCP || *transportLayer == TRANSPORT_LAYER_TLS;
++}
++
++static SOCKET rdpudp_connect_socket(rdpRdp* rdp, int* lastSocketError, UINT32* failureStage)
 +{
 +	WINPR_ASSERT(rdp);
 +	WINPR_ASSERT(lastSocketError);
++	WINPR_ASSERT(failureStage);
++	*lastSocketError = 0;
++	*failureStage = RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++
++	TRANSPORT_LAYER transportLayer = TRANSPORT_LAYER_CLOSED;
++	UINT32 proxyType = PROXY_TYPE_NONE;
++	if (!rdpudp_route_supports_udp(rdp, &transportLayer, &proxyType))
++	{
++		*lastSocketError = WSAEOPNOTSUPP;
++		*failureStage = RDPUDP_CLIENT_FAILURE_UNSUPPORTED_ROUTE;
++		WLog_WARN(TAG, "RDP-UDP route unsupported transportLayer=%" PRIu32 " proxyType=%" PRIu32,
++		          (UINT32)transportLayer, proxyType);
++		return INVALID_SOCKET;
++	}
++
 +	SOCKET tcpSocket = INVALID_SOCKET;
 +	if (!transport_get_socket(rdp->transport, &tcpSocket))
 +	{
@@ -5217,13 +5088,29 @@ index 00000000..94a8a1fb
 +	}
 +
 +	struct sockaddr_storage peer = WINPR_C_ARRAY_INIT;
-+	socklen_t peerLength = sizeof(peer);
-+	if (getpeername((int)tcpSocket, (struct sockaddr*)&peer, &peerLength) != 0 ||
-+	    (peer.ss_family != AF_INET && peer.ss_family != AF_INET6))
++	int peerLength = sizeof(peer);
++	if (_getpeername(tcpSocket, (struct sockaddr*)&peer, &peerLength) != 0)
 +	{
 +		*lastSocketError = rdpudp_socket_error();
 +		return INVALID_SOCKET;
 +	}
++
++	int expectedPeerLength = 0;
++	if (peer.ss_family == AF_INET)
++		expectedPeerLength = sizeof(struct sockaddr_in);
++	else if (peer.ss_family == AF_INET6)
++		expectedPeerLength = sizeof(struct sockaddr_in6);
++	else
++	{
++		*lastSocketError = WSAEAFNOSUPPORT;
++		return INVALID_SOCKET;
++	}
++	if (peerLength < expectedPeerLength)
++	{
++		*lastSocketError = WSAEINVAL;
++		return INVALID_SOCKET;
++	}
++	peerLength = expectedPeerLength;
 +
 +	SOCKET sock = _socket(peer.ss_family, SOCK_DGRAM, IPPROTO_UDP);
 +	if (sock == INVALID_SOCKET)
@@ -5237,7 +5124,13 @@ index 00000000..94a8a1fb
 +		closesocket(sock);
 +		return INVALID_SOCKET;
 +	}
++	*failureStage = RDPUDP_CLIENT_FAILURE_NONE;
 +	return sock;
++}
++
++SOCKET rdpudp_test_connect_socket(rdpRdp* rdp, int* lastSocketError, UINT32* failureStage)
++{
++	return rdpudp_connect_socket(rdp, lastSocketError, failureStage);
 +}
 +
 +static void rdpudp_connection_free(rdpUdpConnection* connection)
@@ -7060,29 +6953,35 @@ index 00000000..94a8a1fb
 +	if (!hostname || port == 0 || port > UINT16_MAX)
 +	{
 +		result->failureStage = RDPUDP_CLIENT_FAILURE_INVALID_ENDPOINT;
-+		WLog_WARN(TAG, "invalid RDP-UDP endpoint host=%s port=%" PRIu32,
-+		          hostname ? hostname : "(null)", port);
++		WLog_WARN(TAG, "invalid RDP-UDP endpoint hostnamePresent=%" PRId32 " portValid=%" PRId32,
++		          hostname != nullptr, port > 0 && port <= UINT16_MAX);
 +		return nullptr;
 +	}
 +
 +	wStream* syn = Stream_New(nullptr, RDPUDP_DEFAULT_MTU);
 +	if (!syn)
++	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
 +		return nullptr;
++	}
 +
 +	UINT32 initialSequence = 0;
 +	if (!rdpudp_write_syn(syn, requestedProtocol, cookie, &initialSequence))
 +	{
++		result->failureStage = RDPUDP_CLIENT_FAILURE_RESOURCE;
 +		Stream_Free(syn, TRUE);
 +		return nullptr;
 +	}
 +	result->initialSequence = initialSequence;
 +
-+	SOCKET sock = rdpudp_connect_socket(rdp, &result->lastSocketError);
++	SOCKET sock =
++	    rdpudp_connect_socket(rdp, &result->lastSocketError, &result->failureStage);
 +	if (sock == INVALID_SOCKET)
 +	{
-+		result->failureStage = RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
-+		WLog_WARN(TAG, "RDP-UDP requestId=%" PRIu32 " connect to %s:%" PRIu32 " failed: %d",
-+		          requestId, hostname, port, result->lastSocketError);
++		WLog_WARN(TAG,
++		          "RDP-UDP requestId=%" PRIu32 " socket setup failed stage=%" PRIu32
++		          " error=%d",
++		          requestId, result->failureStage, result->lastSocketError);
 +		Stream_Free(syn, TRUE);
 +		return nullptr;
 +	}
@@ -7137,22 +7036,22 @@ index 00000000..94a8a1fb
 +	{
 +		result->failureStage = RDPUDP_CLIENT_FAILURE_NONE;
 +		WLog_INFO(TAG,
-+		          "RDP-UDP requestId=%" PRIu32 " SYN/SYN-ACK succeeded host=%s port=%" PRIu32
-+		          " mode=%s udpVersion=0x%04" PRIx16 " sent=%" PRIu64 "/%" PRIu64
++		          "RDP-UDP requestId=%" PRIu32 " SYN/SYN-ACK succeeded mode=%s "
++		          "udpVersion=0x%04" PRIx16 " sent=%" PRIu64 "/%" PRIu64
 +		          " recv=%" PRIu64 "/%" PRIu64,
-+		          requestId, hostname, port, result->lossy ? "UDP-L" : "UDP-R",
-+		          result->negotiatedVersion, result->packetsSent, result->bytesSent,
-+		          result->packetsReceived, result->bytesReceived);
++		          requestId, result->lossy ? "UDP-L" : "UDP-R", result->negotiatedVersion,
++		          result->packetsSent, result->bytesSent, result->packetsReceived,
++		          result->bytesReceived);
 +	}
 +	else
 +	{
 +		WLog_WARN(TAG,
-+		          "RDP-UDP requestId=%" PRIu32 " SYN bootstrap failed host=%s port=%" PRIu32
-+		          " mode=%s sent=%" PRIu64 "/%" PRIu64 " recv=%" PRIu64 "/%" PRIu64
++		          "RDP-UDP requestId=%" PRIu32 " SYN bootstrap failed mode=%s sent=%" PRIu64
++		          "/%" PRIu64 " recv=%" PRIu64 "/%" PRIu64
 +		          " lastError=%d",
-+		          requestId, hostname, port, result->lossy ? "UDP-L" : "UDP-R",
-+		          result->packetsSent, result->bytesSent, result->packetsReceived,
-+		          result->bytesReceived, result->lastSocketError);
++		          requestId, result->lossy ? "UDP-L" : "UDP-R", result->packetsSent,
++		          result->bytesSent, result->packetsReceived, result->bytesReceived,
++		          result->lastSocketError);
 +	}
 +
 +	Stream_Free(syn, TRUE);
@@ -7717,10 +7616,10 @@ index 00000000..94a8a1fb
 +}
 diff --git a/libfreerdp/core/rdpudp.h b/libfreerdp/core/rdpudp.h
 new file mode 100644
-index 00000000..b4c3d8bc
+index 00000000..d368e4bc
 --- /dev/null
 +++ b/libfreerdp/core/rdpudp.h
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,165 @@
 +/**
 + * FreeRDP: A Remote Desktop Protocol Implementation
 + * RDP-UDP client bootstrap
@@ -7736,6 +7635,7 @@ index 00000000..b4c3d8bc
 +
 +#include <winpr/wtypes.h>
 +#include <winpr/stream.h>
++#include <winpr/winsock.h>
 +
 +#include "multitransport.h"
 +
@@ -7786,7 +7686,8 @@ index 00000000..b4c3d8bc
 +	RDPUDP_CLIENT_FAILURE_TUNNEL_REQUEST = 12,
 +	RDPUDP_CLIENT_FAILURE_TUNNEL_RESPONSE = 13,
 +	RDPUDP_CLIENT_FAILURE_TUNNEL_HR = 14,
-+	RDPUDP_CLIENT_FAILURE_TRANSPORT_TIMEOUT = 15
++	RDPUDP_CLIENT_FAILURE_TRANSPORT_TIMEOUT = 15,
++	RDPUDP_CLIENT_FAILURE_UNSUPPORTED_ROUTE = 16
 +};
 +
 +typedef struct
@@ -7843,6 +7744,9 @@ index 00000000..b4c3d8bc
 +FREERDP_API BOOL rdpudp_test_parse_syn_ack(const BYTE* data, size_t length,
 +                                           UINT32 initialSequence,
 +                                           rdpUdpClientBootstrapResult* result);
++WINPR_ATTR_NODISCARD
++FREERDP_API SOCKET rdpudp_test_connect_socket(rdpRdp* rdp, int* lastSocketError,
++                                              UINT32* failureStage);
 +FREERDP_API UINT16 rdpudp_test_sequence16_distance(UINT16 from, UINT16 to);
 +FREERDP_API UINT32 rdpudp_test_sequence32_distance(UINT32 from, UINT32 to);
 +FREERDP_API BOOL rdpudp_test_write_create_request(wStream* s, UINT32 requestId,
@@ -7883,10 +7787,10 @@ index 00000000..b4c3d8bc
 +#endif /* FREERDP_LIB_CORE_RDPUDP_H */
 diff --git a/libfreerdp/core/rdpudp_async.inc b/libfreerdp/core/rdpudp_async.inc
 new file mode 100644
-index 00000000..91df7a9d
+index 00000000..5f79cb33
 --- /dev/null
 +++ b/libfreerdp/core/rdpudp_async.inc
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,433 @@
 +/* Main-loop-owned asynchronous RDP-UDP/RDPEMT state machine. Included by rdpudp.c after the
 + * wire codec, BIO adapter, TLS helpers and rdpUdpTunnel allocation helpers are defined. */
 +
@@ -8069,10 +7973,11 @@ index 00000000..91df7a9d
 +	tunnel->synPacketLength = Stream_GetPosition(syn);
 +	memcpy(tunnel->synPacket, Stream_Buffer(syn), tunnel->synPacketLength);
 +	Stream_Free(syn, TRUE);
-+	connection->sock = rdpudp_connect_socket(rdp, &tunnel->result.lastSocketError);
++	connection->sock = rdpudp_connect_socket(rdp, &tunnel->result.lastSocketError,
++	                                       &tunnel->result.failureStage);
 +	if (connection->sock == INVALID_SOCKET)
 +	{
-+		rdpudp_async_fail(tunnel, RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT);
++		rdpudp_async_fail(tunnel, tunnel->result.failureStage);
 +		return tunnel;
 +	}
 +	tunnel->result.socketOpened = TRUE;
@@ -8319,6 +8224,63 @@ index 00000000..91df7a9d
 +	if (tunnel->connection && tunnel->connection->lastReceiveMs > 0)
 +		snapshot->idleMillis = GetTickCount64() - tunnel->connection->lastReceiveMs;
 +}
+diff --git a/libfreerdp/core/tcp.c b/libfreerdp/core/tcp.c
+index cabdc380..2f6fdf81 100644
+--- a/libfreerdp/core/tcp.c
++++ b/libfreerdp/core/tcp.c
+@@ -1529,6 +1529,23 @@ static HANDLE freerdp_tcp_layer_get_event(void* userContext)
+ 	return tcpLayer->hEvent;
+ }
+ 
++static BOOL freerdp_tcp_layer_get_socket(void* userContext, SOCKET* socket)
++{
++	if (!socket)
++		return FALSE;
++	*socket = INVALID_SOCKET;
++
++	if (!userContext)
++		return FALSE;
++
++	rdpTcpLayer* tcpLayer = (rdpTcpLayer*)userContext;
++	if (tcpLayer->sockfd < 0)
++		return FALSE;
++
++	*socket = (SOCKET)tcpLayer->sockfd;
++	return TRUE;
++}
++
+ rdpTransportLayer* freerdp_tcp_connect_layer(rdpContext* context, const char* hostname, int port,
+                                              DWORD timeout)
+ {
+@@ -1555,6 +1572,7 @@ rdpTransportLayer* freerdp_tcp_connect_layer(rdpContext* context, const char* ho
+ 	layer->Close = freerdp_tcp_layer_close;
+ 	layer->Wait = freerdp_tcp_layer_wait;
+ 	layer->GetEvent = freerdp_tcp_layer_get_event;
++	layer->GetSocket = freerdp_tcp_layer_get_socket;
+ 
+ 	tcpLayer = (rdpTcpLayer*)layer->userContext;
+ 	WINPR_ASSERT(tcpLayer);
+diff --git a/libfreerdp/core/test/CMakeLists.txt b/libfreerdp/core/test/CMakeLists.txt
+index f0251683..31b23408 100644
+--- a/libfreerdp/core/test/CMakeLists.txt
++++ b/libfreerdp/core/test/CMakeLists.txt
+@@ -7,13 +7,14 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+ 
+ set(DRIVER ${MODULE_NAME}.c)
+ 
+-set(TESTS TestVersion.c TestSettings.c TestUtils.c)
++set(TESTS TestVersion.c TestSettings.c TestUtils.c TestRdpUdp.c)
+ 
+ if(BUILD_TESTING_INTERNAL)
+   list(APPEND TESTS TestStreamDump.c TestRdstls.c)
+ endif()
+ 
+-set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c)
++set(FUZZERS TestFuzzCoreClient.c TestFuzzCoreServer.c TestFuzzCryptoCertificateDataSetPEM.c
++            TestFuzzRdpUdp.c)
+ 
+ # Test not compatible with package tests, disable
+ if(WITH_SAMPLE AND WITH_SERVER AND NOT WIN32 AND BUILD_TESTING_INTERNAL)
 diff --git a/libfreerdp/core/test/TestFuzzRdpUdp.c b/libfreerdp/core/test/TestFuzzRdpUdp.c
 new file mode 100644
 index 00000000..8fcfd5d3
@@ -8350,10 +8312,10 @@ index 00000000..8fcfd5d3
 +}
 diff --git a/libfreerdp/core/test/TestRdpUdp.c b/libfreerdp/core/test/TestRdpUdp.c
 new file mode 100644
-index 00000000..125828d2
+index 00000000..001c18a0
 --- /dev/null
 +++ b/libfreerdp/core/test/TestRdpUdp.c
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,419 @@
 +/**
 + * FreeRDP: A Remote Desktop Protocol Implementation
 + * Deterministic RDP-UDP/RDPEMT wire-codec tests
@@ -8363,10 +8325,347 @@ index 00000000..125828d2
 +
 +#include <string.h>
 +
++#include <freerdp/client.h>
++#include <freerdp/settings.h>
++#include <freerdp/transport_io.h>
++
++#include <winpr/assert.h>
 +#include <winpr/crt.h>
 +#include <winpr/stream.h>
++#include <winpr/winsock.h>
 +
 +#include "../rdpudp.h"
++
++WINPR_STATIC_ASSERT(sizeof(rdpTransportLayer) == 64 * sizeof(UINT64));
++
++static rdpContext* test_client_context_new(void)
++{
++	RDP_CLIENT_ENTRY_POINTS entry = WINPR_C_ARRAY_INIT;
++	entry.Version = RDP_CLIENT_INTERFACE_VERSION;
++	entry.Size = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
++	entry.ContextSize = sizeof(rdpContext);
++	return freerdp_client_context_new(&entry);
++}
++
++static BOOL test_get_socket_false(WINPR_ATTR_UNUSED void* userContext, SOCKET* socket)
++{
++	if (!socket)
++		return FALSE;
++	*socket = (SOCKET)42;
++	return FALSE;
++}
++
++static BOOL test_get_socket_invalid(WINPR_ATTR_UNUSED void* userContext, SOCKET* socket)
++{
++	if (!socket)
++		return FALSE;
++	*socket = INVALID_SOCKET;
++	return TRUE;
++}
++
++static BOOL test_unavailable_transport_socket(pTransportLayerGetSocket callback)
++{
++	BOOL ok = FALSE;
++	rdpContext* context = test_client_context_new();
++	if (!context)
++		return FALSE;
++
++	rdpTransport* transport = freerdp_get_transport(context);
++	const rdpTransportIo* io = freerdp_get_io_callbacks(context);
++	if (!transport || !io || !io->AttachLayer)
++		goto cleanup;
++
++	rdpTransportLayer* layer = transport_layer_new(transport, 0);
++	if (!layer)
++		goto cleanup;
++	layer->GetSocket = callback;
++	if (!io->AttachLayer(transport, layer))
++	{
++		transport_layer_free(layer);
++		goto cleanup;
++	}
++
++	int lastSocketError = 0;
++	UINT32 failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++	const SOCKET socket =
++	    rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++	ok = socket == INVALID_SOCKET && lastSocketError == WSAENOTSOCK &&
++	     failureStage == RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++
++cleanup:
++	freerdp_client_context_free(context);
++	return ok;
++}
++
++static BOOL test_route_gate(void)
++{
++	BOOL ok = FALSE;
++	rdpContext* context = test_client_context_new();
++	if (!context)
++		return FALSE;
++
++	const UINT32 rejected[] = { PROXY_TYPE_HTTP, PROXY_TYPE_SOCKS, 3 };
++	for (size_t x = 0; x < ARRAYSIZE(rejected); x++)
++	{
++		if (!freerdp_settings_set_uint32(context->settings, FreeRDP_ProxyType, rejected[x]))
++			goto cleanup;
++		int lastSocketError = 0;
++		UINT32 failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++		const SOCKET socket =
++		    rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++		if (socket != INVALID_SOCKET || lastSocketError != WSAEOPNOTSUPP ||
++		    failureStage != RDPUDP_CLIENT_FAILURE_UNSUPPORTED_ROUTE)
++			goto cleanup;
++	}
++
++	const UINT32 direct[] = { PROXY_TYPE_NONE, PROXY_TYPE_IGNORE };
++	for (size_t x = 0; x < ARRAYSIZE(direct); x++)
++	{
++		if (!freerdp_settings_set_uint32(context->settings, FreeRDP_ProxyType, direct[x]))
++			goto cleanup;
++		int lastSocketError = 0;
++		UINT32 failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++		const SOCKET socket =
++		    rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++		if (socket != INVALID_SOCKET || lastSocketError != WSAENOTSOCK ||
++		    failureStage != RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT)
++			goto cleanup;
++	}
++
++	/* Gateway bypass can leave this setting enabled after the actual route became direct. */
++	if (!freerdp_settings_set_uint32(context->settings, FreeRDP_ProxyType, PROXY_TYPE_NONE) ||
++	    !freerdp_settings_set_bool(context->settings, FreeRDP_GatewayEnabled, TRUE))
++		goto cleanup;
++	int lastSocketError = 0;
++	UINT32 failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++	const SOCKET socket =
++	    rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++	ok = socket == INVALID_SOCKET && lastSocketError == WSAENOTSOCK &&
++	     failureStage == RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++
++cleanup:
++	freerdp_client_context_free(context);
++	return ok;
++}
++
++static UINT16 test_sockaddr_port(const struct sockaddr_storage* address)
++{
++	if (address->ss_family == AF_INET)
++		return _ntohs(((const struct sockaddr_in*)address)->sin_port);
++	if (address->ss_family == AF_INET6)
++		return _ntohs(((const struct sockaddr_in6*)address)->sin6_port);
++	return 0;
++}
++
++static BOOL test_sockaddr_equal(const struct sockaddr_storage* left,
++                                const struct sockaddr_storage* right)
++{
++	if (left->ss_family != right->ss_family || test_sockaddr_port(left) != test_sockaddr_port(right))
++		return FALSE;
++	if (left->ss_family == AF_INET)
++	{
++		const struct sockaddr_in* a = (const struct sockaddr_in*)left;
++		const struct sockaddr_in* b = (const struct sockaddr_in*)right;
++		return a->sin_addr.s_addr == b->sin_addr.s_addr;
++	}
++	if (left->ss_family == AF_INET6)
++	{
++		const struct sockaddr_in6* a = (const struct sockaddr_in6*)left;
++		const struct sockaddr_in6* b = (const struct sockaddr_in6*)right;
++		return memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) == 0;
++	}
++	return FALSE;
++}
++
++static BOOL test_loopback_transport_socket(int family, const char* hostname, BOOL required)
++{
++	BOOL ok = FALSE;
++	BOOL wsaStarted = FALSE;
++	SOCKET listener = INVALID_SOCKET;
++	SOCKET accepted = INVALID_SOCKET;
++	SOCKET udp = INVALID_SOCKET;
++	rdpContext* context = nullptr;
++	rdpTransportLayer* layer = nullptr;
++	WSADATA wsa = WINPR_C_ARRAY_INIT;
++
++	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
++		return FALSE;
++	wsaStarted = TRUE;
++
++	struct sockaddr_storage listenerAddress = WINPR_C_ARRAY_INIT;
++	int listenerLength = 0;
++	if (family == AF_INET)
++	{
++		struct sockaddr_in* address = (struct sockaddr_in*)&listenerAddress;
++		address->sin_family = AF_INET;
++		address->sin_addr.s_addr = _htonl(INADDR_LOOPBACK);
++		address->sin_port = 0;
++		listenerLength = sizeof(*address);
++	}
++#if !defined(_WIN32)
++	else if (family == AF_INET6)
++	{
++		struct sockaddr_in6* address = (struct sockaddr_in6*)&listenerAddress;
++		address->sin6_family = AF_INET6;
++		address->sin6_addr = in6addr_loopback;
++		address->sin6_port = 0;
++		listenerLength = sizeof(*address);
++	}
++#endif
++	else
++		goto cleanup;
++
++	listener = _socket(family, SOCK_STREAM, IPPROTO_TCP);
++	if (listener == INVALID_SOCKET)
++	{
++		ok = !required;
++		goto cleanup;
++	}
++	if (_bind(listener, (const struct sockaddr*)&listenerAddress, listenerLength) != 0 ||
++	    _listen(listener, 1) != 0)
++	{
++		ok = !required;
++		goto cleanup;
++	}
++	if (_getsockname(listener, (struct sockaddr*)&listenerAddress, &listenerLength) != 0)
++		goto cleanup;
++
++	context = test_client_context_new();
++	if (!context)
++		goto cleanup;
++	rdpTransport* transport = freerdp_get_transport(context);
++	const rdpTransportIo* io = freerdp_get_io_callbacks(context);
++	if (!transport || !io || !io->ConnectLayer || !io->AttachLayer)
++		goto cleanup;
++
++	layer = io->ConnectLayer(transport, hostname, test_sockaddr_port(&listenerAddress), 2000);
++	if (!layer || !io->AttachLayer(transport, layer))
++		goto cleanup;
++	layer = nullptr; /* The transport BIO owns the layer after AttachLayer succeeds. */
++
++	struct sockaddr_storage acceptedAddress = WINPR_C_ARRAY_INIT;
++	int acceptedLength = sizeof(acceptedAddress);
++	accepted = _accept(listener, (struct sockaddr*)&acceptedAddress, &acceptedLength);
++	if (accepted == INVALID_SOCKET)
++		goto cleanup;
++
++	int lastSocketError = -1;
++	UINT32 failureStage = RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++	udp = rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++	if (udp == INVALID_SOCKET || lastSocketError != 0 ||
++	    failureStage != RDPUDP_CLIENT_FAILURE_NONE)
++		goto cleanup;
++
++	struct sockaddr_storage udpPeer = WINPR_C_ARRAY_INIT;
++	int udpPeerLength = sizeof(udpPeer);
++	if (_getpeername(udp, (struct sockaddr*)&udpPeer, &udpPeerLength) != 0 ||
++	    !test_sockaddr_equal(&listenerAddress, &udpPeer))
++		goto cleanup;
++
++	int socketType = 0;
++	int socketTypeLength = sizeof(socketType);
++	if (_getsockopt(udp, SOL_SOCKET, SO_TYPE, (char*)&socketType, &socketTypeLength) != 0 ||
++	    socketType != SOCK_DGRAM)
++		goto cleanup;
++	ok = TRUE;
++
++cleanup:
++	if (udp != INVALID_SOCKET)
++		closesocket(udp);
++	if (accepted != INVALID_SOCKET)
++		closesocket(accepted);
++	if (layer)
++		transport_layer_free(layer);
++	freerdp_client_context_free(context);
++	if (listener != INVALID_SOCKET)
++		closesocket(listener);
++	if (wsaStarted)
++		WSACleanup();
++	return ok;
++}
++
++typedef struct
++{
++	SOCKET socket;
++} TestSocketLayerContext;
++
++static BOOL test_socket_layer_get_socket(void* userContext, SOCKET* socket)
++{
++	if (!userContext || !socket)
++		return FALSE;
++	const TestSocketLayerContext* context = (const TestSocketLayerContext*)userContext;
++	*socket = context->socket;
++	return context->socket != INVALID_SOCKET;
++}
++
++static BOOL test_socket_layer_close(void* userContext)
++{
++	if (!userContext)
++		return FALSE;
++	TestSocketLayerContext* context = (TestSocketLayerContext*)userContext;
++	if (context->socket != INVALID_SOCKET)
++	{
++		closesocket(context->socket);
++		context->socket = INVALID_SOCKET;
++	}
++	return TRUE;
++}
++
++static BOOL test_unconnected_transport_socket(void)
++{
++	BOOL ok = FALSE;
++	WSADATA wsa = WINPR_C_ARRAY_INIT;
++	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
++		return FALSE;
++
++	rdpContext* context = test_client_context_new();
++	if (!context)
++		goto cleanup;
++	rdpTransport* transport = freerdp_get_transport(context);
++	const rdpTransportIo* io = freerdp_get_io_callbacks(context);
++	if (!transport || !io || !io->AttachLayer)
++		goto cleanup;
++
++	rdpTransportLayer* layer = transport_layer_new(transport, sizeof(TestSocketLayerContext));
++	if (!layer)
++		goto cleanup;
++	TestSocketLayerContext* layerContext = (TestSocketLayerContext*)layer->userContext;
++	layerContext->socket = _socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++	layer->GetSocket = test_socket_layer_get_socket;
++	layer->Close = test_socket_layer_close;
++	if (layerContext->socket == INVALID_SOCKET || !io->AttachLayer(transport, layer))
++	{
++		transport_layer_free(layer);
++		goto cleanup;
++	}
++
++	int lastSocketError = 0;
++	UINT32 failureStage = RDPUDP_CLIENT_FAILURE_NONE;
++	const SOCKET socket =
++	    rdpudp_test_connect_socket(context->rdp, &lastSocketError, &failureStage);
++	ok = socket == INVALID_SOCKET && lastSocketError != 0 &&
++	     failureStage == RDPUDP_CLIENT_FAILURE_SOCKET_CONNECT;
++
++cleanup:
++	freerdp_client_context_free(context);
++	WSACleanup();
++	return ok;
++}
++
++static BOOL test_transport_socket_control(void)
++{
++	const BOOL callbacks = test_unavailable_transport_socket(nullptr) &&
++	                       test_unavailable_transport_socket(test_get_socket_false) &&
++	                       test_unavailable_transport_socket(test_get_socket_invalid);
++	const BOOL loopback4 = test_loopback_transport_socket(AF_INET, "127.0.0.1", TRUE);
++#if !defined(_WIN32)
++	const BOOL loopback6 = test_loopback_transport_socket(AF_INET6, "::1", FALSE);
++#else
++	const BOOL loopback6 = TRUE;
++#endif
++	return callbacks && test_route_gate() && test_unconnected_transport_socket() && loopback4 &&
++	       loopback6;
++}
 +
 +static BOOL test_sequence_wrap(void)
 +{
@@ -8432,5 +8731,211 @@ index 00000000..125828d2
 +
 +int TestRdpUdp(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
 +{
-+	return test_sequence_wrap() && test_syn_and_syn_ack() && test_rdpemt_create_request() ? 0 : -1;
++	const BOOL ok = test_transport_socket_control() && test_sequence_wrap() &&
++	                test_syn_and_syn_ack() && test_rdpemt_create_request();
++	return ok ? 0 : -1;
 +}
+diff --git a/libfreerdp/core/transport.c b/libfreerdp/core/transport.c
+index 5a074dfe..5278f4a8 100644
+--- a/libfreerdp/core/transport.c
++++ b/libfreerdp/core/transport.c
+@@ -1978,6 +1978,14 @@ HANDLE transport_get_front_bio(rdpTransport* transport)
+ 	return hEvent;
+ }
+ 
++BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket)
++{
++	if (!transport || !transport->frontBio || !socket)
++		return FALSE;
++	*socket = INVALID_SOCKET;
++	return BIO_get_socket(transport->frontBio, socket) == 1 && *socket != INVALID_SOCKET;
++}
++
+ BOOL transport_io_callback_set_event(rdpTransport* transport, BOOL set)
+ {
+ 	WINPR_ASSERT(transport);
+@@ -2111,6 +2119,23 @@ static long transport_layer_bio_ctrl(BIO* bio, int cmd, long arg1, void* arg2)
+ 	int status = -1;
+ 	switch (cmd)
+ 	{
++		case BIO_C_GET_SOCKET:
++		{
++			if (!arg2)
++			{
++				status = 0;
++				break;
++			}
++			SOCKET* socket = (SOCKET*)arg2;
++			*socket = INVALID_SOCKET;
++			const BOOL ok = IFCALLRESULT(FALSE, layer->GetSocket, layer->userContext, socket) &&
++			                (*socket != INVALID_SOCKET);
++			if (!ok)
++				*socket = INVALID_SOCKET;
++			status = ok ? 1 : 0;
++			break;
++		}
++
+ 		case BIO_C_GET_EVENT:
+ 			*((HANDLE*)arg2) = IFCALLRESULT(nullptr, layer->GetEvent, layer->userContext);
+ 			status = 1;
+diff --git a/libfreerdp/core/transport.h b/libfreerdp/core/transport.h
+index b5cfae92..bbb121c1 100644
+--- a/libfreerdp/core/transport.h
++++ b/libfreerdp/core/transport.h
+@@ -152,6 +152,10 @@ FREERDP_LOCAL DWORD transport_get_event_handles(rdpTransport* transport, HANDLE*
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL HANDLE transport_get_front_bio(rdpTransport* transport);
+ 
++/* Returns a borrowed socket for immediate use on the transport owner thread. */
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL transport_get_socket(rdpTransport* transport, SOCKET* socket);
++
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL BOOL transport_set_blocking_mode(rdpTransport* transport, BOOL blocking);
+ 
+diff --git a/libfreerdp/gdi/gfx.c b/libfreerdp/gdi/gfx.c
+index ec94f96e..9e85eef9 100644
+--- a/libfreerdp/gdi/gfx.c
++++ b/libfreerdp/gdi/gfx.c
+@@ -34,6 +34,47 @@
+ #include <math.h>
+ 
+ #define TAG FREERDP_TAG("gdi")
++#define GDI_GFX_MAX_DIMENSION 8192u
++#define GDI_GFX_MAX_PIXELS 16777216ull
++#define GDI_GFX_MAX_SURFACE_BYTES (128ull * 1024ull * 1024ull)
++
++static BOOL gdi_gfx_dimensions_safe(UINT32 width, UINT32 height)
++{
++	return width > 0 && height > 0 && width <= GDI_GFX_MAX_DIMENSION &&
++	       height <= GDI_GFX_MAX_DIMENSION && (UINT64)width * height <= GDI_GFX_MAX_PIXELS;
++}
++
++static BOOL gdi_gfx_surface_budget_allows(RdpgfxClientContext* context, UINT64 requested)
++{
++	WINPR_ASSERT(context);
++	if (requested > GDI_GFX_MAX_SURFACE_BYTES || !context->GetSurfaceIds ||
++	    !context->GetSurfaceData)
++		return FALSE;
++
++	UINT16 count = 0;
++	UINT16* surfaceIds = nullptr;
++	if (context->GetSurfaceIds(context, &surfaceIds, &count) != CHANNEL_RC_OK)
++		return FALSE;
++
++	UINT64 total = requested;
++	for (UINT16 index = 0; index < count; index++)
++	{
++		const gdiGfxSurface* surface =
++		    (const gdiGfxSurface*)context->GetSurfaceData(context, surfaceIds[index]);
++		if (!surface)
++			continue;
++		const UINT64 bytes = (UINT64)surface->scanline * surface->height;
++		if (bytes > GDI_GFX_MAX_SURFACE_BYTES || total > GDI_GFX_MAX_SURFACE_BYTES - bytes)
++		{
++			free(surfaceIds);
++			return FALSE;
++		}
++		total += bytes;
++	}
++
++	free(surfaceIds);
++	return TRUE;
++}
+ 
+ static BOOL is_rect_valid(const RECTANGLE_16* rect, size_t width, size_t height)
+ {
+@@ -115,6 +156,12 @@ static UINT gdi_ResetGraphics(RdpgfxClientContext* context,
+ 	const UINT32 DesktopHeight = resetGraphics->height;
+ 
+ 	WLog_DBG(TAG, "new size: %" PRIu32 "x%" PRIu32, DesktopWidth, DesktopHeight);
++	if (!gdi_gfx_dimensions_safe(DesktopWidth, DesktopHeight))
++	{
++		WLog_ERR(TAG, "rejecting unsafe graphics reset size %" PRIu32 "x%" PRIu32, DesktopWidth,
++		         DesktopHeight);
++		goto fail;
++	}
+ 
+ 	if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, DesktopWidth))
+ 		goto fail;
+@@ -1259,10 +1306,23 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 	rdpGdi* gdi = nullptr;
+ 	WINPR_ASSERT(context);
+ 	WINPR_ASSERT(createSurface);
++	if (!gdi_gfx_dimensions_safe(createSurface->width, createSurface->height))
++	{
++		WLog_ERR(TAG, "rejecting unsafe GFX surface size %" PRIu16 "x%" PRIu16,
++		         createSurface->width, createSurface->height);
++		return ERROR_INVALID_DATA;
++	}
+ 	gdi = (rdpGdi*)context->custom;
+ 	WINPR_ASSERT(gdi);
+ 	WINPR_ASSERT(gdi->context);
+ 	EnterCriticalSection(&context->mux);
++	if (context->GetSurfaceData &&
++	    context->GetSurfaceData(context, createSurface->surfaceId) != nullptr)
++	{
++		WLog_ERR(TAG, "rejecting duplicate GFX surface id %" PRIu16, createSurface->surfaceId);
++		rc = ERROR_INVALID_DATA;
++		goto fail;
++	}
+ 	surface = (gdiGfxSurface*)calloc(1, sizeof(gdiGfxSurface));
+ 
+ 	if (!surface)
+@@ -1304,7 +1364,14 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 	}
+ 
+ 	surface->scanline = gfx_align_scanline(surface->width * 4UL, 16);
+-	surface->data = (BYTE*)winpr_aligned_malloc(1ull * surface->scanline * surface->height, 16);
++	const UINT64 surfaceBytes = (UINT64)surface->scanline * surface->height;
++	if (!gdi_gfx_surface_budget_allows(context, surfaceBytes))
++	{
++		WLog_ERR(TAG, "rejecting GFX surface: aggregate memory budget exceeded");
++		free(surface);
++		goto fail;
++	}
++	surface->data = (BYTE*)winpr_aligned_malloc(surfaceBytes, 16);
+ 
+ 	if (!surface->data)
+ 	{
+@@ -1317,6 +1384,12 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
+ 
+ 	WINPR_ASSERT(context->SetSurfaceData);
+ 	rc = context->SetSurfaceData(context, surface->surfaceId, (void*)surface);
++	if (rc != CHANNEL_RC_OK)
++	{
++		region16_uninit(&surface->invalidRegion);
++		winpr_aligned_free(surface->data);
++		free(surface);
++	}
+ fail:
+ 	LeaveCriticalSection(&context->mux);
+ 	return rc;
+diff --git a/winpr/libwinpr/thread/tls.c b/winpr/libwinpr/thread/tls.c
+index 416bebd7..a84045ad 100644
+--- a/winpr/libwinpr/thread/tls.c
++++ b/winpr/libwinpr/thread/tls.c
+@@ -40,9 +40,21 @@ DWORD TlsAlloc(void)
+ 
+ 	if (pthread_key_create(&key, nullptr) != 0)
+ 		return TLS_OUT_OF_INDEXES;
+-	if (key > UINT32_MAX)
++
++	/*
++	 * pthread_key_t is opaque. Android's bionic encodes a validity flag in bit 31, so a valid
++	 * key is negative when observed as its signed typedef. WINPR_ASSERTING_INT_CAST rejects that
++	 * sign change even though DWORD preserves the complete 32-bit key. Validate the round trip
++	 * instead and keep the opaque bit pattern intact for pthread_get/setspecific.
++	 */
++	const DWORD index = (DWORD)key;
++	if ((index == TLS_OUT_OF_INDEXES) || ((pthread_key_t)index != key))
++	{
++		pthread_key_delete(key);
+ 		return TLS_OUT_OF_INDEXES;
+-	return WINPR_ASSERTING_INT_CAST(DWORD, key);
++	}
++
++	return index;
+ }
+ 
+ LPVOID TlsGetValue(DWORD dwTlsIndex)
