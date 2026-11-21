@@ -5,7 +5,9 @@ import com.hanfengruyue.pocketrdp.core.data.db.ConnectionDao
 import com.hanfengruyue.pocketrdp.core.data.db.PocketRdpDatabase
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 import com.hanfengruyue.pocketrdp.core.data.security.CredentialCipher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.util.Locale
 import javax.inject.Inject
@@ -168,8 +170,8 @@ class ConnectionRepository @Inject constructor(
         }
     }
 
-    suspend fun decryptPassword(entity: ConnectionEntity): String {
-        if (entity.passwordCipher.isEmpty()) return ""
+    suspend fun decryptPassword(entity: ConnectionEntity): String = withContext(Dispatchers.IO) {
+        if (entity.passwordCipher.isEmpty()) return@withContext ""
         val plain = decryptPasswordValue(entity)
         if (entity.passwordAadVersion == LEGACY_CREDENTIAL_AAD_VERSION) {
             val rebound = cipher.encryptString(
@@ -178,7 +180,7 @@ class ConnectionRepository @Inject constructor(
             )
             dao.upgradeLegacyCredentialBinding(entity.id, rebound.ciphertext, rebound.iv)
         }
-        return plain
+        plain
     }
 
     private fun decryptPasswordValue(entity: ConnectionEntity): String {

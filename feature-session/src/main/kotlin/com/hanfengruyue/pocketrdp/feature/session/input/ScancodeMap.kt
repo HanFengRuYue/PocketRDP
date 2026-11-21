@@ -97,7 +97,7 @@ object ScancodeMap {
         KeyEvent.KEYCODE_DPAD_DOWN to VK.DOWN,
         KeyEvent.KEYCODE_DPAD_LEFT to VK.LEFT,
         KeyEvent.KEYCODE_DPAD_RIGHT to VK.RIGHT,
-        KeyEvent.KEYCODE_HOME to VK.HOME,
+        KeyEvent.KEYCODE_MOVE_HOME to VK.HOME,
         KeyEvent.KEYCODE_MOVE_END to VK.END,
         KeyEvent.KEYCODE_PAGE_UP to VK.PAGE_UP,
         KeyEvent.KEYCODE_PAGE_DOWN to VK.PAGE_DOWN,
@@ -121,9 +121,36 @@ object ScancodeMap {
         KeyEvent.KEYCODE_SHIFT_RIGHT to VK.RSHIFT,
         KeyEvent.KEYCODE_META_LEFT to VK.LWIN,
         KeyEvent.KEYCODE_META_RIGHT to VK.RWIN,
+        KeyEvent.KEYCODE_MENU to VK.APPS,
+    )
+
+    private val hardwarePunctuationCodes: Map<Int, Int> = mapOf(
+        KeyEvent.KEYCODE_GRAVE to VK.OEM_GRAVE,
+        KeyEvent.KEYCODE_MINUS to VK.OEM_MINUS,
+        KeyEvent.KEYCODE_EQUALS to VK.OEM_PLUS,
+        KeyEvent.KEYCODE_LEFT_BRACKET to VK.OEM_LBRACKET,
+        KeyEvent.KEYCODE_RIGHT_BRACKET to VK.OEM_RBRACKET,
+        KeyEvent.KEYCODE_BACKSLASH to VK.OEM_BACKSLASH,
+        KeyEvent.KEYCODE_SEMICOLON to VK.OEM_SEMICOLON,
+        KeyEvent.KEYCODE_APOSTROPHE to VK.OEM_QUOTE,
+        KeyEvent.KEYCODE_COMMA to VK.OEM_COMMA,
+        KeyEvent.KEYCODE_PERIOD to VK.OEM_PERIOD,
+        KeyEvent.KEYCODE_SLASH to VK.OEM_SLASH,
     )
 
     fun vkFor(keyCode: Int): Int? = codes[keyCode]
+
+    /**
+     * Map any physical keyboard Android [KeyEvent] keycode — including letters, digits, and US
+     * punctuation — to its Windows Virtual-Key code. Used for hardware keyboard input and for
+     * modifier shortcut chords (Ctrl+C, Win+D, Alt+F4, etc.) so [BasicTextField] does not swallow
+     * them. Intentionally leaves Android system keys (Back, Home, Volume, Power) unmapped.
+     */
+    fun hardwareVkFor(keyCode: Int): Int? = codes[keyCode] ?: when (keyCode) {
+        in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> VK_A + (keyCode - KeyEvent.KEYCODE_A)
+        in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> VK_0 + (keyCode - KeyEvent.KEYCODE_0)
+        else -> hardwarePunctuationCodes[keyCode]
+    }
 
     // Windows VK codes that coincide with ASCII for letters/digits (VK_A==0x41, VK_0==0x30).
     private const val VK_0 = 0x30
@@ -198,6 +225,7 @@ object ScancodeMap {
         in upperLetters -> (VK_A + (codePoint - 'A'.code)) to true
         in digits -> (VK_0 + (codePoint - '0'.code)) to false
         ' '.code -> VK.SPACE to false
+        '\n'.code, '\r'.code -> VK.RETURN to false
         else -> shiftedPunctuation[codePoint]
     }
 

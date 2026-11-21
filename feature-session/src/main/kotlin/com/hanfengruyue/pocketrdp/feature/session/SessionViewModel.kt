@@ -4,10 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Environment
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferencesRepository
 import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS
+import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
+import com.hanfengruyue.pocketrdp.core.data.preferences.localizedContextForLanguageTag
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionOperationCoordinator
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
 import com.hanfengruyue.pocketrdp.core.data.thumbnail.ConnectionThumbnailStore
@@ -18,8 +21,8 @@ import com.hanfengruyue.pocketrdp.core.rdp.RdpConnectionParams
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.core.rdp.RdpDriveRedirectionPlan
 import com.hanfengruyue.pocketrdp.core.rdp.RdpEvent
-import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportPhase
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
 import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.core.rdp.planRdpDriveRedirection
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
@@ -36,9 +39,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import kotlin.math.absoluteValue
@@ -46,6 +51,7 @@ import kotlin.math.absoluteValue
 sealed interface SessionConnectionStatus {
     data object Idle : SessionConnectionStatus
     data object Connecting : SessionConnectionStatus
+    data object Reconnecting : SessionConnectionStatus
     data object Connected : SessionConnectionStatus
     data class Disconnected(val reason: String?) : SessionConnectionStatus
     data class Failed(val error: String) : SessionConnectionStatus
@@ -100,6 +106,7 @@ data class SessionUiState(
     val allFilesAccessRequired: Boolean = false,
     val functionToolbarQuickIds: List<String> = DEFAULT_FUNCTION_TOOLBAR_QUICK_IDS,
     val pendingCertificate: PendingCertificate? = null,
+    val pendingCredentialsPrompt: CredentialsPromptState? = null,
     val lastError: String? = null,
 )
 
@@ -108,6 +115,12 @@ data class PendingCertificate(
     val port: Int,
     val sha256: String,
     val isChange: Boolean,
+)
+
+data class CredentialsPromptState(
+    val host: String,
+    val initialUsername: String,
+    val initialDomain: String,
 )
 
 private sealed interface TextInputCommand {
@@ -240,8 +253,11 @@ class SessionViewModel @Inject constructor(
     // PDU once the RDP control channel finishes negotiating — without that the very first
     // layout we send (right after Compose measures the view) is silently dropped because the
     // dynvc/disp channel isn't open yet.
+    private var lastSurfaceWidth: Int = 0
+    private var lastSurfaceHeight: Int = 0
     private var pendingMonitorWidth: Int = 0
     private var pendingMonitorHeight: Int = 0
+    private var pendingMonitorResizeDeferred: Boolean = false
     private var monitorLayoutRetryJob: Job? = null
     // Debounce job for onSurfaceResized. Soft-keyboard show/hide animates the AndroidView's
     // height pixel-by-pixel (observed: 20+ resize callbacks over ~150 ms), and pushing a
@@ -260,13 +276,13 @@ class SessionViewModel @Inject constructor(
     // reason=null (unexpected — reconnect with backoff). A failed connect attempt (RdpEvent.Failed)
     // is also retried unless the teardown was user-initiated.
     private var lastParams: RdpConnectionParams? = null
-    private var lastConnName: String = ""
-    private var lastHostLabel: String = ""
     private var userInitiatedDisconnect: Boolean = false
     private var reconnectAttempt: Int = 0
     private var reconnectJob: Job? = null
     private var certificateDecisionPending: Boolean = false
     private var udpDowngradedForSession: Boolean = false
+    private var filesRedirectSkippedForSession: Boolean = false
+    @Volatile private var currentLanguageTag: String = LANGUAGE_SYSTEM
 
     init {
         observeEvents()
@@ -283,10 +299,14 @@ class SessionViewModel @Inject constructor(
     private fun observePreferences() {
         viewModelScope.launch {
             preferencesRepository.preferences.collect { prefs ->
+                currentLanguageTag = prefs.languageTag
                 _state.update { it.copy(functionToolbarQuickIds = prefs.functionToolbarQuickIds) }
             }
         }
     }
+
+    private fun localizedString(@StringRes resId: Int): String =
+        appContext.localizedContextForLanguageTag(currentLanguageTag).getString(resId)
 
     fun ensureStarted(connectionId: Long) {
         startIfAllowed(connectionId, allowStoppedSessionRestart = true)
@@ -306,6 +326,10 @@ class SessionViewModel @Inject constructor(
         if (connectionId <= 0L) return
         val current = _state.value
         if (!shouldLaunchConnect(current, connectionId, allowStoppedSessionRestart)) return
+        if (current.connectionId != connectionId) {
+            udpDowngradedForSession = false
+            filesRedirectSkippedForSession = false
+        }
         _state.update {
             it.copy(
                 connectionId = connectionId,
@@ -314,11 +338,40 @@ class SessionViewModel @Inject constructor(
                 // separate repository/decrypt/native-connect coroutine for the same session.
                 status = SessionConnectionStatus.Connecting,
                 pendingCertificate = null,
+                pendingCredentialsPrompt = null,
             )
         }
         // A foreground/manual restart supersedes any delayed auto-reconnect left by the previous
         // failure. Cancel it before launching repository I/O so the timer cannot win that race.
         reconnectJob?.cancel()
+        launchConnect(connectionId)
+    }
+
+    /**
+     * Explicit in-session manual reconnect from the Failed / Disconnected overlay or toolbar.
+     * Preserves [udpDowngradedForSession] so a session that already fell back from UDP to TCP
+     * stays TCP-only until the user leaves and manually starts a fresh session.
+     */
+    fun reconnect() {
+        val current = _state.value
+        val connectionId = current.connectionId
+        val canManualReconnect = current.status is SessionConnectionStatus.Failed ||
+            current.status is SessionConnectionStatus.Disconnected ||
+            current.status is SessionConnectionStatus.Idle
+        if (connectionId <= 0L || !canManualReconnect) return
+        userInitiatedDisconnect = false
+        certificateDecisionPending = false
+        reconnectAttempt = 0
+        reconnectJob?.cancel()
+        _state.update {
+            it.copy(
+                status = SessionConnectionStatus.Connecting,
+                pendingCertificate = null,
+                pendingCredentialsPrompt = null,
+                allFilesAccessRequired = false,
+                lastError = null,
+            )
+        }
         launchConnect(connectionId)
     }
 
@@ -339,12 +392,51 @@ class SessionViewModel @Inject constructor(
                 status = SessionConnectionStatus.Connecting,
                 allFilesAccessRequired = false,
                 pendingCertificate = null,
+                pendingCredentialsPrompt = null,
                 lastError = null,
             )
         }
         reconnectJob?.cancel()
         launchConnect(current.connectionId)
         return false
+    }
+
+    /**
+     * User tapped "Not now" on the All-Files-Access dialog: continue connecting without folder
+     * redirection for this session rather than stranding the user in [SessionConnectionStatus.Idle].
+     */
+    fun dismissAllFilesAccessAndContinueWithoutDrive() {
+        val current = _state.value
+        if (!current.allFilesAccessRequired || current.connectionId <= 0L) return
+        filesRedirectSkippedForSession = true
+        _state.update {
+            it.copy(
+                status = SessionConnectionStatus.Connecting,
+                filesRedirectEnabled = false,
+                allFilesAccessRequired = false,
+                pendingCertificate = null,
+                pendingCredentialsPrompt = null,
+                lastError = null,
+            )
+        }
+        reconnectJob?.cancel()
+        launchConnect(current.connectionId)
+    }
+
+    fun submitCredentials(username: String, domain: String, password: String) {
+        if (_state.value.pendingCredentialsPrompt == null) return
+        _state.update { it.copy(pendingCredentialsPrompt = null, lastError = null) }
+        lastParams = lastParams?.copy(username = username, domain = domain, password = password)
+        rdpClient.submitCredentials(username, domain, password)
+    }
+
+    fun cancelCredentials() {
+        if (_state.value.pendingCredentialsPrompt == null) return
+        userInitiatedDisconnect = true
+        lastParams = null
+        reconnectJob?.cancel()
+        _state.update { it.copy(pendingCredentialsPrompt = null) }
+        rdpClient.cancelCredentials()
     }
 
     /**
@@ -392,31 +484,39 @@ class SessionViewModel @Inject constructor(
         }
     }
 
+    private fun latchUdpDowngradeIfNeeded(observed: Boolean) {
+        if (observed && !udpDowngradedForSession) {
+            udpDowngradedForSession = true
+            lastParams = lastParams?.copy(useMultitransport = false)
+            PocketLogger.w(TAG, "UDP tunnel failed; all app-level retries for this session are TCP-only")
+        }
+    }
+
     private fun observeEvents() {
         viewModelScope.launch {
             rdpClient.events.collect { event ->
                 when (event) {
-                    is RdpEvent.Connecting -> _state.update { it.copy(status = SessionConnectionStatus.Connecting) }
+                    is RdpEvent.Connecting -> _state.update {
+                        val nextStatus = if (reconnectAttempt > 0) {
+                            SessionConnectionStatus.Reconnecting
+                        } else {
+                            SessionConnectionStatus.Connecting
+                        }
+                        it.copy(status = nextStatus)
+                    }
                     is RdpEvent.Connected -> {
                         certificateDecisionPending = false
                         // A live connection: clear reconnect bookkeeping so a later drop starts its
-                        // backoff from zero. On the INITIAL connect (not a reconnect) the app is in
-                        // the foreground, so it's safe to refresh the FGS notification to "已连接"
-                        // here — this also covers the race where a very fast Connected fired before
-                        // the service subscribed to events. On a *reconnect* we skip it (the app may
-                        // be backgrounded → API 31+ FGS background-start restriction; the already-
-                        // subscribed service updates its own notification from this event instead).
-                        val wasReconnect = reconnectAttempt > 0
+                        // backoff from zero. Keep-alive FGS was already promoted while foregrounded
+                        // in launchConnect(), and RdpSessionService observes RdpSessionRegistry.
                         reconnectAttempt = 0
                         reconnectJob?.cancel()
-                        if (!wasReconnect) {
-                            startKeepAlive(appContext.getString(R.string.session_notification_status_connected))
-                        }
                         _state.update {
                             it.copy(
                                 status = SessionConnectionStatus.Connected,
                                 connectedAtMs = System.currentTimeMillis(),
                                 pendingCertificate = null,
+                                pendingCredentialsPrompt = null,
                                 lastError = null,
                             )
                         }
@@ -433,26 +533,12 @@ class SessionViewModel @Inject constructor(
                         registerClipboardListener()
                         startTypeConsumer()
                     }
-                    is RdpEvent.ClipboardReceived -> {
-                        // Remote → local. Mirror the de-dupe token first so our own
-                        // OnPrimaryClipChanged (fired by setPrimaryClip) recognises this as an
-                        // echo and doesn't bounce it back to the server.
-                        val remoteText = truncateClipboardText(event.text, CLIPBOARD_MAX_CHARS)
-                        if (event.text.length > CLIPBOARD_MAX_CHARS) {
-                            PocketLogger.w(TAG, "remote clipboard exceeded the safe size cap; truncating")
-                        }
-                        if (remoteText == lastRemoteClipboardPayload) {
-                            lastRemoteClipboardPayload = ""
-                        } else if (clipboardSyncEnabled && remoteText.isNotEmpty() &&
-                            remoteText != lastAppliedRemoteClipboard
-                        ) {
-                            lastAppliedRemoteClipboard = remoteText
-                            clipboardManager.setPrimaryClip(
-                                ClipData.newPlainText("PocketRDP", remoteText),
-                            )
-                        }
-                    }
                     is RdpEvent.Disconnected -> {
+                        val wasConnected = _state.value.status is SessionConnectionStatus.Connected
+                        if (wasConnected && rdpClient.buffer.hasPublishedFrame.value) {
+                            captureThumbnail()
+                        }
+                        latchUdpDowngradeIfNeeded(event.udpDowngraded || rdpClient.hasObservedUdpDowngrade())
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
                         unregisterClipboardListener()
@@ -465,19 +551,33 @@ class SessionViewModel @Inject constructor(
                                 connectedAtMs = 0L,
                                 durationSec = 0L,
                                 fps = 0,
+                                imeVisible = false,
                                 remoteCursor = RdpCursor.Default,
+                                pendingCredentialsPrompt = null,
                             )
                         }
-                        // reason=="user" → deliberate teardown (disconnect button / left screen):
-                        // the service self-stops, just cancel any pending reconnect. reason==null →
-                        // an unexpected native/network drop: auto-reconnect with backoff.
-                        if (event.reason == "user" || certificateDecisionPending) {
-                            reconnectJob?.cancel()
-                        } else {
-                            scheduleReconnect()
+                        when {
+                            event.reason == "user" -> {
+                                userInitiatedDisconnect = true
+                                lastParams = null
+                                reconnectJob?.cancel()
+                                stopKeepAlive()
+                            }
+                            certificateDecisionPending -> {
+                                reconnectJob?.cancel()
+                            }
+                            !event.retryable -> {
+                                lastParams = null
+                                reconnectJob?.cancel()
+                                stopKeepAlive()
+                            }
+                            else -> {
+                                scheduleReconnect()
+                            }
                         }
                     }
                     is RdpEvent.Failed -> {
+                        latchUdpDowngradeIfNeeded(event.udpDowngraded || rdpClient.hasObservedUdpDowngrade())
                         monitorLayoutRetryJob?.cancel()
                         monitorLayoutDebounceJob?.cancel()
                         unregisterClipboardListener()
@@ -490,30 +590,27 @@ class SessionViewModel @Inject constructor(
                                 connectedAtMs = 0L,
                                 durationSec = 0L,
                                 fps = 0,
+                                imeVisible = false,
                                 remoteCursor = RdpCursor.Default,
+                                pendingCredentialsPrompt = null,
                                 lastError = event.error,
                             )
                         }
                         // A failed attempt (incl. mid-session reconnect) is retried with backoff
-                        // unless the user tore the session down.
-                        if (!certificateDecisionPending && event.retryable) {
+                        // unless the user tore the session down or the failure is permanent.
+                        if (!certificateDecisionPending && !userInitiatedDisconnect && event.retryable) {
                             scheduleReconnect()
-                        } else if (!event.retryable) {
-                            // Auto-reconnect is impossible for a permanent validation/security
-                            // failure, so do not retain the decrypted password in RdpConnectionParams.
-                            lastParams = null
+                        } else {
+                            reconnectJob?.cancel()
+                            if (!event.retryable || userInitiatedDisconnect) {
+                                // Auto-reconnect is impossible for a permanent validation/security
+                                // failure, so do not retain decrypted credentials in memory.
+                                lastParams = null
+                            }
+                            if (!certificateDecisionPending) {
+                                stopKeepAlive()
+                            }
                         }
-                    }
-                    is RdpEvent.GraphicsUpdated -> {
-                        // FPS = the genuine CONTENT update rate (how often the remote picture
-                        // actually changed), counted here per published frame. This deliberately
-                        // REVERTS the earlier "count render frames via onFrameRendered" design:
-                        // that counted the self-redraw loop, which in 自动/auto mode (targetFrameRate
-                        // == 0) runs at the device refresh rate (e.g. 120 Hz) and reported ~120 fps
-                        // even when the remote screen barely changed (用户反馈: 帧数虚高，肉眼根本没那么
-                        // 高). Counting content frames matches what the eye sees — idle ⇒ ~0, video ⇒
-                        // ~content fps — and is honest. The 1 Hz ticker still samples snapshot().
-                        fpsCounter.tick()
                     }
                     is RdpEvent.CertificatePrompt -> {
                         certificateDecisionPending = true
@@ -529,10 +626,22 @@ class SessionViewModel @Inject constructor(
                                     sha256 = event.sha256,
                                     isChange = event.isChange,
                                 ),
+                                pendingCredentialsPrompt = null,
                             )
                         }
                     }
-                    else -> Unit
+                    is RdpEvent.CredentialsRequired -> {
+                        reconnectJob?.cancel()
+                        _state.update {
+                            it.copy(
+                                pendingCredentialsPrompt = CredentialsPromptState(
+                                    host = event.host,
+                                    initialUsername = event.initialUsername,
+                                    initialDomain = event.initialDomain,
+                                ),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -579,6 +688,7 @@ class SessionViewModel @Inject constructor(
                         TAG,
                         "monitor layout acknowledged (remote=${event.width}x${event.height})",
                     )
+                    pendingMonitorResizeDeferred = false
                     monitorLayoutRetryJob?.cancel()
                 }
             }
@@ -614,14 +724,7 @@ class SessionViewModel @Inject constructor(
                     // transportInfo() is a cheap in-memory native getter. Polling each tick lets
                     // the badge flip only when a real UDP/UDP2 tunnel state appears.
                     val transportSnapshot = rdpClient.transportSnapshot()
-                    if (!udpDowngradedForSession &&
-                        (transportSnapshot.downgradedToTcp ||
-                            transportSnapshot.phase == RdpTransportPhase.RECONNECTING_TCP)
-                    ) {
-                        udpDowngradedForSession = true
-                        lastParams = lastParams?.copy(useMultitransport = false)
-                        PocketLogger.w(TAG, "UDP tunnel failed; all app-level retries for this session are TCP-only")
-                    }
+                    latchUdpDowngradeIfNeeded(isUdpDowngradeObserved(transportSnapshot))
                     _state.update {
                         it.copy(
                             fps = fpsCounter.snapshot(),
@@ -728,6 +831,40 @@ class SessionViewModel @Inject constructor(
         return capDynamicResolutionToMax(width, height, dynamicResMaxShortEdge)
     }
 
+    private fun reapplyDynamicResolutionCap() {
+        if (!dynamicResolutionEnabled) {
+            monitorLayoutDebounceJob?.cancel()
+            monitorLayoutRetryJob?.cancel()
+            pendingMonitorWidth = 0
+            pendingMonitorHeight = 0
+            pendingMonitorResizeDeferred = false
+            return
+        }
+        if (lastSurfaceWidth > 0 && lastSurfaceHeight > 0) {
+            val (cappedW, cappedH) = capToDynamicMax(lastSurfaceWidth, lastSurfaceHeight)
+            pendingMonitorWidth = cappedW
+            pendingMonitorHeight = cappedH
+        }
+    }
+
+    private suspend fun resolveDriveRedirectionPlan(redirectFiles: Boolean): RdpDriveRedirectionPlan =
+        withContext(Dispatchers.IO) {
+            planRdpDriveRedirection(
+                redirectFiles = redirectFiles,
+                allFilesAccessGranted = Environment.isExternalStorageManager(),
+                storageMounted = runCatching { Environment.getExternalStorageState() }
+                    .map { it == Environment.MEDIA_MOUNTED }
+                    .getOrDefault(false),
+                externalStoragePath = runCatching {
+                    Environment.getExternalStorageDirectory()?.absolutePath
+                }.getOrNull(),
+                pathExists = { path -> File(path).exists() },
+                pathIsDirectory = { path -> File(path).isDirectory },
+                pathCanRead = { path -> File(path).canRead() },
+                pathCanWrite = { path -> File(path).canWrite() },
+            )
+        }
+
     private fun launchConnect(id: Long) {
         // This path always reloads the authoritative row and constructs a fresh parameter set.
         // Release any password retained for an earlier connection before permission/storage I/O:
@@ -735,9 +872,11 @@ class SessionViewModel @Inject constructor(
         lastParams = null
         viewModelScope.launch {
             operationCoordinator.withExclusiveOperation connect@{
+            currentLanguageTag = runCatching { preferencesRepository.preferences.first().languageTag }
+                .getOrDefault(currentLanguageTag)
             val entity = runCatching { repository.findById(id) }.getOrElse { error ->
                 PocketLogger.e(TAG, "connection configuration could not be loaded", error)
-                val message = appContext.getString(R.string.session_connection_load_failed)
+                val message = localizedString(R.string.session_connection_load_failed)
                 _state.update {
                     it.copy(
                         status = SessionConnectionStatus.Failed(message),
@@ -747,7 +886,7 @@ class SessionViewModel @Inject constructor(
                 return@connect
             } ?: run {
                 PocketLogger.e(TAG, "connection id=$id not found in repository")
-                val message = appContext.getString(R.string.session_connection_load_failed)
+                val message = localizedString(R.string.session_connection_load_failed)
                 _state.update {
                     it.copy(
                         status = SessionConnectionStatus.Failed(message),
@@ -766,15 +905,16 @@ class SessionViewModel @Inject constructor(
             // monitor-layout sends below are correctly gated/capped even if the entity changes later.
             dynamicResolutionEnabled = effectiveDynamic
             dynamicResMaxShortEdge = if (effectiveDynamic) entity.dynamicResMax else 0
+            reapplyDynamicResolutionCap()
             val baseW = if (useCustomRes) entity.customWidth else DEFAULT_DYNAMIC_WIDTH
             val baseH = if (useCustomRes) entity.customHeight else DEFAULT_DYNAMIC_HEIGHT
             // Cap the INITIAL size too (capToDynamicMax is a no-op for custom-res, where the cap is 0)
             // so a 720p-capped connection doesn't briefly open at full size before the first
             // monitor-layout PDU corrects it down.
             val (initialW, initialH) = capToDynamicMax(baseW, baseH)
-            // Same for clipboard: gates both directions of the text bridge (see clipListener /
-            // the ClipboardReceived branch). Off → channel is /clipboard:...direction-to:off too.
+            // Same for clipboard: gates both directions of the text bridge.
             clipboardSyncEnabled = entity.redirectClipboard
+            val effectiveRedirectFiles = entity.redirectFiles && !filesRedirectSkippedForSession
             _state.update {
                 it.copy(
                     connectionName = entity.name,
@@ -782,28 +922,13 @@ class SessionViewModel @Inject constructor(
                     targetFrameRate = entity.targetFrameRate,
                     // Open in the connection's preferred input mode (1 = 直接触屏 / native touch).
                     mode = if (entity.defaultInputMode == 1) InputMode.TOUCH else InputMode.TRACKPAD,
-                    filesRedirectEnabled = entity.redirectFiles,
+                    filesRedirectEnabled = effectiveRedirectFiles,
                     allFilesAccessRequired = false,
                 )
             }
             // File redirection: export the whole shared storage (/storage/emulated/0) as a real
-            // filesystem path. FreeRDP validates /drive during argument parsing and only logs a native
-            // warning when the path does not exist, so preflight here keeps the remote "no drive"
-            // symptom from becoming silent.
-            val drivePlan = planRdpDriveRedirection(
-                redirectFiles = entity.redirectFiles,
-                allFilesAccessGranted = Environment.isExternalStorageManager(),
-                storageMounted = runCatching { Environment.getExternalStorageState() }
-                    .map { it == Environment.MEDIA_MOUNTED }
-                    .getOrDefault(false),
-                externalStoragePath = runCatching {
-                    Environment.getExternalStorageDirectory()?.absolutePath
-                }.getOrNull(),
-                pathExists = { path -> File(path).exists() },
-                pathIsDirectory = { path -> File(path).isDirectory },
-                pathCanRead = { path -> File(path).canRead() },
-                pathCanWrite = { path -> File(path).canWrite() },
-            )
+            // filesystem path. Preflight runs on Dispatchers.IO so storage checks never block Main.
+            val drivePlan = resolveDriveRedirectionPlan(effectiveRedirectFiles)
             val driveDir = when (drivePlan) {
                 RdpDriveRedirectionPlan.Disabled -> null
                 RdpDriveRedirectionPlan.NeedsAllFilesAccess -> {
@@ -838,12 +963,13 @@ class SessionViewModel @Inject constructor(
                     drivePlan.path
                 }
             }
-            // Decrypt only after every permission/storage preflight has passed. In particular, do
-            // not materialize a credential merely to pause at the all-files-access settings screen.
-            val plain = runCatching { repository.decryptPassword(entity) }.getOrElse { error ->
+            // Decrypt only after every permission/storage preflight has passed, off the main thread.
+            val plain = runCatching {
+                withContext(Dispatchers.IO) { repository.decryptPassword(entity) }
+            }.getOrElse { error ->
                 PocketLogger.e(TAG, "saved credential could not be decrypted", error)
                 lastParams = null
-                val message = appContext.getString(R.string.session_credential_unavailable)
+                val message = localizedString(R.string.session_credential_unavailable)
                 _state.update {
                     it.copy(
                         status = SessionConnectionStatus.Failed(message),
@@ -852,6 +978,7 @@ class SessionViewModel @Inject constructor(
                 }
                 return@connect
             }
+            val effectiveMultitransport = entity.useMultitransport && !udpDowngradedForSession
             val params = RdpConnectionParams(
                 connectionId = entity.id,
                 displayName = entity.name,
@@ -865,10 +992,9 @@ class SessionViewModel @Inject constructor(
                 preferAvc420 = entity.preferAvc420,
                 useGfx = entity.useGfx,
                 dynamicResolution = effectiveDynamic,
-                useMultitransport = entity.useMultitransport,
+                useMultitransport = effectiveMultitransport,
                 redirectClipboard = entity.redirectClipboard,
-                redirectFiles = entity.redirectFiles,
-                sharedFolderUri = entity.sharedFolderUri,
+                redirectFiles = effectiveRedirectFiles,
                 drivePath = driveDir,
                 soundMode = entity.soundMode,
                 desktopScaleFactor = entity.desktopScaleFactor,
@@ -878,38 +1004,39 @@ class SessionViewModel @Inject constructor(
                 performanceFlags = entity.performanceFlags,
             )
             // Remember everything an auto-reconnect needs, and reset reconnect bookkeeping for this
-            // fresh user-initiated connect.
+            // fresh connect while preserving any session-scoped UDP-to-TCP downgrade latch.
             lastParams = params
-            lastConnName = entity.name
-            lastHostLabel = "${entity.host}:${entity.port}"
             userInitiatedDisconnect = false
             certificateDecisionPending = false
             reconnectAttempt = 0
-            udpDowngradedForSession = false
             reconnectJob?.cancel()
-            rdpClient.connect(params)
+            withContext(Dispatchers.IO) {
+                rdpClient.connect(params)
+            }
             // Promote the process to a foreground service NOW, while we're still visible (Android
             // 31+ forbids starting an FGS from the background). Start it after rdpClient.connect()
             // registers this client so the service's first registry snapshot is not empty.
             if (rdpClient.hasActiveSession()) {
-                startKeepAlive(appContext.getString(R.string.session_notification_status_connecting))
+                startKeepAlive()
             }
-            runCatching { repository.touchLastUsed(entity.id) }
+            runCatching { withContext(Dispatchers.IO) { repository.touchLastUsed(entity.id) } }
                 .onFailure { PocketLogger.w(TAG, "could not update connection last-used time", it) }
             }
         }
     }
 
-    /** Start (or refresh) the keep-alive foreground service for the current connection. */
-    private fun startKeepAlive(status: String) {
-        runCatching { RdpSessionService.start(appContext, lastConnName, lastHostLabel, status) }
+    /** Start the keep-alive foreground service for the current connection. */
+    private fun startKeepAlive() {
+        runCatching { RdpSessionService.start(appContext) }
             .onSuccess {
                 // Mark "a session is meant to be alive" only after Android accepted the service
                 // start. Otherwise a synchronous FGS-start failure looks like a later process kill.
                 SessionKeepAliveFlag.setActive(appContext, true)
             }
             .onFailure {
-                SessionKeepAliveFlag.setActive(appContext, false)
+                rdpClient.runIfNoActiveSessions {
+                    SessionKeepAliveFlag.setActive(appContext, false)
+                }
                 PocketLogger.w(TAG, "startForegroundService failed: ${it.message}")
             }
     }
@@ -930,11 +1057,18 @@ class SessionViewModel @Inject constructor(
      * No-op if the teardown was user-initiated or we never had a successful set of params.
      */
     private fun scheduleReconnect() {
-        val params = lastParams ?: return
+        val baseParams = lastParams ?: return
+        val params = if (udpDowngradedForSession) {
+            baseParams.copy(useMultitransport = false)
+        } else {
+            baseParams
+        }
+        lastParams = params
         if (userInitiatedDisconnect || certificateDecisionPending) return
         reconnectJob?.cancel()
         if (reconnectAttempt >= RECONNECT_BACKOFF_MS.size) {
             PocketLogger.w(TAG, "auto-reconnect exhausted after $reconnectAttempt tries — giving up")
+            userInitiatedDisconnect = true
             lastParams = null
             rdpClient.disconnect()
             stopKeepAlive()
@@ -943,12 +1077,20 @@ class SessionViewModel @Inject constructor(
         val delayMs = RECONNECT_BACKOFF_MS[reconnectAttempt.coerceAtMost(RECONNECT_BACKOFF_MS.lastIndex)]
         reconnectAttempt++
         PocketLogger.i(TAG, "auto-reconnect attempt #$reconnectAttempt in ${delayMs}ms")
+        _state.update { it.copy(status = SessionConnectionStatus.Reconnecting) }
         reconnectJob = viewModelScope.launch {
             delay(delayMs)
             if (!isActive || userInitiatedDisconnect) return@launch
+            val retryParams = if (udpDowngradedForSession) {
+                params.copy(useMultitransport = false)
+            } else {
+                params
+            }
             // The keep-alive service stays running across the drop (we only stopSelf on a user
             // disconnect), so just re-issue the connect — the service updates its own notification.
-            rdpClient.connect(params)
+            withContext(Dispatchers.IO) {
+                rdpClient.connect(retryParams)
+            }
         }
     }
 
@@ -964,19 +1106,31 @@ class SessionViewModel @Inject constructor(
      * touches them. false = pure picture with just a small exit FAB.
      */
     fun toggleImmersive() {
+        val wasImeVisible = _state.value.imeVisible
         _state.update {
             val newVisible = !it.chromeVisible
             // Hiding chrome also dismisses the keyboard/toolbar; restoring chrome leaves IME as-is.
             it.copy(chromeVisible = newVisible, imeVisible = if (newVisible) it.imeVisible else false)
         }
+        if (wasImeVisible && !_state.value.imeVisible) {
+            flushDeferredMonitorLayoutIfNeeded()
+        }
     }
 
     fun setImeVisible(visible: Boolean) {
+        val wasVisible = _state.value.imeVisible
         _state.update { it.copy(imeVisible = visible) }
+        if (wasVisible && !visible) {
+            flushDeferredMonitorLayoutIfNeeded()
+        }
     }
 
     fun toggleIme() {
+        val wasVisible = _state.value.imeVisible
         _state.update { it.copy(imeVisible = !it.imeVisible) }
+        if (wasVisible && !_state.value.imeVisible) {
+            flushDeferredMonitorLayoutIfNeeded()
+        }
     }
 
     /**
@@ -1082,8 +1236,10 @@ class SessionViewModel @Inject constructor(
         // A clipboard paste inserts the whole block at ONCE: newlines stay as text and only 4 key events
         // are sent. Needs clipboard redirection (the remote clipboard); when it's off we fall back to the
         // throttled char-by-char typing (still bounded, just can't avoid the newline-as-Enter there).
-        val isPaste = text.length > PASTE_VIA_CLIPBOARD_THRESHOLD || text.contains('\n')
-        if (isPaste && clipboardSyncEnabled) {
+        // Single newline commits (soft-keyboard Enter) go through the typing path as VK.RETURN so
+        // they never overwrite the remote clipboard or incur the 400 ms Ctrl+V paste delay.
+        // Multi-line or large pastes still route through remote clipboard + Ctrl+V when enabled.
+        if (shouldPasteTextViaClipboard(text, clipboardSyncEnabled)) {
             typeChannel.trySend(TextInputCommand.Paste(text, generation))
         } else {
             // Offer the chunk to the background type consumer (startTypeConsumer). trySend never blocks;
@@ -1105,6 +1261,7 @@ class SessionViewModel @Inject constructor(
             it.copy(
                 status = SessionConnectionStatus.Connecting,
                 pendingCertificate = null,
+                pendingCredentialsPrompt = null,
                 lastError = null,
             )
         }
@@ -1118,7 +1275,7 @@ class SessionViewModel @Inject constructor(
                 )
             }.getOrElse { error ->
                 PocketLogger.e(TAG, "certificate pin could not be saved", error)
-                val message = appContext.getString(R.string.session_certificate_save_failed)
+                val message = localizedString(R.string.session_certificate_save_failed)
                 _state.update {
                     it.copy(
                         status = SessionConnectionStatus.Failed(message),
@@ -1130,7 +1287,7 @@ class SessionViewModel @Inject constructor(
             }
             if (!endpointMatches) {
                 certificateDecisionPending = false
-                val message = appContext.getString(R.string.session_certificate_endpoint_changed)
+                val message = localizedString(R.string.session_certificate_endpoint_changed)
                 _state.update {
                     it.copy(
                         status = SessionConnectionStatus.Failed(message),
@@ -1160,11 +1317,13 @@ class SessionViewModel @Inject constructor(
         reconnectJob?.cancel()
         stopTypeConsumer()
         clearStickyModifiers(sendReleases = true)
-        val rejectedMessage = appContext.getString(R.string.session_certificate_rejected)
+        val rejectedMessage = localizedString(R.string.session_certificate_rejected)
         _state.update {
             it.copy(
                 status = SessionConnectionStatus.Failed(rejectedMessage),
+                imeVisible = false,
                 pendingCertificate = null,
+                pendingCredentialsPrompt = null,
                 lastError = rejectedMessage,
             )
         }
@@ -1217,6 +1376,8 @@ class SessionViewModel @Inject constructor(
     }
 
     fun onSurfaceResized(width: Int, height: Int) {
+        lastSurfaceWidth = width
+        lastSurfaceHeight = height
         // Auto-resolution disabled → never push a monitor layout; the remote stays at its connect
         // resolution regardless of how the local view is sized (issue: "关闭自动分辨率仍被修改").
         if (!dynamicResolutionEnabled) return
@@ -1229,17 +1390,44 @@ class SessionViewModel @Inject constructor(
         // and we need the *latest* dimensions if a retry happens to fire before the debounce.
         pendingMonitorWidth = capW
         pendingMonitorHeight = capH
+        if (_state.value.imeVisible) {
+            pendingMonitorResizeDeferred = true
+        }
+        dispatchPendingMonitorLayoutDebounced()
+    }
+
+    private fun flushDeferredMonitorLayoutIfNeeded() {
+        val current = _state.value
+        val shouldFlush = shouldFlushDeferredMonitorLayout(
+            dynamicResolutionEnabled = dynamicResolutionEnabled,
+            imeVisible = current.imeVisible,
+            status = current.status,
+            pendingSize = pendingMonitorWidth to pendingMonitorHeight,
+            remoteSize = current.remoteWidth to current.remoteHeight,
+            resizeDeferred = pendingMonitorResizeDeferred,
+        )
+        if (!shouldFlush) return
+        pendingMonitorResizeDeferred = false
+        dispatchPendingMonitorLayoutDebounced()
+    }
+
+    private fun dispatchPendingMonitorLayoutDebounced() {
         // Collapse keyboard-animation resize bursts. We log only the post-debounce dispatch so
         // logs stay readable; the burst itself produces no spam.
         monitorLayoutDebounceJob?.cancel()
         monitorLayoutDebounceJob = viewModelScope.launch {
             delay(MONITOR_LAYOUT_DEBOUNCE_MS)
+            if (!dynamicResolutionEnabled) return@launch
             // Don't resize the remote just because the soft keyboard shrank the local viewport —
             // wait until the keyboard is dismissed and the view returns to its full size.
-            if (_state.value.imeVisible) return@launch
+            if (_state.value.imeVisible) {
+                pendingMonitorResizeDeferred = true
+                return@launch
+            }
             val w = pendingMonitorWidth
             val h = pendingMonitorHeight
             if (w <= 0 || h <= 0) return@launch
+            pendingMonitorResizeDeferred = false
             PocketLogger.d(TAG, "onSurfaceResized $w x $h (debounced) — sending monitor layout")
             val ok = rdpClient.sendMonitorLayout(w, h)
             if (!ok && _state.value.status == SessionConnectionStatus.Connected) {
@@ -1311,6 +1499,7 @@ class SessionViewModel @Inject constructor(
         captureThumbnail()
         stopTypeConsumer()
         clearStickyModifiers(sendReleases = true)
+        _state.update { it.copy(imeVisible = false, pendingCredentialsPrompt = null) }
         rdpClient.disconnect()
         stopKeepAlive()
     }
@@ -1352,11 +1541,12 @@ class SessionViewModel @Inject constructor(
         private const val TYPE_TEXT_MAX_CHARS = 64 * 1024
         private const val TYPE_QUEUE_CAPACITY = 8
         private const val SHA256_HEX_LENGTH = 64
-        // typeText: a chunk longer than this (or containing any newline) is treated as a PASTE and is
-        // delivered via the remote clipboard + Ctrl+V instead of char-by-char typing — see typeText.
+        // typeText: a chunk longer than this (or containing a multi-line break) is treated as a PASTE
+        // and delivered via the remote clipboard + Ctrl+V instead of char-by-char typing.
         // High enough that normal typing / IME word commits never trip it; low enough to catch real
         // pastes well before they could flood the input channel.
-        private const val PASTE_VIA_CLIPBOARD_THRESHOLD = 200
+        internal const val PASTE_VIA_CLIPBOARD_THRESHOLD = 200
+        internal const val MONITOR_LAYOUT_ACK_TOLERANCE_PX = 8
         // Wait after pushing the clipboard before sending Ctrl+V, so the async cliprdr round-trip has
         // updated the remote clipboard first. (The text was usually already synced when the user copied,
         // so this is mostly insurance.)
@@ -1389,7 +1579,8 @@ internal fun shouldLaunchConnect(
     allowStoppedSessionRestart: Boolean = true,
 ): Boolean {
     if (requestedConnectionId <= 0L) return false
-    if (current.connectionId == requestedConnectionId && current.pendingCertificate != null) return false
+    val hasPendingPrompt = current.pendingCertificate != null || current.pendingCredentialsPrompt != null
+    if (current.connectionId == requestedConnectionId && hasPendingPrompt) return false
     if (current.connectionId != requestedConnectionId) return true
     // retryAfterAllFilesAccess() owns this transition and first verifies that the grant really
     // exists. A generic lifecycle callback must not spin repository/preflight work whenever the
@@ -1400,8 +1591,42 @@ internal fun shouldLaunchConnect(
         is SessionConnectionStatus.Disconnected,
         is SessionConnectionStatus.Failed -> allowStoppedSessionRestart
         SessionConnectionStatus.Connecting,
+        SessionConnectionStatus.Reconnecting,
         SessionConnectionStatus.Connected -> false
     }
+}
+
+internal fun isUdpDowngradeObserved(snapshot: RdpTransportSnapshot): Boolean {
+    val failedPhase = snapshot.phase == RdpTransportPhase.RECONNECTING_TCP ||
+        snapshot.phase == RdpTransportPhase.UDP_FAILED
+    return snapshot.downgradedToTcp || snapshot.reconnectRequested || failedPhase
+}
+
+internal fun shouldPasteTextViaClipboard(
+    normalizedText: String,
+    clipboardSyncEnabled: Boolean,
+): Boolean {
+    if (!clipboardSyncEnabled || normalizedText == "\n") return false
+    return normalizedText.length > SessionViewModel.PASTE_VIA_CLIPBOARD_THRESHOLD ||
+        normalizedText.contains('\n')
+}
+
+internal fun shouldFlushDeferredMonitorLayout(
+    dynamicResolutionEnabled: Boolean,
+    imeVisible: Boolean,
+    status: SessionConnectionStatus,
+    pendingSize: Pair<Int, Int>,
+    remoteSize: Pair<Int, Int>,
+    resizeDeferred: Boolean,
+): Boolean {
+    val canResize = dynamicResolutionEnabled && !imeVisible && status is SessionConnectionStatus.Connected
+    val hasPendingSize = pendingSize.first > 0 && pendingSize.second > 0
+    if (!canResize || !hasPendingSize) return false
+    if (resizeDeferred) return true
+    val widthDiff = (remoteSize.first - pendingSize.first).absoluteValue
+    val heightDiff = (remoteSize.second - pendingSize.second).absoluteValue
+    return widthDiff > SessionViewModel.MONITOR_LAYOUT_ACK_TOLERANCE_PX ||
+        heightDiff > SessionViewModel.MONITOR_LAYOUT_ACK_TOLERANCE_PX
 }
 
 internal fun canQueueTextInput(status: SessionConnectionStatus): Boolean =

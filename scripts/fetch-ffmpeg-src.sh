@@ -2,11 +2,16 @@
 # Pre-stage the pinned FFmpeg source so ExternalProject never depends on a mid-build download.
 set -euo pipefail
 
-VER="n8.1.2"
-EXPECTED_SHA256="9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7"
+VER="n9.1"
+EXPECTED_SHA256="0ac7c9b9806b58eda00a528dcba316a2f33d291d949438900efa811d04b051bd"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$PROJECT_ROOT/third_party/FreeRDP/client/Android/Studio/freeRDPCore/src/main/cpp/external/ffmpeg"
 VERSION_MARKER="$DEST/.pocketrdp-source-version"
+if [ -f "$DEST/configure" ] && [ -f "$VERSION_MARKER" ] &&
+   [ "$(tr -d '\r\n' < "$VERSION_MARKER")" = "$VER" ]; then
+    echo "SUCCESS: FFmpeg $VER source already staged at $DEST"
+    exit 0
+fi
 CACHED_TGZ="$PROJECT_ROOT/.gradle/android-native-downloads/${VER}.tar.gz"
 DEST_PARENT="$(dirname "$DEST")"
 mkdir -p "$DEST_PARENT"

@@ -75,9 +75,6 @@ class ConnectionThumbnailStore @Inject constructor(
     /** Deterministic file for a connection id (may not exist yet). */
     fun fileFor(id: Long): File = File(dir(), "conn_$id.jpg")
 
-    /** Epoch-millis the thumbnail was last written, or 0 if absent. Used to bust the Compose cache. */
-    fun stamp(id: Long): Long = fileFor(id).let { if (it.exists()) it.lastModified() else 0L }
-
     /**
      * Persist [source] (already downscaled by [com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer.snapshot])
      * as the thumbnail for [id]. Fire-and-forget: encodes + writes on the store's IO scope. The

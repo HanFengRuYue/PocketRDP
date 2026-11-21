@@ -6,8 +6,12 @@ plugins {
 
 android {
     namespace = "com.hanfengruyue.pocketrdp.core.rdp"
-    compileSdk = 37
-    ndkVersion = "29.0.14206865"
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
+    ndkVersion = "30.0.16248370"
 
     // Four ABIs shipped in the APK. In a normal (Windows) build all four are packaged
     // straight from the prebuilt jniLibs/<abi>/ — no native toolchain needed.

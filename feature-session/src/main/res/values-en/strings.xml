@@ -8,12 +8,15 @@
     <string name="session_cd_exit_fullscreen">Exit full screen</string>
     <string name="session_cd_expand_status">Expand session information</string>
     <string name="session_loading_remote_frame">Connecting, waiting for remote display…</string>
+    <string name="session_reconnecting_remote_frame">Connection interrupted, reconnecting…</string>
+    <string name="session_action_reconnect">Reconnect</string>
+    <string name="session_action_close">Close</string>
     <string name="session_battery_title">Allow background keep-alive?</string>
     <string name="session_battery_message">To keep this remote desktop connected when you switch apps or lock the screen, add PocketRDP to the battery optimization allowlist. Otherwise the system may cut off the background connection while saving power.</string>
     <string name="session_action_allow">Allow</string>
     <string name="session_action_not_now">Not now</string>
     <string name="session_all_files_title">Allow access to all files?</string>
-    <string name="session_all_files_message">Folder redirection mounts all phone storage on the remote computer as the PocketRDP drive in File Explorer. PocketRDP needs All files access for this. Reconnect after granting permission to mount the drive.</string>
+    <string name="session_all_files_message">Folder redirection mounts all phone storage on the remote computer as the PocketRDP drive in File Explorer. PocketRDP needs All files access for this. Return to the app after granting permission to automatically continue connecting and mount the drive.</string>
     <string name="session_action_grant">Grant</string>
     <string name="session_zoom_cd">Zoom: swipe up to zoom in, swipe down to zoom out, double tap to reset, long press and drag to move this button</string>
     <string name="session_pan_cd">Drag to move the enlarged view; long press and drag to move this button</string>
@@ -31,6 +34,7 @@
     <string name="session_toolbar_edit_quick_hint">Tap a key below to add it; long-press and drag a selected key to reorder it</string>
     <string name="session_toolbar_add_regular">Add regular key</string>
     <string name="session_toolbar_add_regular_hint">Choose keys to show on the quick bar</string>
+    <string name="session_toolbar_quick_limit_reached">Quick bar limit (%1$d items) reached. Remove a key before adding more.</string>
     <string name="session_toolbar_reset">Reset</string>
     <string name="session_toolbar_done">Done</string>
     <string name="session_toolbar_add_combo_title">Add shortcut</string>
@@ -57,7 +61,6 @@
     <string name="session_status_display_latency">Display latency: %1$s</string>
     <string name="session_status_network_rtt">Network round trip: %1$s</string>
     <string name="session_status_samples">Samples: %1$d accepted / %2$d discarded</string>
-    <string name="session_status_transport_stats">Traffic: %1$d B in / %2$d B out, %3$d retransmits</string>
     <string name="session_status_transport_error">Transport error: %1$s, tunnel 0x%2$s, socket %3$d</string>
     <string name="session_transport_negotiating_udp">TCP · negotiating UDP</string>
     <string name="session_transport_waiting_soft_sync">TCP · waiting for Soft-Sync</string>
@@ -68,8 +71,10 @@
     <string name="session_status_measuring">Measuring…</string>
     <string name="session_status_idle">Not connected</string>
     <string name="session_status_connecting">Connecting…</string>
+    <string name="session_status_reconnecting">Reconnecting…</string>
     <string name="session_status_connected">Connected</string>
     <string name="session_status_disconnected">Disconnected (%1$s)</string>
+    <string name="session_status_disconnected_user">Disconnected by user</string>
     <string name="session_status_failed">Connection failed</string>
     <string name="session_status_unknown_reason">—</string>
 
@@ -78,7 +83,6 @@
     <string name="session_notification_status_connecting">Connecting…</string>
     <string name="session_notification_status_connected">Connected</string>
     <string name="session_notification_status_reconnecting">Connection interrupted, reconnecting…</string>
-    <string name="session_notification_status_failed">Connection failed</string>
     <string name="session_notification_title">Remote desktop session</string>
     <string name="session_notification_disconnect_action">Disconnect</string>
     <string name="session_notification_disconnect_all_action">Disconnect all</string>
@@ -89,7 +93,15 @@
     <string name="session_local_network_message">PocketRDP needs local network permission to reach remote desktops on your LAN. Android may block this connection if permission is denied.</string>
     <string name="session_action_open_settings">Open settings</string>
     <string name="session_action_continue_without_lan">Continue without LAN</string>
-    <string name="session_action_cancel">Cancel</string>
+    <string name="session_credentials_title">Authentication</string>
+    <string name="session_credentials_message">The remote computer %1$s requires credentials.</string>
+    <string name="session_credentials_message_generic">The remote computer requires credentials.</string>
+    <string name="session_credentials_username">Username</string>
+    <string name="session_credentials_domain">Domain (optional)</string>
+    <string name="session_credentials_password">Password</string>
+    <string name="session_credentials_connect">Connect</string>
+    <string name="session_credentials_show_password">Show password</string>
+    <string name="session_credentials_hide_password">Hide password</string>
     <string name="session_certificate_new_title">Verify remote computer certificate</string>
     <string name="session_certificate_new_message">This is the first connection to this remote computer. Verify the fingerprint before trusting it; PocketRDP will pin it to this connection.</string>
     <string name="session_certificate_changed_title">Remote computer certificate changed</string>

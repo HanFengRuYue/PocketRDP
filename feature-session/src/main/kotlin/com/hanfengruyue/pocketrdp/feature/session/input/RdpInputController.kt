@@ -283,12 +283,10 @@ class RdpInputController(
         virtualY = (virtualY + dy * accel / s).coerceIn(0f, remoteHeight - 1f)
         publishVirtual()
         followCursorWhenZoomed()
-        val flags = if (dragHeld) {
-            RdpPointerFlags.MOVE or RdpPointerFlags.DOWN or RdpPointerFlags.BUTTON1
-        } else {
-            RdpPointerFlags.MOVE
-        }
-        sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), flags)
+        // beginDragHold() already emitted DOWN | BUTTON1 and endDragHold() emits the matching
+        // BUTTON1 release. Moves during a hold-drag must send plain MOVE so the native event loop
+        // can coalesce rapid pointer updates and latency sampling does not treat every move as a click.
+        sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.MOVE)
     }
 
     /**

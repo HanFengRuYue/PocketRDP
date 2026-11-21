@@ -19,7 +19,7 @@ param(
     [string]$JavaBridgePath,
     [string]$AndroidSdkRoot,
     [string]$BuildToolsVersion = "37.0.0",
-    [string]$NdkVersion = "29.0.14206865",
+    [string]$NdkVersion = "30.0.16248370",
     [string]$ChecksumPath
 )
 
@@ -462,8 +462,16 @@ public final class VerifyV4Signature {
             if ($null -eq $gnuStackLine) {
                 throw "ELF $abi/$libraryName does not declare GNU_STACK."
             }
-            if ($gnuStackLine -match "\sE\s+0x[0-9A-Fa-f]+\s*$") {
-                throw "ELF $abi/$libraryName requests an executable stack."
+            $gnuStackMatch = [regex]::Match(
+                $gnuStackLine,
+                "^\s*GNU_STACK\s+0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+([RWE\s]+?)\s+0x[0-9A-Fa-f]+\s*$"
+            )
+            if (-not $gnuStackMatch.Success) {
+                throw "Could not parse GNU_STACK flags for ELF $abi/${libraryName}: $gnuStackLine"
+            }
+            $gnuStackFlags = ($gnuStackMatch.Groups[1].Value -replace "\s+", "")
+            if ($gnuStackFlags.Contains("E")) {
+                throw "ELF $abi/$libraryName requests an executable stack (flags=$gnuStackFlags)."
             }
 
             if ($abi -in @("arm64-v8a", "x86_64")) {

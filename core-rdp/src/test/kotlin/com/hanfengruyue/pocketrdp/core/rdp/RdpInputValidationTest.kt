@@ -48,6 +48,28 @@ class RdpInputValidationTest {
         assertFalse(isRetryableRdpFailure(0x0002_0015L))
         assertFalse(isRetryableRdpFailure(0x0002_0018L))
         assertFalse(isRetryableRdpFailure(0x0002_001BL))
+        assertFalse(isRetryableRdpFailure(0x0002_001EL))
+        assertFalse(isRetryableRdpFailure(0x0002_001FL))
+    }
+
+    @Test
+    fun intentionalDisconnectAndLogoffErrInfoCodesDoNotAutoReconnect() {
+        val nonRetryableErrInfo = listOf(
+            0x0001_0001L,
+            0x0001_0002L,
+            0x0001_0003L,
+            0x0001_0004L,
+            0x0001_0005L,
+            0x0001_0007L,
+            0x0001_0009L,
+            0x0001_000AL,
+            0x0001_000BL,
+            0x0001_000CL,
+        )
+        nonRetryableErrInfo.forEach { code ->
+            assertFalse("ERRINFO code 0x${code.toString(16)} should not auto-reconnect", isRetryableRdpFailure(code))
+        }
+        assertTrue(isRetryableRdpFailure(0x0001_0006L))
     }
 
     @Test

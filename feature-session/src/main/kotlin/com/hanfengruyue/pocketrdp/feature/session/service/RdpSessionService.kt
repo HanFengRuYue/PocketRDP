@@ -14,6 +14,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.hanfengruyue.pocketrdp.core.data.preferences.AppPreferencesRepository
+import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
+import com.hanfengruyue.pocketrdp.core.data.preferences.localizedContextForLanguageTag
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistry
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistrySnapshot
@@ -28,7 +31,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import java.util.Locale
 
@@ -57,50 +62,55 @@ import java.util.Locale
  * others.
  */
 /**
- * Hilt entry point to reach the singleton [RdpSessionRegistry] from this service. We deliberately use
- * [EntryPointAccessors] so the service obtains only the aggregate registry and never appears to own
- * or inject a session-scoped [com.hanfengruyue.pocketrdp.core.rdp.RdpClient]. Each retained
- * SessionViewModel remains the sole owner of its native connection and framebuffer.
+ * Hilt entry point to reach the singleton [RdpSessionRegistry] and [AppPreferencesRepository] from
+ * this service. We deliberately use [EntryPointAccessors] so the service obtains only the aggregate
+ * registry and never appears to own or inject a session-scoped
+ * [com.hanfengruyue.pocketrdp.core.rdp.RdpClient]. Each retained SessionViewModel remains the sole
+ * owner of its native connection and framebuffer.
  */
 @EntryPoint
 @InstallIn(SingletonComponent::class)
 interface RdpSessionRegistryEntryPoint {
     fun rdpSessionRegistry(): RdpSessionRegistry
+    fun appPreferencesRepository(): AppPreferencesRepository
 }
 
 class RdpSessionService : Service() {
 
-    private val sessionRegistry: RdpSessionRegistry by lazy {
+    private val entryPoint: RdpSessionRegistryEntryPoint by lazy {
         EntryPointAccessors.fromApplication(applicationContext, RdpSessionRegistryEntryPoint::class.java)
-            .rdpSessionRegistry()
     }
+
+    private val sessionRegistry: RdpSessionRegistry
+        get() = entryPoint.rdpSessionRegistry()
+
+    private val preferencesRepository: AppPreferencesRepository
+        get() = entryPoint.appPreferencesRepository()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var cpuLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var observing = false
+    private var currentLanguageTag: String = LANGUAGE_SYSTEM
 
     // Not a bound service — clients talk to it only via start()/stop() intents.
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                // IMPORTANCE_LOW: a silent, non-intrusive persistent status notification.
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    getString(R.string.session_notification_channel_name),
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = getString(R.string.session_notification_channel_description)
-                    setShowBadge(false)
+        ensureRdpNotificationChannel(currentLanguageTag)
+        preferencesRepository.preferences
+            .map { it.languageTag }
+            .distinctUntilChanged()
+            .onEach { languageTag ->
+                currentLanguageTag = languageTag
+                ensureRdpNotificationChannel(languageTag)
+                if (observing && sessionRegistry.snapshot.value.hasActiveSessions) {
+                    updateStatus(sessionRegistry.snapshot.value)
                 }
-                nm.createNotificationChannel(channel)
             }
-        }
+            .launchIn(scope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -230,11 +240,17 @@ class RdpSessionService : Service() {
             Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val content = buildRdpSessionNotificationContent(snapshot, rdpSessionNotificationStrings())
+        val localizedContext = localizedContextForLanguageTag(currentLanguageTag)
+        val locale = localeForLanguageTag(currentLanguageTag)
+        val content = buildRdpSessionNotificationContent(
+            snapshot = snapshot,
+            strings = localizedContext.rdpSessionNotificationStrings(),
+            locale = locale,
+        )
         val publicBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_session)
-            .setContentTitle(getString(R.string.session_notification_title))
-            .setContentText(getString(R.string.session_notification_status_connected))
+            .setContentTitle(localizedContext.getString(R.string.session_notification_title))
+            .setContentText(localizedContext.getString(R.string.session_notification_status_connected))
             .setOngoing(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -264,26 +280,19 @@ class RdpSessionService : Service() {
 
     companion object {
         private const val TAG = "RdpFgs"
-        private const val CHANNEL_ID = "rdp_session"
+        internal const val CHANNEL_ID = "rdp_session"
         private const val NOTIF_ID = 0x5244 // 'R''D' — must be non-zero
         private const val WAKELOCK_TAG = "PocketRDP:session"
 
         private const val ACTION_DISCONNECT = "com.hanfengruyue.pocketrdp.action.DISCONNECT"
-        private const val EXTRA_NAME = "name"
-        private const val EXTRA_HOST = "host"
-        private const val EXTRA_STATUS = "status"
 
         /**
-         * Start (or refresh the notification text of) the keep-alive service for the active session.
+         * Start the keep-alive service for the active session.
          * MUST be called while the app is in the foreground (the connect screen is visible) — Android
          * 31+ forbids starting a foreground service from the background.
          */
-        fun start(context: Context, name: String, host: String, status: String) {
-            val intent = Intent(context, RdpSessionService::class.java)
-                .putExtra(EXTRA_NAME, name)
-                .putExtra(EXTRA_HOST, host)
-                .putExtra(EXTRA_STATUS, status)
-            context.startForegroundService(intent)
+        fun start(context: Context) {
+            context.startForegroundService(Intent(context, RdpSessionService::class.java))
         }
 
         /**
@@ -297,12 +306,34 @@ class RdpSessionService : Service() {
     }
 }
 
+private fun Context.ensureRdpNotificationChannel(languageTag: String) {
+    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    val localized = localizedContextForLanguageTag(languageTag)
+    // IMPORTANCE_LOW: a silent, non-intrusive persistent status notification.
+    // Re-calling createNotificationChannel refreshes the localized name and description in place.
+    val channel = NotificationChannel(
+        RdpSessionService.CHANNEL_ID,
+        localized.getString(R.string.session_notification_channel_name),
+        NotificationManager.IMPORTANCE_LOW,
+    ).apply {
+        description = localized.getString(R.string.session_notification_channel_description)
+        setShowBadge(false)
+    }
+    nm.createNotificationChannel(channel)
+}
+
+internal fun localeForLanguageTag(languageTag: String): Locale =
+    if (languageTag.isBlank() || languageTag == LANGUAGE_SYSTEM) {
+        Locale.getDefault()
+    } else {
+        Locale.forLanguageTag(languageTag)
+    }
+
 internal data class RdpSessionNotificationStrings(
     val defaultTitle: String,
     val connecting: String,
     val connected: String,
     val reconnecting: String,
-    val failed: String,
     val disconnect: String,
     val disconnectAll: String,
     val multiTitleFormat: String,
@@ -323,7 +354,6 @@ private fun Context.rdpSessionNotificationStrings(): RdpSessionNotificationStrin
         connecting = getString(R.string.session_notification_status_connecting),
         connected = getString(R.string.session_notification_status_connected),
         reconnecting = getString(R.string.session_notification_status_reconnecting),
-        failed = getString(R.string.session_notification_status_failed),
         disconnect = getString(R.string.session_notification_disconnect_action),
         disconnectAll = getString(R.string.session_notification_disconnect_all_action),
         multiTitleFormat = getString(R.string.session_notification_multi_title),
@@ -334,6 +364,7 @@ private fun Context.rdpSessionNotificationStrings(): RdpSessionNotificationStrin
 internal fun buildRdpSessionNotificationContent(
     snapshot: RdpSessionRegistrySnapshot,
     strings: RdpSessionNotificationStrings,
+    locale: Locale = Locale.getDefault(),
 ): RdpSessionNotificationContent {
     val sessions = snapshot.sessions
     if (snapshot.activeCount <= 1) {
@@ -359,14 +390,14 @@ internal fun buildRdpSessionNotificationContent(
     }
     val extra = (sessions.size - MAX_NOTIFICATION_SESSION_LINES).coerceAtLeast(0)
     val lines = if (extra > 0) {
-        shown + String.format(Locale.getDefault(), strings.moreSessionsFormat, extra)
+        shown + String.format(locale, strings.moreSessionsFormat, extra)
     } else {
         shown
     }
     return RdpSessionNotificationContent(
-        title = String.format(Locale.getDefault(), strings.multiTitleFormat, snapshot.activeCount),
+        title = String.format(locale, strings.multiTitleFormat, snapshot.activeCount),
         text = String.format(
-            Locale.getDefault(),
+            locale,
             strings.multiSummaryFormat,
             snapshot.connectedCount,
             snapshot.connectingCount,

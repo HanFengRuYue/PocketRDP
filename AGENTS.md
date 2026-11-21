@@ -6,7 +6,7 @@ This is the repository's only agent-facing guide. Merge any still-valid guidance
 
 PocketRDP is an Android RDP client built with Kotlin, Jetpack Compose Material 3, Hilt, Room, and a patched FreeRDP native core. Modules are `:app`, `:feature-session`, `:feature-connections`, `:core-rdp`, `:core-data`, `:core-ui`, and `:core-logging`.
 
-The audited stack is AGP 9.3.1, Gradle 9.6.1, Kotlin Compose 2.4.10, KSP 2.3.10, Hilt 2.60.1, Room 2.8.4, Compose BOM 2026.06.01, compile/target SDK 37, min SDK 31, NDK 29.0.14206865, and CMake 4.1.2. AGP built-in Kotlin is active; do not apply `org.jetbrains.kotlin.android`, disable built-in Kotlin, switch to KSP1, or add `jvmToolchain`. Keep JVM target 17.
+The audited stack is AGP 9.5.1, Gradle 9.9.2, Kotlin Compose 2.4.21, KSP 2.3.14, Hilt 2.60.1, Room 2.8.5, Compose BOM 2026.11.01, compile SDK 37.2, target SDK 37, min SDK 31, NDK 30.0.16248370, and CMake 4.1.2. AGP built-in Kotlin is active; do not apply `org.jetbrains.kotlin.android`, disable built-in Kotlin, switch to KSP1, or add `jvmToolchain`. Keep JVM target 17.
 
 On Windows, every Gradle invocation must use Android Studio JBR 21:
 
@@ -19,7 +19,7 @@ Preserve the Tencent Gradle wrapper mirror and Aliyun Maven mirrors until this n
 
 ## Native FreeRDP boundary
 
-FreeRDP is based on official 3.30.0 commit `6b107f0aadbabc47941c5a5b893b88c01792af6d` and is integrated through PocketRDP fork commit `4ff131db41ef8159b9b234be23f625c98a4821ba`. PocketRDP changes are also stored reproducibly in `patches/freerdp/pocketrdp-3.30.patch`; verify either the clean integrated commit or the patch applied to the official base with `scripts/apply-freerdp-patches.ps1 -CheckOnly`. Do not alter the `com.freerdp.freerdpcore.services.LibFreeRDP` FQN. Keep the R8 rules for `com.freerdp.freerdpcore.**`, Hilt, and Room.
+FreeRDP is based on official 3.33.1 commit `65bcca1913a28cbdd7eb913599f692bd2b707991` and is integrated through PocketRDP fork commit `3429055cda491e6f1db489be2daaf86b01a1c7dc`. PocketRDP changes are also stored reproducibly in `patches/freerdp/pocketrdp-3.33.patch`; verify either the clean integrated commit or the patch applied to the official base with `scripts/apply-freerdp-patches.ps1 -CheckOnly`. Do not alter the `com.freerdp.freerdpcore.services.LibFreeRDP` FQN. Keep the R8 rules for `com.freerdp.freerdpcore.**`, Hilt, and Room.
 
 Normal Windows builds package prebuilt libraries from `core-rdp/src/main/jniLibs`. Native rebuilds are WSL2-only. Run `scripts/build-native-multiarch-in-wsl.sh` and explicitly pass all four ABIs when changing JNI or FreeRDP core behavior:
 

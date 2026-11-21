@@ -18,7 +18,6 @@ data class RdpConnectionParams(
     val useMultitransport: Boolean,
     val redirectClipboard: Boolean,
     val redirectFiles: Boolean,
-    val sharedFolderUri: String?,
     // POSIX directory exported to the remote via /drive (file redirection). Null/blank = no drive.
     // Must be a real native path (WinPR uses open()/stat()), NOT a SAF content:// URI, and must already
     // exist at connect time (FreeRDP silently skips a non-existent drive path).

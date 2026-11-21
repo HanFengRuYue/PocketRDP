@@ -41,10 +41,10 @@ tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
     }
 }
 
-val auditedNetty4Version = "4.1.136.Final"
-val auditedBouncyCastleVersion = "1.85"
+val auditedNetty4Version = "4.1.141.Final"
+val auditedBouncyCastleVersion = "1.87"
 val auditedHttpClient4Version = "4.5.14"
-val auditedCommonsLang3Version = "3.20.0"
+val auditedCommonsLang3Version = "3.22.0"
 
 subprojects {
     // Pin the fully resolved transitive graph as well as the direct versions in the catalog.

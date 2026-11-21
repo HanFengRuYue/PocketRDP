@@ -4,11 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
 import kotlin.math.roundToInt
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -27,59 +24,44 @@ import kotlinx.coroutines.flow.asStateFlow
  * - [nativeBuffer] is the back buffer the worker writes into.
  * - [peekFront] returns the front buffer the UI draws (a complete, stable frame).
  * - [commitFrame] swaps back→front after the worker finishes a region update.
- * - `current` exposes whether a buffer exists at all (drives the "waiting for frame" placeholder);
- *   it is updated on resize/release only, NOT per frame, so the session canvas does not recompose
- *   at the content rate.
+ * - [hasPublishedFrame] flips true once the first complete frame has been swapped to front and
+ *   resets on resize/release so snapshots and overlays never surface an uninitialized black frame.
  *
  * Memory cost is two same-size bitmaps (~2×8 MB at 1080p). Like the previous single-buffer
  * implementation, old bitmaps are never `recycle()`d — the UI thread may still hold a reference for
  * a frame or two; let GC reclaim them (a recycle-then-draw race previously caused SIGSEGV).
  */
 class BitmapBuffer {
+    private val frames = DoubleBufferedFrames<Bitmap, Rect>(
+        allocate = { width, height -> Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) },
+        scaleCopy = { src, width, height ->
+            runCatching { Bitmap.createScaledBitmap(src, width, height, true) }.getOrNull()
+        },
+        widthOf = Bitmap::getWidth,
+        heightOf = Bitmap::getHeight,
+        makeRect = ::Rect,
+        nowMillis = SystemClock::uptimeMillis,
+    )
 
-    private val lock = Any()
-    private var front: Bitmap? = null
-    private var back: Bitmap? = null
-    // Region updated in the previously-published frame. The back buffer is exactly one published
-    // generation behind (that update went to the other buffer), so it must be re-synced over this
-    // rect before the next swap or the published frame would be missing it.
-    private var lastRect: Rect? = null
-
-    // Monotonic publish sequence + the uptime each front frame was committed. The renderer reads these
-    // (peekFrontSeq / peekFrontCommitMs) to measure decode→present latency: when onDraw sees the seq
-    // advance, (now − commitMs) is how long that frame waited between decode-done and being drawn. Reads
-    // are racy-but-cheap (a metric) — a swap mid-read at worst attributes a slightly newer commit time.
-    @Volatile private var frontSeq: Long = 0L
-    @Volatile private var frontCommitMs: Long = 0L
-
-    private val _current = MutableStateFlow<Bitmap?>(null)
-    /** Non-null once a framebuffer has been allocated. Identity is NOT meaningful per frame — used
-     *  only to flip the "waiting for remote frame" placeholder. */
-    val current: StateFlow<Bitmap?> = _current.asStateFlow()
-
-    private val _hasPublishedFrame = MutableStateFlow(false)
-    val hasPublishedFrame: StateFlow<Boolean> = _hasPublishedFrame.asStateFlow()
-
-    private val _dirty = MutableSharedFlow<Rect>(extraBufferCapacity = 256)
-    val dirty: SharedFlow<Rect> = _dirty.asSharedFlow()
+    val hasPublishedFrame: StateFlow<Boolean> = frames.hasPublishedFrame
 
     /** Back buffer the native worker writes pixel updates into. Null until [resize]. */
-    fun nativeBuffer(): Bitmap? = synchronized(lock) { back }
+    fun nativeBuffer(): Bitmap? = frames.nativeBuffer()
 
     /** Region updated in the previous published frame; the back buffer must be re-synced over it
      *  before publishing so the swapped-in frame is a complete mirror of the gdi framebuffer. */
-    fun staleRect(): Rect? = synchronized(lock) { lastRect }
+    fun staleRect(): Rect? = frames.staleRect()
 
     /** Front buffer the UI draws — a complete, stable frame. Drawn outside the lock; safe because
      *  the worker only ever writes the back buffer (see class doc). */
-    fun peekFront(): Bitmap? = synchronized(lock) { front }
+    fun peekFront(): Bitmap? = frames.peekFront()
 
     /** Monotonic sequence of the current front frame; advances on every [commitFrame]. The renderer
      *  uses a change in this value to detect a freshly-published frame (decode→present timing). */
-    fun peekFrontSeq(): Long = frontSeq
+    fun peekFrontSeq(): Long = frames.peekFrontSeq()
 
     /** Uptime (ms) the current front frame was committed — paired with [peekFrontSeq] for present timing. */
-    fun peekFrontCommitMs(): Long = frontCommitMs
+    fun peekFrontCommitMs(): Long = frames.peekFrontCommitMs()
 
     /**
      * Thread-safe, downscaled COPY of the current front frame — used for the per-connection desktop
@@ -87,62 +69,98 @@ class BitmapBuffer {
      * independent bitmap (so the caller can encode it off-thread without touching our buffers) or
      * null when no frame has been published yet.
      *
-     * The whole copy runs inside [lock] so it can never race the worker's [commitFrame] swap: while
-     * we hold the lock the front buffer is stable. [Bitmap.createScaledBitmap] reads the source and
-     * allocates a fresh result, so once it returns the lock can drop and the worker resumes. The
-     * longest dimension is clamped to [maxDimension]; aspect ratio is preserved and we never upscale.
+     * The whole copy runs inside the buffer lock so it can never race the worker's [commitFrame]
+     * swap: while we hold the lock the front buffer is stable. [Bitmap.createScaledBitmap] reads
+     * the source and allocates a fresh result, so once it returns the lock can drop and the worker
+     * resumes. The longest dimension is clamped to [maxDimension]; aspect ratio is preserved and
+     * we never upscale.
      */
-    fun snapshot(maxDimension: Int): Bitmap? = synchronized(lock) {
-        val src = front ?: return null
-        val w = src.width
-        val h = src.height
-        if (w <= 0 || h <= 0 || maxDimension <= 0) return null
-        val scale = (maxDimension.toFloat() / maxOf(w, h)).coerceAtMost(1f)
-        val tw = (w * scale).roundToInt().coerceAtLeast(1)
-        val th = (h * scale).roundToInt().coerceAtLeast(1)
-        runCatching { Bitmap.createScaledBitmap(src, tw, th, true) }.getOrNull()
-    }
+    fun snapshot(maxDimension: Int): Bitmap? = frames.snapshot(maxDimension)
 
-    fun resize(width: Int, height: Int): Bitmap {
-        synchronized(lock) {
-            val f = front
-            if (f != null && f.width == width && f.height == height) return f
-        }
-        // Allocate outside the lock (two ~8 MB bitmaps) so the UI's peekFront isn't blocked on it;
-        // resize is only ever called from the single native worker thread, so there's no concurrent
-        // resize to race the swap below.
-        val newFront = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val newBack = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        synchronized(lock) {
-            front = newFront
-            back = newBack
-            lastRect = null
-        }
-        _current.value = newFront
-        _hasPublishedFrame.value = false
-        // Deliberately do NOT recycle the old bitmaps (see class doc) — let GC reclaim them.
-        return newFront
-    }
+    fun resize(width: Int, height: Int): Bitmap = frames.resize(width, height)
 
     /**
      * Publish the back buffer after the worker has written [x,y,w,h] (and re-synced [staleRect])
      * into it. Swaps back→front so the UI picks up a complete frame on its next render tick.
      */
+    fun commitFrame(x: Int, y: Int, w: Int, h: Int) = frames.commitFrame(x, y, w, h)
+
+    fun release() = frames.release()
+}
+
+internal class DoubleBufferedFrames<F : Any, R : Any>(
+    private val allocate: (width: Int, height: Int) -> F,
+    private val scaleCopy: (source: F, width: Int, height: Int) -> F?,
+    private val widthOf: (F) -> Int,
+    private val heightOf: (F) -> Int,
+    private val makeRect: (left: Int, top: Int, right: Int, bottom: Int) -> R,
+    private val nowMillis: () -> Long,
+) {
+    private val lock = Any()
+    private var front: F? = null
+    private var back: F? = null
+    // Region updated in the previously-published frame. The back buffer is exactly one published
+    // generation behind (that update went to the other buffer), so it must be re-synced over this
+    // rect before the next swap or the published frame would be missing it.
+    private var lastRect: R? = null
+
+    // Monotonic publish sequence + the uptime each front frame was committed.
+    @Volatile private var frontSeq: Long = 0L
+    @Volatile private var frontCommitMs: Long = 0L
+
+    private val _hasPublishedFrame = MutableStateFlow(false)
+    val hasPublishedFrame: StateFlow<Boolean> = _hasPublishedFrame.asStateFlow()
+
+    fun nativeBuffer(): F? = synchronized(lock) { back }
+
+    fun staleRect(): R? = synchronized(lock) { lastRect }
+
+    fun peekFront(): F? = synchronized(lock) { front }
+
+    fun peekFrontSeq(): Long = frontSeq
+
+    fun peekFrontCommitMs(): Long = frontCommitMs
+
+    fun snapshot(maxDimension: Int): F? = synchronized(lock) {
+        if (!_hasPublishedFrame.value) return null
+        val src = front ?: return null
+        val w = widthOf(src)
+        val h = heightOf(src)
+        if (w <= 0 || h <= 0 || maxDimension <= 0) return null
+        val scale = (maxDimension.toFloat() / maxOf(w, h)).coerceAtMost(1f)
+        val tw = (w * scale).roundToInt().coerceAtLeast(1)
+        val th = (h * scale).roundToInt().coerceAtLeast(1)
+        scaleCopy(src, tw, th)
+    }
+
+    fun resize(width: Int, height: Int): F {
+        synchronized(lock) {
+            val f = front
+            if (f != null && widthOf(f) == width && heightOf(f) == height) return f
+        }
+        // Allocate outside the lock so the UI's peekFront isn't blocked on large allocations.
+        val newFront = allocate(width, height)
+        val newBack = allocate(width, height)
+        synchronized(lock) {
+            front = newFront
+            back = newBack
+            lastRect = null
+            _hasPublishedFrame.value = false
+        }
+        // Deliberately do NOT recycle old frames — let GC reclaim them after RenderThread finishes.
+        return newFront
+    }
+
     fun commitFrame(x: Int, y: Int, w: Int, h: Int) {
         synchronized(lock) {
             val tmp = front
             front = back
             back = tmp
-            lastRect = Rect(x, y, x + w, y + h)
+            lastRect = makeRect(x, y, x + w, y + h)
             frontSeq++
-            frontCommitMs = SystemClock.uptimeMillis()
+            frontCommitMs = nowMillis()
+            _hasPublishedFrame.value = front != null
         }
-        _hasPublishedFrame.value = true
-        _dirty.tryEmit(Rect(x, y, x + w, y + h))
-    }
-
-    fun notifyDirty(x: Int, y: Int, w: Int, h: Int) {
-        _dirty.tryEmit(Rect(x, y, x + w, y + h))
     }
 
     fun release() {
@@ -150,8 +168,7 @@ class BitmapBuffer {
             front = null
             back = null
             lastRect = null
+            _hasPublishedFrame.value = false
         }
-        _current.value = null
-        _hasPublishedFrame.value = false
     }
 }

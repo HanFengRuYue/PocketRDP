@@ -8,12 +8,15 @@
     <string name="session_cd_exit_fullscreen">전체 화면 종료</string>
     <string name="session_cd_expand_status">세션 정보 펼치기</string>
     <string name="session_loading_remote_frame">연결 중, 원격 화면을 기다리는 중…</string>
+    <string name="session_reconnecting_remote_frame">연결이 중단되어 다시 연결 중…</string>
+    <string name="session_action_reconnect">다시 연결</string>
+    <string name="session_action_close">닫기</string>
     <string name="session_battery_title">백그라운드 유지를 허용할까요?</string>
     <string name="session_battery_message">앱을 전환하거나 화면을 잠가도 이 원격 데스크톱 연결을 유지하려면 PocketRDP를 배터리 최적화 허용 목록에 추가하세요. 그렇지 않으면 절전 중 시스템이 백그라운드 연결을 끊을 수 있습니다.</string>
     <string name="session_action_allow">허용</string>
     <string name="session_action_not_now">나중에</string>
     <string name="session_all_files_title">모든 파일 접근을 허용할까요?</string>
-    <string name="session_all_files_message">폴더 리디렉션은 휴대폰 전체 저장소를 원격 컴퓨터의 파일 탐색기에 PocketRDP 드라이브로 탑재합니다. 이를 위해 PocketRDP에 모든 파일 접근 권한이 필요합니다. 권한을 허용한 뒤 다시 연결해 드라이브를 탑재하세요.</string>
+    <string name="session_all_files_message">폴더 리디렉션은 휴대폰 전체 저장소를 원격 컴퓨터의 파일 탐색기에 PocketRDP 드라이브로 탑재합니다. 이를 위해 PocketRDP에 모든 파일 접근 권한이 필요합니다. 권한을 허용한 뒤 앱으로 돌아오면 자동으로 연결을 계속하고 드라이브를 탑재합니다.</string>
     <string name="session_action_grant">권한 허용</string>
     <string name="session_zoom_cd">확대/축소: 위로 밀면 확대, 아래로 밀면 축소, 두 번 탭하면 초기화, 길게 누른 뒤 드래그하면 이 버튼 이동</string>
     <string name="session_pan_cd">확대된 화면을 이동하려면 드래그하세요. 이 버튼을 옮기려면 길게 누른 뒤 드래그하세요</string>
@@ -31,6 +34,7 @@
     <string name="session_toolbar_edit_quick_hint">아래 키를 눌러 추가하고 선택한 키를 길게 눌러 끌면 순서를 바꿀 수 있습니다</string>
     <string name="session_toolbar_add_regular">일반 키 추가</string>
     <string name="session_toolbar_add_regular_hint">빠른 도구 모음에 표시할 키를 선택하세요</string>
+    <string name="session_toolbar_quick_limit_reached">빠른 도구 모음 한도(%1$d개)에 도달했습니다. 추가하려면 먼저 키를 제거하세요.</string>
     <string name="session_toolbar_reset">초기화</string>
     <string name="session_toolbar_done">완료</string>
     <string name="session_toolbar_add_combo_title">단축키 추가</string>
@@ -57,7 +61,6 @@
     <string name="session_status_display_latency">표시 지연: %1$s</string>
     <string name="session_status_network_rtt">네트워크 왕복: %1$s</string>
     <string name="session_status_samples">샘플: 유효 %1$d / 폐기 %2$d</string>
-    <string name="session_status_transport_stats">트래픽: 수신 %1$d B / 송신 %2$d B, 재전송 %3$d</string>
     <string name="session_status_transport_error">전송 오류: %1$s, 터널 0x%2$s, 소켓 %3$d</string>
     <string name="session_transport_negotiating_udp">TCP · UDP 협상 중</string>
     <string name="session_transport_waiting_soft_sync">TCP · Soft-Sync 대기 중</string>
@@ -68,8 +71,10 @@
     <string name="session_status_measuring">측정 중…</string>
     <string name="session_status_idle">연결되지 않음</string>
     <string name="session_status_connecting">연결 중…</string>
+    <string name="session_status_reconnecting">재연결 중…</string>
     <string name="session_status_connected">연결됨</string>
     <string name="session_status_disconnected">연결 끊김 (%1$s)</string>
+    <string name="session_status_disconnected_user">사용자가 연결 끊음</string>
     <string name="session_status_failed">연결 실패</string>
     <string name="session_status_unknown_reason">—</string>
 
@@ -78,7 +83,6 @@
     <string name="session_notification_status_connecting">연결 중…</string>
     <string name="session_notification_status_connected">연결됨</string>
     <string name="session_notification_status_reconnecting">연결이 중단되어 다시 연결 중…</string>
-    <string name="session_notification_status_failed">연결 실패</string>
     <string name="session_notification_title">원격 데스크톱 세션</string>
     <string name="session_notification_disconnect_action">연결 끊기</string>
     <string name="session_notification_disconnect_all_action">모두 연결 끊기</string>
@@ -89,7 +93,15 @@
     <string name="session_local_network_message">LAN의 원격 데스크톱에 연결하려면 PocketRDP에 로컬 네트워크 권한이 필요합니다. 거부하면 Android가 이 연결을 차단할 수 있습니다.</string>
     <string name="session_action_open_settings">설정 열기</string>
     <string name="session_action_continue_without_lan">LAN 없이 계속</string>
-    <string name="session_action_cancel">취소</string>
+    <string name="session_credentials_title">인증</string>
+    <string name="session_credentials_message">원격 컴퓨터 %1$s에 로그인 자격 증명이 필요합니다.</string>
+    <string name="session_credentials_message_generic">원격 컴퓨터에 로그인 자격 증명이 필요합니다.</string>
+    <string name="session_credentials_username">사용자 이름</string>
+    <string name="session_credentials_domain">도메인(선택 사항)</string>
+    <string name="session_credentials_password">암호</string>
+    <string name="session_credentials_connect">연결</string>
+    <string name="session_credentials_show_password">암호 표시</string>
+    <string name="session_credentials_hide_password">암호 숨기기</string>
     <string name="session_certificate_new_title">원격 컴퓨터 인증서 확인</string>
     <string name="session_certificate_new_message">이 원격 컴퓨터에 처음 연결합니다. 신뢰하기 전에 지문을 확인하세요. PocketRDP가 이 연결에 지문을 고정합니다.</string>
     <string name="session_certificate_changed_title">원격 컴퓨터 인증서가 변경됨</string>

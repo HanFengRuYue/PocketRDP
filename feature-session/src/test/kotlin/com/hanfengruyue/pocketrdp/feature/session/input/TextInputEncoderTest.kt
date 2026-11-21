@@ -47,4 +47,26 @@ class TextInputEncoderTest {
             keyEvents,
         )
     }
+
+    @Test
+    fun lineFeedAndCarriageReturnSendSingleReturnVirtualKey() {
+        for (newline in listOf("\n", "\r", "\r\n")) {
+            val keyEvents = mutableListOf<Pair<Int, Boolean>>()
+
+            TextInputEncoder.type(
+                text = newline,
+                unicodeSupported = true,
+                sendKey = { key, down -> keyEvents += key to down },
+                sendUnicode = { _, _ -> error("newlines must use VK.RETURN, not unicode") },
+            )
+
+            assertEquals(
+                listOf(
+                    ScancodeMap.VK.RETURN to true,
+                    ScancodeMap.VK.RETURN to false,
+                ),
+                keyEvents,
+            )
+        }
+    }
 }

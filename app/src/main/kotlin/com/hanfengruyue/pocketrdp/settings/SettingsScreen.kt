@@ -11,10 +11,14 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -95,8 +99,12 @@ fun SettingsScreen(
     val authorUrl = stringResource(R.string.settings_about_author_homepage_url)
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Top,
+                ),
                 title = { Text(stringResource(R.string.settings_title)) },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
@@ -215,14 +223,14 @@ fun SettingsScreen(
                     icon = Icons.Default.Code,
                     title = stringResource(R.string.settings_about_repository_title),
                     url = repositoryUrl,
-                    onClick = { uriHandler.openUri(repositoryUrl) },
+                    onClick = { runCatching { uriHandler.openUri(repositoryUrl) } },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                 LinkRow(
                     icon = Icons.Default.Person,
                     title = stringResource(R.string.settings_about_author_homepage_title),
                     url = authorUrl,
-                    onClick = { uriHandler.openUri(authorUrl) },
+                    onClick = { runCatching { uriHandler.openUri(authorUrl) } },
                 )
             }
         }
@@ -463,7 +471,7 @@ private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
 @Composable
 private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) {
     var pendingValue by remember(value) { mutableFloatStateOf(value) }
-    val percent = (pendingValue * 100).toInt()
+    val percent = (pendingValue * 100).roundToInt()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),

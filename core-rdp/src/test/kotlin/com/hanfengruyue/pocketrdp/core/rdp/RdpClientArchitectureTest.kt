@@ -83,6 +83,40 @@ class RdpClientArchitectureTest {
         )
     }
 
+    @Test
+    fun bitmapBufferNeverRecyclesBitmapsAndGatesSnapshotsOnPublishedFrame() {
+        val source = Files.readString(
+            projectRoot().resolve(
+                "core-rdp/src/main/kotlin/com/hanfengruyue/pocketrdp/core/rdp/BitmapBuffer.kt",
+            ),
+        )
+
+        assertFalse(
+            "Bitmap.recycle() must never be called because RenderThread may still hold a frame.",
+            Regex("""\.recycle\s*\(""").containsMatchIn(source),
+        )
+        assertTrue(
+            "snapshot() must reject uninitialized frames before commitFrame().",
+            source.contains("if (!_hasPublishedFrame.value) return null"),
+        )
+    }
+
+    @Test
+    fun rejectedFramebufferGuardsAgainstLateConnectedAndStaleTeardown() {
+        val source = Files.readString(
+            projectRoot().resolve(
+                "core-rdp/src/main/kotlin/com/hanfengruyue/pocketrdp/core/rdp/RdpClient.kt",
+            ),
+        )
+
+        assertTrue(source.contains("rejectedNativeInstance.set(inst)"))
+        assertTrue(source.contains("if (closeNativeInstance(inst))"))
+        assertTrue(
+            "OnConnectionSuccess must ignore an instance whose framebuffer resize was rejected.",
+            source.contains("ignoring OnConnectionSuccess for rejected framebuffer instance"),
+        )
+    }
+
     private fun projectRoot(): Path {
         var current = Path.of(System.getProperty("user.dir")).toAbsolutePath()
         while (!current.resolve("settings.gradle.kts").exists()) {

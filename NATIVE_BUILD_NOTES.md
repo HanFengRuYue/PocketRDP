@@ -9,15 +9,15 @@ Native rebuilding is supported only in WSL2 and is deliberately gated by
 
 | Component | Pinned version |
 | --- | --- |
-| FreeRDP | Official `3.30.0` commit `6b107f0aadbabc47941c5a5b893b88c01792af6d` |
-| PocketRDP FreeRDP patch | `patches/freerdp/pocketrdp-3.30.patch` |
-| Android NDK | `29.0.14206865` |
+| FreeRDP | Official `3.33.1` commit `65bcca1913a28cbdd7eb913599f692bd2b707991` |
+| PocketRDP FreeRDP patch | `patches/freerdp/pocketrdp-3.33.patch` |
+| Android NDK | `30.0.16248370` |
 | CMake | `4.1.2` |
-| Android command-line tools | `15859902_latest` |
-| OpenSSL | `4.0.1` |
-| FFmpeg | `n8.1.2` |
+| Android command-line tools | `16111833_latest` |
+| OpenSSL | `4.1.0` |
+| FFmpeg | `n9.1` |
 | cJSON | `1.7.19` |
-| uriparser | `1.0.2` |
+| uriparser | `1.0.3` |
 
 The WSL scripts verify the NDK, CMake and command-line-tools archives with SHA-256.
 FreeRDP's `cmake/DepVersions.cmake` pins source archive hashes for its native
@@ -52,7 +52,7 @@ The script intentionally invokes Gradle once per ABI. OpenSSL and FFmpeg externa
 projects share source trees and must not build concurrently. It:
 
 1. verifies or applies the exact audited FreeRDP patch;
-2. installs or verifies JDK 21, NDK 29, CMake 4.1.2 and Android API 37;
+2. installs or verifies JDK 21, NDK 30, CMake 4.1.2 and Android API 37.2;
 3. verifies and reuses cached dependency archives;
 4. pre-stages the verified FFmpeg source;
 5. builds one ABI through `-PnativeAbi=<abi>`;

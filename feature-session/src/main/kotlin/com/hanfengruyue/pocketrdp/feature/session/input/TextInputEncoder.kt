@@ -57,6 +57,9 @@ object TextInputEncoder {
         while (i < text.length) {
             val cp = text.codePointAt(i)
             i += Character.charCount(cp)
+            if (cp == '\r'.code && i < text.length && text[i] == '\n') {
+                i++
+            }
             sendCodePoint(cp, unicodeSupported, sendKey, sendUnicode)
         }
     }
@@ -78,6 +81,9 @@ object TextInputEncoder {
         while (i < text.length) {
             val cp = text.codePointAt(i)
             i += Character.charCount(cp)
+            if (cp == '\r'.code && i < text.length && text[i] == '\n') {
+                i++
+            }
             sendCodePoint(cp, unicodeSupported, sendKey, sendUnicode)
             if (++sent % THROTTLE_BATCH == 0) delay(THROTTLE_DELAY_MS)
         }

@@ -21,16 +21,11 @@
     <string name="settings_cursor_size_value">%1$d%%</string>
     <string name="settings_cursor_size_min">75%</string>
     <string name="settings_cursor_size_max">200%</string>
-    <string name="settings_alpha_percent">%1$s：%2$d%%</string>
     <string name="settings_alpha_value">%1$d%%</string>
     <string name="settings_alpha_min">0%</string>
     <string name="settings_alpha_max">100%</string>
     <string name="settings_about_title">应用信息</string>
-    <string name="settings_about_version_label">当前版本</string>
     <string name="settings_about_version_short">v%1$s</string>
-    <string name="settings_about_version">版本：%1$s</string>
-    <string name="settings_about_author">作者：%1$s</string>
-    <string name="settings_about_author_name" translatable="false">HanFengRuYue</string>
     <string name="settings_about_repository_title">项目仓库</string>
     <string name="settings_about_author_homepage_title">作者主页</string>
     <string name="settings_about_repository_url" translatable="false">https://github.com/HanFengRuYue/PocketRDP</string>
@@ -47,7 +42,7 @@
     <string name="settings_language_de">Deutsch</string>
     <string name="settings_language_ja">日本語</string>
     <string name="settings_language_ko">한국어</string>
-    <string name="settings_language_pt_br">Português</string>
+    <string name="settings_language_pt_br">Português (Brasil)</string>
 
     <string name="logs_title">日志</string>
     <string name="logs_cd_export">导出</string>

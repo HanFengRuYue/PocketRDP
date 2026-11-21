@@ -13,10 +13,10 @@ $OutputEncoding = $utf8NoBom
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $freeRdpDir = Join-Path $repoRoot "third_party/FreeRDP"
-$patchPath = Join-Path $repoRoot "patches/freerdp/pocketrdp-3.30.patch"
-$expectedBase = "6b107f0aadbabc47941c5a5b893b88c01792af6d"
-$expectedIntegratedCommit = "07990e027ceb28370e9a7215a3f847e5b5b3018f"
-$expectedPatchSha256 = "86a7c89f1cbd52050e7cc7c64895d4b538994b3ae857404e23ad18d753a1d95f"
+$patchPath = Join-Path $repoRoot "patches/freerdp/pocketrdp-3.33.patch"
+$expectedBase = "65bcca1913a28cbdd7eb913599f692bd2b707991"
+$expectedIntegratedCommit = "3429055cda491e6f1db489be2daaf86b01a1c7dc"
+$expectedPatchSha256 = "d116e5edd1d5d0a0121dc2ddce3adcab96d2bef9b2128f605ed9ad1e2dad24f3"
 
 if (-not (Test-Path -LiteralPath (Join-Path $freeRdpDir ".git"))) {
     throw "FreeRDP submodule is not initialized. Run: git submodule update --init third_party/FreeRDP"
@@ -24,7 +24,19 @@ if (-not (Test-Path -LiteralPath (Join-Path $freeRdpDir ".git"))) {
 if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
     throw "PocketRDP FreeRDP patch is missing: $patchPath"
 }
-$actualPatchSha256 = (Get-FileHash -LiteralPath $patchPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $stream = [System.IO.File]::OpenRead($patchPath)
+    try {
+        $actualPatchSha256 = ([System.BitConverter]::ToString($sha256.ComputeHash($stream)) -replace "-", "").ToLowerInvariant()
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+finally {
+    $sha256.Dispose()
+}
 if ($actualPatchSha256 -ne $expectedPatchSha256) {
     throw "PocketRDP FreeRDP patch SHA-256 mismatch. Expected $expectedPatchSha256; found $actualPatchSha256."
 }
@@ -45,7 +57,7 @@ if ($head -eq $expectedIntegratedCommit) {
     exit 0
 }
 if ($head -ne $expectedBase) {
-    throw "FreeRDP must be at PocketRDP commit $expectedIntegratedCommit or official 3.30.0 base $expectedBase; found $head."
+    throw "FreeRDP must be at PocketRDP commit $expectedIntegratedCommit or official 3.33.1 base $expectedBase; found $head."
 }
 
 if ($status.Count -gt 0) {
@@ -77,7 +89,7 @@ if ($status.Count -gt 0) {
     }
     $currentDiff = ($currentDiffLines -join "`n").TrimEnd("`n")
     if ($currentDiff -ceq $expectedDiff) {
-        Write-Host "PocketRDP FreeRDP 3.30 patch is already applied."
+        Write-Host "PocketRDP FreeRDP 3.33 patch is already applied."
         exit 0
     }
     throw "FreeRDP has unrelated or partially applied changes; refusing to modify it."
@@ -85,10 +97,10 @@ if ($status.Count -gt 0) {
 
 & git -C $freeRdpDir apply --check --whitespace=error-all $patchPath
 if ($LASTEXITCODE -ne 0) {
-    throw "PocketRDP FreeRDP patch does not apply cleanly to the official 3.30.0 base."
+    throw "PocketRDP FreeRDP patch does not apply cleanly to the official 3.33.1 base."
 }
 if ($CheckOnly) {
-    Write-Host "PocketRDP FreeRDP 3.30 patch applies cleanly."
+    Write-Host "PocketRDP FreeRDP 3.33 patch applies cleanly."
     exit 0
 }
 
@@ -96,4 +108,4 @@ if ($CheckOnly) {
 if ($LASTEXITCODE -ne 0) {
     throw "PocketRDP FreeRDP patch application failed."
 }
-Write-Host "Applied PocketRDP FreeRDP 3.30 patch."
+Write-Host "Applied PocketRDP FreeRDP 3.33 patch."

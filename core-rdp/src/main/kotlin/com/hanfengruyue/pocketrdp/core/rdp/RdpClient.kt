@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
@@ -76,23 +77,14 @@ class RdpClient @Inject constructor(
     private val nativeCallLock = java.lang.Object()
     private var inFlightNativeCalls: Int = 0
     @Volatile private var nativeInstance: Long = 0L
+    private val rejectedNativeInstance = AtomicLong(0L)
     private var connectThread: Thread? = null
     @Volatile private var acceptedCertThumb: String? = null
     @Volatile private var certificatePromptOutstanding: Boolean = false
     @Volatile private var certificateFatalFailureOutstanding: Boolean = false
-
-    // RDP-UDP diagnostics are derived from the native atomic snapshot and written through
-    // PocketLogger so a user-exported application log contains the negotiation history. Only
-    // protocol state, numeric errors and aggregate counters are retained; endpoint/security data
-    // is never accepted by the formatter.
-    private val transportDiagnosticLock = Any()
-    private var multitransportRequestedForConnection: Boolean = false
-    private var transportConnectedAtMs: Long = 0L
-    private var transportRequestObserved: Boolean = false
-    private var missingTransportRequestLogged: Boolean = false
-    private var incompatibleTransportSnapshotLogged: Boolean = false
-    private var lastLoggedTransportControl: String? = null
-    private var lastTransportTrafficLogMs: Long = 0L
+    private val credentialPromptGate = CredentialPromptGate()
+    @Volatile private var credentialsCancelled: Boolean = false
+    private val transportTracker = RdpTransportTracker(logTag = TAG)
 
     // Host/port of the active session — used by [measureLatencyMs] for the latency probe.
     @Volatile private var lastHost: String? = null
@@ -157,10 +149,17 @@ class RdpClient @Inject constructor(
     private var unicodeEventLogCount: Int = 0
 
     fun connect(params: RdpConnectionParams) {
+        val effectiveMultitransport = transportTracker.effectiveMultitransport(params.useMultitransport)
+        val effectiveParams = if (effectiveMultitransport == params.useMultitransport) {
+            params
+        } else {
+            params.copy(useMultitransport = false)
+        }
         PocketLogger.i(
             TAG,
-            "connect() endpoint=<redacted> h264=${params.useH264} gfx=${params.useGfx} " +
-                "dynRes=${params.dynamicResolution} multitransport=${params.useMultitransport}",
+            "connect() endpoint=<redacted> h264=${effectiveParams.useH264} gfx=${effectiveParams.useGfx} " +
+                "dynRes=${effectiveParams.dynamicResolution} " +
+                "multitransport=${effectiveParams.useMultitransport}",
         )
         if (!LibFreeRDP.isNativeReady()) {
             PocketLogger.e(TAG, "native FreeRDP not ready — refusing connect")
@@ -168,6 +167,7 @@ class RdpClient @Inject constructor(
                 RdpEvent.Failed(
                     "native FreeRDP not built — see core-rdp/build.gradle.kts to enable CMake superbuild",
                     retryable = false,
+                    udpDowngraded = transportTracker.hasObservedDowngrade(),
                 ),
             )
             return
@@ -178,9 +178,12 @@ class RdpClient @Inject constructor(
             closeNativeInstance(previous)
             buffer.release()
         }
+        credentialPromptGate.cancel()
+        credentialsCancelled = false
+        _remoteCursor.value = RdpCursor.Default
 
-        resetTransportDiagnostics(params.useMultitransport)
-        if (params.useMultitransport) {
+        transportTracker.reset(effectiveParams.useMultitransport)
+        if (effectiveParams.useMultitransport) {
             PocketLogger.i(
                 TAG,
                 "RDP-UDP diagnostic: enabled for this attempt; waiting for a server multitransport request",
@@ -190,23 +193,30 @@ class RdpClient @Inject constructor(
         }
 
         emit(RdpEvent.Connecting)
-        acceptedCertThumb = params.acceptedCertThumbprint
+        acceptedCertThumb = effectiveParams.acceptedCertThumbprint
             ?.let(::normalizeCertificateFingerprint)
             ?.takeIf(String::isNotEmpty)
         certificatePromptOutstanding = false
         certificateFatalFailureOutstanding = false
-        lastHost = params.host
-        lastPort = params.port
+        lastHost = effectiveParams.host
+        lastPort = effectiveParams.port
         val inst = LibFreeRDP.newInstance(context)
         if (inst == 0L) {
             PocketLogger.e(TAG, "LibFreeRDP.newInstance returned 0")
-            emit(RdpEvent.Failed("freerdp_new returned 0", retryable = false))
+            emit(
+                RdpEvent.Failed(
+                    "freerdp_new returned 0",
+                    retryable = false,
+                    udpDowngraded = transportTracker.hasObservedDowngrade(),
+                ),
+            )
             return
         }
         synchronized(nativeCallLock) {
+            rejectedNativeInstance.set(0L)
             nativeInstance = inst
         }
-        sessionRegistry.markConnecting(this, params)
+        sessionRegistry.markConnecting(this, effectiveParams)
         LibFreeRDP.registerEventListener(inst, eventListener)
         LibFreeRDP.registerUIEventListener(inst, uiEventListener)
         keyEventLogCount = 0
@@ -221,7 +231,7 @@ class RdpClient @Inject constructor(
         lastGfxLogMs = 0L
         PocketLogger.d(TAG, "FreeRDP native instance allocated")
 
-        val args = buildCommandLine(params)
+        val args = buildCommandLine(effectiveParams)
         PocketLogger.i(TAG, "args=${redact(args).joinToString(" ")}")
         val parsed = withSpecificLiveInstance(inst) {
             LibFreeRDP.setConnectionArgs(inst, args)
@@ -231,7 +241,13 @@ class RdpClient @Inject constructor(
                 LibFreeRDP.freerdp_get_last_error_string(inst)
             }.orEmpty()
             PocketLogger.e(TAG, "freerdp_parse_arguments failed (last_error='$err')")
-            emit(RdpEvent.Failed("freerdp_parse_arguments failed: $err", retryable = false))
+            emit(
+                RdpEvent.Failed(
+                    "freerdp_parse_arguments failed: $err",
+                    retryable = false,
+                    udpDowngraded = transportTracker.hasObservedDowngrade(),
+                ),
+            )
             sessionRegistry.unregister(this)
             closeNativeInstance(inst)
             return
@@ -243,67 +259,99 @@ class RdpClient @Inject constructor(
             PocketLogger.d(TAG, "starting FreeRDP native worker")
             val ok = withSpecificLiveInstance(inst) { LibFreeRDP.connect(inst) } ?: false
             if (!ok) {
-                val failure = withSpecificLiveInstance(inst) {
-                    captureAndLogTransportSnapshot(inst, source = "connect-return", force = true)
-                    LibFreeRDP.freerdp_get_last_error_code(inst) to
-                        LibFreeRDP.freerdp_get_last_error_string(inst)
-                }
-                val errorCode = failure?.first ?: 0L
-                val err = failure?.second.orEmpty()
-                if (isCurrentInstance(inst)) {
-                    when (
-                        certificateTerminalDisposition(
-                            promptOutstanding = certificatePromptOutstanding,
-                            fatalFailureOutstanding = certificateFatalFailureOutstanding,
-                        )
-                    ) {
-                        CertificateTerminalDisposition.PROMPT -> {
-                            PocketLogger.i(TAG, "connection paused for certificate verification")
-                            // There is no native connection or scheduled retry while the user
-                            // decides. Keeping this client registered as RECONNECTING would leave
-                            // the aggregate FGS and its CPU/Wi-Fi locks alive indefinitely.
-                            sessionRegistry.unregister(this)
-                            closeNativeInstance(inst)
-                            return@Thread
-                        }
-                        CertificateTerminalDisposition.FATAL -> {
-                            PocketLogger.e(TAG, "connection rejected because certificate data was invalid")
-                            sessionRegistry.unregister(this)
-                            closeNativeInstance(inst)
-                            return@Thread
-                        }
-                        CertificateTerminalDisposition.NONE -> Unit
-                    }
-                    val retryable = isRetryableRdpFailure(errorCode)
-                    PocketLogger.e(
-                        TAG,
-                        "freerdp_connect returned false (code=$errorCode, last_error='$err')",
-                    )
-                    if (retryable) {
-                        sessionRegistry.markReconnecting(this)
-                    } else {
-                        sessionRegistry.unregister(this)
-                    }
-                    emit(
-                        RdpEvent.Failed(
-                            "freerdp_connect returned false: ${err.ifBlank { "unknown error" }}",
-                            retryable = retryable,
-                        ),
-                    )
-                    closeNativeInstance(inst)
-                } else {
-                    PocketLogger.d(TAG, "stale freerdp_connect return ignored")
-                }
+                handleConnectReturnFailure(inst)
             }
         }, "freerdp-connect-start").also { it.isDaemon = true; it.start() }
     }
 
+    private fun handleConnectReturnFailure(inst: Long) {
+        val failure = withSpecificLiveInstance(inst) {
+            if (rejectedNativeInstance.get() == inst) {
+                null
+            } else {
+                val snapshot = captureAndLogTransportSnapshot(inst, source = "connect-return", force = true)
+                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                Triple(
+                    LibFreeRDP.freerdp_get_last_error_code(inst),
+                    LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty(),
+                    udpDowngraded,
+                )
+            }
+        }
+        if (failure == null || !isCurrentInstance(inst) || rejectedNativeInstance.get() == inst) {
+            PocketLogger.d(TAG, "stale freerdp_connect return ignored")
+            return
+        }
+        val (errorCode, err, udpDowngraded) = failure
+        _remoteCursor.value = RdpCursor.Default
+        when (
+            certificateTerminalDisposition(
+                promptOutstanding = certificatePromptOutstanding,
+                fatalFailureOutstanding = certificateFatalFailureOutstanding,
+            )
+        ) {
+            CertificateTerminalDisposition.PROMPT -> {
+                PocketLogger.i(TAG, "connection paused for certificate verification")
+                // There is no native connection or scheduled retry while the user decides.
+                // Keeping this client registered as RECONNECTING would leave the aggregate FGS
+                // and its CPU/Wi-Fi locks alive indefinitely.
+                sessionRegistry.unregister(this)
+                closeNativeInstance(inst)
+                return
+            }
+            CertificateTerminalDisposition.FATAL -> {
+                PocketLogger.e(TAG, "connection rejected because certificate data was invalid")
+                sessionRegistry.unregister(this)
+                closeNativeInstance(inst)
+                return
+            }
+            CertificateTerminalDisposition.NONE -> Unit
+        }
+        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
+        PocketLogger.e(
+            TAG,
+            "freerdp_connect returned false (code=$errorCode, retryable=$retryable, " +
+                "udpDowngraded=$udpDowngraded, last_error='$err')",
+        )
+        if (retryable) {
+            sessionRegistry.markReconnecting(this)
+        } else {
+            sessionRegistry.unregister(this)
+        }
+        emit(
+            RdpEvent.Failed(
+                "freerdp_connect returned false: ${err.ifBlank { "unknown error" }}",
+                retryable = retryable,
+                udpDowngraded = udpDowngraded,
+            ),
+        )
+        closeNativeInstance(inst)
+    }
+
+    fun submitCredentials(username: String, domain: String, password: String) {
+        credentialPromptGate.submit(username, domain, password)
+    }
+
+    fun cancelCredentials() {
+        credentialPromptGate.cancel()
+    }
+
+    fun hasObservedUdpDowngrade(): Boolean = transportTracker.hasObservedDowngrade()
+
     fun disconnect() {
+        credentialPromptGate.cancel()
+        _remoteCursor.value = RdpCursor.Default
         val inst = synchronized(nativeCallLock) { nativeInstance }
         if (inst == 0L) {
             if (sessionRegistry.contains(this)) {
                 sessionRegistry.unregister(this)
-                emit(RdpEvent.Disconnected(reason = "user"))
+                emit(
+                    RdpEvent.Disconnected(
+                        reason = "user",
+                        retryable = false,
+                        udpDowngraded = transportTracker.hasObservedDowngrade(),
+                    ),
+                )
             }
             // A certificate-prompt terminal path unregisters before the user's decision. Rejection
             // still needs to clear any stale frame from the preceding connection.
@@ -314,7 +362,13 @@ class RdpClient @Inject constructor(
         closeNativeInstance(inst)
         sessionRegistry.unregister(this)
         buffer.release()
-        emit(RdpEvent.Disconnected(reason = "user"))
+        emit(
+            RdpEvent.Disconnected(
+                reason = "user",
+                retryable = false,
+                udpDowngraded = transportTracker.hasObservedDowngrade(),
+            ),
+        )
     }
 
     fun hasActiveSession(): Boolean = sessionRegistry.contains(this)
@@ -322,19 +376,20 @@ class RdpClient @Inject constructor(
     fun runIfNoActiveSessions(action: () -> Unit): Boolean =
         sessionRegistry.runIfNoActiveSessions(action)
 
-    private fun closeNativeInstance(inst: Long) {
+    private fun closeNativeInstance(inst: Long): Boolean {
         val detached = synchronized(nativeCallLock) {
             if (nativeInstance != inst) {
                 false
             } else {
                 nativeInstance = 0L
+                credentialPromptGate.cancel(inst)
                 while (inFlightNativeCalls > 0) {
                     nativeCallLock.wait()
                 }
                 true
             }
         }
-        if (!detached) return
+        if (!detached) return false
         LibFreeRDP.unregisterEventListener(inst)
         LibFreeRDP.unregisterUIEventListener(inst)
         Thread {
@@ -347,6 +402,7 @@ class RdpClient @Inject constructor(
             name = "freerdp-cleanup"
             isDaemon = true
         }.start()
+        return true
     }
 
     fun sendKeyEvent(scanCode: Int, down: Boolean) {
@@ -523,7 +579,7 @@ class RdpClient @Inject constructor(
     /** One atomic, versioned view of TCP plus both possible RDP-UDP tunnels. */
     fun transportSnapshot(): RdpTransportSnapshot {
         val raw = withLiveInstance { inst -> LibFreeRDP.getTransportSnapshot(inst) }
-        return decodeAndLogTransportSnapshot(raw, source = "metrics-poll", force = false)
+        return transportTracker.decodeAndLog(raw, source = "metrics-poll", force = false)
     }
 
     fun sendClipboard(data: String) {
@@ -545,8 +601,6 @@ class RdpClient @Inject constructor(
         } ?: false
     }
 
-    fun hasH264(): Boolean = LibFreeRDP.hasH264Support()
-    fun version(): String = LibFreeRDP.freerdp_get_version()
 
     /**
      * Approximate network latency (round-trip, ms) to the RDP host by timing a fresh TCP handshake
@@ -612,134 +666,15 @@ class RdpClient @Inject constructor(
         }
     }
 
-    private fun resetTransportDiagnostics(requestedByApp: Boolean) {
-        synchronized(transportDiagnosticLock) {
-            multitransportRequestedForConnection = requestedByApp
-            transportConnectedAtMs = 0L
-            transportRequestObserved = false
-            missingTransportRequestLogged = false
-            incompatibleTransportSnapshotLogged = false
-            lastLoggedTransportControl = null
-            lastTransportTrafficLogMs = 0L
-        }
-    }
-
     private fun captureAndLogTransportSnapshot(
         inst: Long,
         source: String,
         force: Boolean,
-    ): RdpTransportSnapshot = decodeAndLogTransportSnapshot(
+    ): RdpTransportSnapshot = transportTracker.decodeAndLog(
         raw = LibFreeRDP.getTransportSnapshot(inst),
         source = source,
         force = force,
     )
-
-    private fun decodeAndLogTransportSnapshot(
-        raw: LongArray?,
-        source: String,
-        force: Boolean,
-    ): RdpTransportSnapshot {
-        val snapshot = RdpTransportSnapshot.decode(raw)
-        val shouldTrack = synchronized(transportDiagnosticLock) {
-            multitransportRequestedForConnection || snapshot.hasTransportEvidence()
-        }
-        if (!shouldTrack || raw == null) return snapshot
-
-        if (!snapshot.knownVersion) {
-            val shouldLog = synchronized(transportDiagnosticLock) {
-                if (incompatibleTransportSnapshotLogged) {
-                    false
-                } else {
-                    incompatibleTransportSnapshotLogged = true
-                    true
-                }
-            }
-            if (shouldLog) {
-                val version = raw.firstOrNull()?.toString() ?: "missing"
-                PocketLogger.w(
-                    TAG,
-                    "RDP-UDP diagnostic source=$source incompatible snapshot " +
-                        "fieldCount=${raw.size} version=$version " +
-                        "expectedFieldCount=${RdpTransportSnapshot.FIELD_COUNT} " +
-                        "expectedVersion=${RdpTransportSnapshot.VERSION}; treating transport as TCP/unknown",
-                )
-            }
-            return snapshot
-        }
-
-        logTransportSnapshot(snapshot, source, force)
-        return snapshot
-    }
-
-    private fun logTransportSnapshot(
-        snapshot: RdpTransportSnapshot,
-        source: String,
-        force: Boolean,
-    ) {
-        val now = SystemClock.elapsedRealtime()
-        val control = snapshot.controlDiagnostic()
-        var logMissingRequest = false
-        var logControlState = false
-        var logTrafficHeartbeat = false
-        synchronized(transportDiagnosticLock) {
-            if (snapshot.hasTransportEvidence()) transportRequestObserved = true
-            if (markMissingTransportRequestIfOverdue(now)) {
-                logMissingRequest = true
-            }
-
-            if (force || control != lastLoggedTransportControl) {
-                lastLoggedTransportControl = control
-                lastTransportTrafficLogMs = now
-                logControlState = true
-            } else if (snapshot.udpActive &&
-                now - lastTransportTrafficLogMs >= TRANSPORT_TRAFFIC_LOG_INTERVAL_MS
-            ) {
-                lastTransportTrafficLogMs = now
-                logTrafficHeartbeat = true
-            }
-        }
-
-        if (logMissingRequest) {
-            PocketLogger.w(
-                TAG,
-                "RDP-UDP diagnostic: no server multitransport request was observed within " +
-                    "${MULTITRANSPORT_REQUEST_WAIT_MS / MILLIS_PER_SECOND}s after TCP connected; " +
-                    "the server or network path may not be offering RDP-UDP",
-            )
-        }
-
-        if (logControlState) {
-            val message =
-                "RDP-UDP diagnostic source=$source $control; ${snapshot.trafficDiagnostic()}"
-            val failed = snapshot.failure != RdpTransportFailure.NONE ||
-                snapshot.phase == RdpTransportPhase.UDP_FAILED ||
-                snapshot.phase == RdpTransportPhase.RECONNECTING_TCP ||
-                snapshot.downgradedToTcp
-            if (failed) PocketLogger.w(TAG, message) else PocketLogger.i(TAG, message)
-        } else if (logTrafficHeartbeat) {
-            PocketLogger.d(
-                TAG,
-                "RDP-UDP traffic heartbeat ${snapshot.trafficDiagnostic()}",
-            )
-        }
-    }
-
-    /** Must be called while [transportDiagnosticLock] is held. */
-    private fun markMissingTransportRequestIfOverdue(now: Long): Boolean {
-        if (!multitransportRequestedForConnection ||
-            transportRequestObserved ||
-            missingTransportRequestLogged
-        ) {
-            return false
-        }
-        if (transportConnectedAtMs <= 0L ||
-            now - transportConnectedAtMs < MULTITRANSPORT_REQUEST_WAIT_MS
-        ) {
-            return false
-        }
-        missingTransportRequestLogged = true
-        return true
-    }
 
     private val eventListener = object : LibFreeRDP.EventListener {
         override fun OnPreConnect(inst: Long) {
@@ -748,21 +683,29 @@ class RdpClient @Inject constructor(
             }
         }
         override fun OnConnectionSuccess(inst: Long) {
+            if (rejectedNativeInstance.get() == inst) {
+                PocketLogger.d(TAG, "ignoring OnConnectionSuccess for rejected framebuffer instance")
+                return
+            }
             withSpecificLiveInstance(inst) {
                 certificatePromptOutstanding = false
                 certificateFatalFailureOutstanding = false
                 PocketLogger.i(TAG, "OnConnectionSuccess inst=$inst")
-                synchronized(transportDiagnosticLock) {
-                    transportConnectedAtMs = SystemClock.elapsedRealtime()
-                }
+                transportTracker.markConnected()
                 captureAndLogTransportSnapshot(inst, source = "connected", force = true)
                 sessionRegistry.markConnected(this@RdpClient)
                 emit(RdpEvent.Connected)
             }
         }
         override fun OnConnectionFailure(inst: Long) {
+            if (rejectedNativeInstance.get() == inst) {
+                PocketLogger.d(TAG, "ignoring OnConnectionFailure for rejected framebuffer instance")
+                return
+            }
             val handled = withSpecificLiveInstance(inst) {
-                captureAndLogTransportSnapshot(inst, source = "connection-failure", force = true)
+                val snapshot = captureAndLogTransportSnapshot(inst, source = "connection-failure", force = true)
+                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                _remoteCursor.value = RdpCursor.Default
                 when (
                     certificateTerminalDisposition(
                         promptOutstanding = certificatePromptOutstanding,
@@ -780,23 +723,25 @@ class RdpClient @Inject constructor(
                     CertificateTerminalDisposition.NONE -> {
                         val errorCode = LibFreeRDP.freerdp_get_last_error_code(inst)
                         val error = LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty()
-                        val retryable = isRetryableRdpFailure(errorCode)
+                        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
                         PocketLogger.e(
                             TAG,
-                            "OnConnectionFailure code=$errorCode last_error='$error'",
+                            "OnConnectionFailure code=$errorCode retryable=$retryable " +
+                                "udpDowngraded=$udpDowngraded last_error='$error'",
                         )
                         if (retryable) {
                             sessionRegistry.markReconnecting(this@RdpClient)
                         } else {
-                            // Authentication/account failures will not heal by retrying and repeated
-                            // attempts can lock the remote account. Remove the aggregate keep-alive
-                            // registration and let SessionViewModel discard the decrypted params.
+                            // Authentication/account failures will not heal by retrying and
+                            // repeated attempts can lock the remote account. Remove the
+                            // aggregate keep-alive registration and discard decrypted params.
                             sessionRegistry.unregister(this@RdpClient)
                         }
                         emit(
                             RdpEvent.Failed(
                                 "connection failure: ${error.ifBlank { "unknown error" }}",
                                 retryable = retryable,
+                                udpDowngraded = udpDowngraded,
                             ),
                         )
                     }
@@ -812,14 +757,20 @@ class RdpClient @Inject constructor(
             }
         }
         override fun OnDisconnected(inst: Long) {
+            if (rejectedNativeInstance.get() == inst) {
+                PocketLogger.d(TAG, "ignoring OnDisconnected for rejected framebuffer instance")
+                return
+            }
             val handled = withSpecificLiveInstance(inst) {
-                captureAndLogTransportSnapshot(inst, source = "disconnected", force = true)
+                val snapshot = captureAndLogTransportSnapshot(inst, source = "disconnected", force = true)
+                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                val errorCode = LibFreeRDP.freerdp_get_last_error_code(inst)
+                val error = LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty()
+                _remoteCursor.value = RdpCursor.Default
                 // A certificate callback can reject the connection before FreeRDP's main event
-                // loop starts. Depending on the native exit status, that rejection can surface as
-                // OnDisconnected rather than OnConnectionFailure. Preserve the certificate
-                // decision in both terminal callbacks: a pending TOFU prompt must not auto-retry,
-                // and a malformed/mismatched certificate must not be overwritten by a generic
-                // disconnect that would enter the reconnect loop.
+                // loop starts. Depending on the native exit status, that rejection can surface
+                // as OnDisconnected rather than OnConnectionFailure. Preserve the certificate
+                // decision in both terminal callbacks.
                 when (
                     certificateTerminalDisposition(
                         promptOutstanding = certificatePromptOutstanding,
@@ -835,9 +786,25 @@ class RdpClient @Inject constructor(
                         sessionRegistry.unregister(this@RdpClient)
                     }
                     CertificateTerminalDisposition.NONE -> {
-                        PocketLogger.i(TAG, "OnDisconnected")
-                        sessionRegistry.markReconnecting(this@RdpClient)
-                        emit(RdpEvent.Disconnected(reason = null))
+                        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
+                        val reason = if (retryable) null else error.ifBlank { null }
+                        PocketLogger.i(
+                            TAG,
+                            "OnDisconnected code=$errorCode retryable=$retryable " +
+                                "udpDowngraded=$udpDowngraded",
+                        )
+                        if (retryable) {
+                            sessionRegistry.markReconnecting(this@RdpClient)
+                        } else {
+                            sessionRegistry.unregister(this@RdpClient)
+                        }
+                        emit(
+                            RdpEvent.Disconnected(
+                                reason = reason,
+                                retryable = retryable,
+                                udpDowngraded = udpDowngraded,
+                            ),
+                        )
                     }
                 }
                 true
@@ -847,12 +814,12 @@ class RdpClient @Inject constructor(
     }
 
     private val uiEventListener = object : LibFreeRDP.UIEventListener {
-        override fun OnAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean {
-            return withSpecificLiveInstance(inst) {
-                emit(RdpEvent.CredentialsRequired)
-                false
-            } ?: false
-        }
+        override fun OnAuthenticate(
+            inst: Long,
+            username: StringBuilder,
+            domain: StringBuilder,
+            password: StringBuilder,
+        ): Boolean = handleAuthenticate(inst, username, domain, password)
 
         override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean = false
 
@@ -920,6 +887,7 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnGraphicsUpdate(inst: Long, x: Int, y: Int, w: Int, h: Int) {
+            if (rejectedNativeInstance.get() == inst) return
             withSpecificLiveInstance(inst) {
             // End-to-end control-latency sampling: this frame is fully decoded (the gdi buffer is
             // ready before this callback). If an input is pending from an idle→action edge, the gap
@@ -969,32 +937,32 @@ class RdpClient @Inject constructor(
         }
 
         override fun OnGraphicsResize(inst: Long, width: Int, height: Int, bpp: Int) {
+            if (rejectedNativeInstance.get() == inst) return
             withSpecificLiveInstance(inst) {
                 if (!isSafeFramebufferSize(width, height)) {
-                    PocketLogger.e(TAG, "rejecting unsafe remote framebuffer dimensions ${width}x$height")
-                    emit(
-                        RdpEvent.Failed(
-                            error = "Remote framebuffer dimensions are unsafe: ${width}x$height",
-                            retryable = false,
-                        ),
+                    rejectFramebuffer(
+                        inst = inst,
+                        logMessage = "rejecting unsafe remote framebuffer dimensions ${width}x$height",
+                        eventMessage = "Remote framebuffer dimensions are unsafe: ${width}x$height",
                     )
-                    // This callback itself holds a native-call lease. Teardown must happen on a
-                    // different thread so closeNativeInstance can wait for this lease to return.
-                    closeNativeInstanceAfterCallback(inst)
                     return@withSpecificLiveInstance
                 }
                 PocketLogger.i(TAG, "OnGraphicsResize ${width}x$height bpp=$bpp")
                 try {
                     buffer.resize(width, height)
                 } catch (error: IllegalArgumentException) {
-                    PocketLogger.e(TAG, "remote framebuffer allocation rejected: ${error.message}")
-                    emit(RdpEvent.Failed("Remote framebuffer allocation failed", retryable = false))
-                    closeNativeInstanceAfterCallback(inst)
+                    rejectFramebuffer(
+                        inst = inst,
+                        logMessage = "remote framebuffer allocation rejected: ${error.message}",
+                        eventMessage = "Remote framebuffer allocation failed",
+                    )
                     return@withSpecificLiveInstance
                 } catch (_: OutOfMemoryError) {
-                    PocketLogger.e(TAG, "remote framebuffer allocation exhausted memory")
-                    emit(RdpEvent.Failed("Remote framebuffer is too large for this device", retryable = false))
-                    closeNativeInstanceAfterCallback(inst)
+                    rejectFramebuffer(
+                        inst = inst,
+                        logMessage = "remote framebuffer allocation exhausted memory",
+                        eventMessage = "Remote framebuffer is too large for this device",
+                    )
                     return@withSpecificLiveInstance
                 }
                 // A hostile or malfunctioning server can send resize PDUs faster than the UI can
@@ -1061,14 +1029,65 @@ class RdpClient @Inject constructor(
     private fun buildCommandLine(p: RdpConnectionParams): Array<String> =
         buildRdpCommandLine(p, LibFreeRDP.hasH264Support())
 
+    private fun handleAuthenticate(
+        inst: Long,
+        username: StringBuilder,
+        domain: StringBuilder,
+        password: StringBuilder,
+    ): Boolean {
+        val deferred = synchronized(nativeCallLock) {
+            if (nativeInstance != inst || rejectedNativeInstance.get() == inst) {
+                return false
+            }
+            val next = credentialPromptGate.begin(inst)
+            emit(
+                RdpEvent.CredentialsRequired(
+                    host = lastHost.orEmpty(),
+                    initialUsername = username.toString(),
+                    initialDomain = domain.toString(),
+                ),
+            )
+            next
+        }
+        PocketLogger.i(TAG, "interactive credentials requested")
+        val submitted = credentialPromptGate.awaitResponse(inst, deferred)
+        if (submitted == null) {
+            if (isCurrentInstance(inst) && rejectedNativeInstance.get() != inst) {
+                credentialsCancelled = true
+            }
+            return false
+        }
+        val accepted = isCurrentInstance(inst) && rejectedNativeInstance.get() != inst
+        if (accepted) {
+            applyCredentials(submitted, username, domain, password)
+        }
+        return accepted
+    }
+
+    private fun rejectFramebuffer(inst: Long, logMessage: String, eventMessage: String) {
+        rejectedNativeInstance.set(inst)
+        PocketLogger.e(TAG, logMessage)
+        emit(
+            RdpEvent.Failed(
+                error = eventMessage,
+                retryable = false,
+                udpDowngraded = transportTracker.hasObservedDowngrade(),
+            ),
+        )
+        // This callback itself holds a native-call lease. Teardown must happen on a different
+        // thread so closeNativeInstance can wait for this lease to return.
+        closeNativeInstanceAfterCallback(inst)
+    }
+
     private fun closeNativeInstanceAfterCallback(inst: Long) {
         Thread {
-            closeNativeInstance(inst)
-            // Every caller emits a non-retryable framebuffer validation/allocation failure.
-            // Keeping it as RECONNECTING would leave a ghost session and foreground service even
-            // though SessionViewModel deliberately discards the reconnect parameters.
-            sessionRegistry.unregister(this)
-            buffer.release()
+            if (closeNativeInstance(inst)) {
+                // Every caller emits a non-retryable framebuffer validation/allocation failure.
+                // Keeping it as RECONNECTING would leave a ghost session and foreground service
+                // even though SessionViewModel deliberately discards the reconnect parameters.
+                sessionRegistry.unregister(this)
+                buffer.release()
+            }
         }.apply {
             name = "freerdp-rejected-framebuffer"
             isDaemon = true
@@ -1120,14 +1139,7 @@ class RdpClient @Inject constructor(
         private const val PRESENT_LAG_MAX_MS = 1000L
         // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
         private const val GFX_LOG_INTERVAL_MS = 2000L
-        // A server normally sends its multitransport request shortly after the TCP desktop becomes
-        // active. Keep this long enough to avoid warning during ordinary channel startup, but short
-        // enough that a single exported reproduction log clearly shows a missing request.
-        private const val MULTITRANSPORT_REQUEST_WAIT_MS = 10_000L
-        private const val MILLIS_PER_SECOND = 1_000L
-        // Active tunnel counters are useful evidence, but a 1 Hz line would rotate away the actual
-        // negotiation. State transitions log immediately; steady traffic is sampled at this rate.
-        private const val TRANSPORT_TRAFFIC_LOG_INTERVAL_MS = 30_000L
+
         private const val MAX_CLIPBOARD_CHARS = 256 * 1024
         private const val MAX_CURSOR_DIMENSION = 512
     }
@@ -1182,11 +1194,12 @@ internal fun isSafeFramebufferSize(width: Int, height: Int): Boolean =
  */
 internal fun isRetryableRdpFailure(errorCode: Long): Boolean {
     val errorClass = ((errorCode ushr FREERDP_ERROR_CLASS_SHIFT) and FREERDP_ERROR_FIELD_MASK).toInt()
-    if (errorClass != FREERDP_CONNECT_ERROR_CLASS) return true
     val errorType = (errorCode and FREERDP_ERROR_FIELD_MASK).toInt()
-    return errorType !in AUTH_FAILURE_FIRST..AUTH_FAILURE_LAST &&
-        errorType !in EXPIRED_OR_REVOKED_FIRST..EXPIRED_OR_REVOKED_LAST &&
-        errorType !in ACCOUNT_POLICY_FAILURE_FIRST..ACCOUNT_POLICY_FAILURE_LAST
+    return when (errorClass) {
+        FREERDP_ERRINFO_ERROR_CLASS -> errorType !in NON_RETRYABLE_ERRINFO_TYPES
+        FREERDP_CONNECT_ERROR_CLASS -> errorType !in NON_RETRYABLE_CONNECT_TYPES
+        else -> true
+    }
 }
 
 internal enum class CertificateTerminalDisposition {
@@ -1224,6 +1237,7 @@ internal fun truncateUtf16Safely(value: String, maxChars: Int): String {
 
 private const val MAX_FRAMEBUFFER_DIMENSION = 8192
 private const val MAX_FRAMEBUFFER_PIXELS = 16_777_216L
+private const val FREERDP_ERRINFO_ERROR_CLASS = 1
 private const val FREERDP_CONNECT_ERROR_CLASS = 2
 private const val FREERDP_ERROR_CLASS_SHIFT = 16
 private const val FREERDP_ERROR_FIELD_MASK = 0xffffL
@@ -1233,3 +1247,35 @@ private const val EXPIRED_OR_REVOKED_FIRST = 0x0E
 private const val EXPIRED_OR_REVOKED_LAST = 0x10
 private const val ACCOUNT_POLICY_FAILURE_FIRST = 0x12
 private const val ACCOUNT_POLICY_FAILURE_LAST = 0x1B
+private const val ERRCONNECT_HYBRID_REQUIRED_BY_SERVER = 0x1E
+private const val ERRCONNECT_NTLM_BLOCKED = 0x1F
+
+private const val ERRINFO_RPC_INITIATED_DISCONNECT = 0x01
+private const val ERRINFO_RPC_INITIATED_LOGOFF = 0x02
+private const val ERRINFO_IDLE_TIMEOUT = 0x03
+private const val ERRINFO_LOGON_TIMEOUT = 0x04
+private const val ERRINFO_DISCONNECTED_BY_OTHER_CONNECTION = 0x05
+private const val ERRINFO_SERVER_DENIED_CONNECTION = 0x07
+private const val ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES = 0x09
+private const val ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED = 0x0A
+private const val ERRINFO_RPC_INITIATED_DISCONNECT_BY_USER = 0x0B
+private const val ERRINFO_LOGOFF_BY_USER = 0x0C
+
+private val NON_RETRYABLE_ERRINFO_TYPES = setOf(
+    ERRINFO_RPC_INITIATED_DISCONNECT,
+    ERRINFO_RPC_INITIATED_LOGOFF,
+    ERRINFO_IDLE_TIMEOUT,
+    ERRINFO_LOGON_TIMEOUT,
+    ERRINFO_DISCONNECTED_BY_OTHER_CONNECTION,
+    ERRINFO_SERVER_DENIED_CONNECTION,
+    ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES,
+    ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED,
+    ERRINFO_RPC_INITIATED_DISCONNECT_BY_USER,
+    ERRINFO_LOGOFF_BY_USER,
+)
+
+private val NON_RETRYABLE_CONNECT_TYPES =
+    (AUTH_FAILURE_FIRST..AUTH_FAILURE_LAST).toSet() +
+        (EXPIRED_OR_REVOKED_FIRST..EXPIRED_OR_REVOKED_LAST) +
+        (ACCOUNT_POLICY_FAILURE_FIRST..ACCOUNT_POLICY_FAILURE_LAST) +
+        setOf(ERRCONNECT_HYBRID_REQUIRED_BY_SERVER, ERRCONNECT_NTLM_BLOCKED)

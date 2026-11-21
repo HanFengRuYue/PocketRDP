@@ -29,4 +29,16 @@ if ($source -notmatch "PAKID_CORE_USER_LOGGEDON[\s\S]*?rdpdr_send_device_list_an
     throw "USER_LOGGEDON handling must announce filesystem devices after login."
 }
 
+$earlyLoggedOn = [regex]::Match(
+    $source,
+    "case\s+PAKID_CORE_USER_LOGGEDON\s*:[\s\S]*?if\s*\(\s*!rdpdr->haveServerCaps\s*\)\s*\{(?<body>[\s\S]*?)\}",
+    [System.Text.RegularExpressions.RegexOptions]::Singleline
+)
+if (-not $earlyLoggedOn.Success) {
+    throw "PAKID_CORE_USER_LOGGEDON !rdpdr->haveServerCaps guard was not found in $SourcePath"
+}
+if ($earlyLoggedOn.Groups["body"].Value -notmatch "rdpdr->userLoggedOn\s*=\s*TRUE\s*;") {
+    throw "Early USER_LOGGEDON before SERVER_CAPABILITY must record rdpdr->userLoggedOn = TRUE so tryAdvance() announces filesystem drives once capabilities complete."
+}
+
 Write-Host "RDPDR drive announce timing check passed."

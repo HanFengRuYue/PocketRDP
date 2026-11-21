@@ -8,12 +8,15 @@
     <string name="session_cd_exit_fullscreen">全画面を終了</string>
     <string name="session_cd_expand_status">セッション情報を表示</string>
     <string name="session_loading_remote_frame">接続中、リモート画面を待機中…</string>
+    <string name="session_reconnecting_remote_frame">接続が中断されました。再接続中…</string>
+    <string name="session_action_reconnect">再接続</string>
+    <string name="session_action_close">閉じる</string>
     <string name="session_battery_title">バックグラウンド維持を許可しますか？</string>
     <string name="session_battery_message">アプリを切り替えたり画面をロックしたりしてもこのリモートデスクトップ接続を維持するには、PocketRDP をバッテリー最適化の許可リストに追加してください。許可しない場合、省電力中にシステムがバックグラウンド接続を切断することがあります。</string>
     <string name="session_action_allow">許可する</string>
     <string name="session_action_not_now">後で</string>
     <string name="session_all_files_title">すべてのファイルへのアクセスを許可しますか？</string>
-    <string name="session_all_files_message">フォルダー リダイレクトでは、端末のストレージ全体をリモート PC のエクスプローラーに PocketRDP ドライブとしてマウントします。これには PocketRDP へのすべてのファイルアクセス権限が必要です。権限を付与した後、再接続してドライブをマウントしてください。</string>
+    <string name="session_all_files_message">フォルダー リダイレクトでは、端末のストレージ全体をリモート PC のエクスプローラーに PocketRDP ドライブとしてマウントします。これには PocketRDP へのすべてのファイルアクセス権限が必要です。権限を付与してアプリに戻ると、自動的に接続を再開してドライブをマウントします。</string>
     <string name="session_action_grant">権限を付与</string>
     <string name="session_zoom_cd">ズーム: 上にスワイプで拡大、下にスワイプで縮小、ダブルタップでリセット、長押ししてドラッグでこのボタンを移動</string>
     <string name="session_pan_cd">ドラッグして拡大表示を移動、長押ししてドラッグでこのボタンを移動</string>
@@ -31,6 +34,7 @@
     <string name="session_toolbar_edit_quick_hint">下のキーをタップして追加し、選択済みキーを長押ししてドラッグすると並べ替えられます</string>
     <string name="session_toolbar_add_regular">通常キーを追加</string>
     <string name="session_toolbar_add_regular_hint">クイックバーに表示するキーを選択します</string>
+    <string name="session_toolbar_quick_limit_reached">クイックバーの上限（%1$d 件）に達しました。追加するには先にキーを削除してください。</string>
     <string name="session_toolbar_reset">リセット</string>
     <string name="session_toolbar_done">完了</string>
     <string name="session_toolbar_add_combo_title">ショートカットを追加</string>
@@ -57,7 +61,6 @@
     <string name="session_status_display_latency">表示遅延: %1$s</string>
     <string name="session_status_network_rtt">ネットワーク往復: %1$s</string>
     <string name="session_status_samples">サンプル: 有効 %1$d / 破棄 %2$d</string>
-    <string name="session_status_transport_stats">通信量: 受信 %1$d B / 送信 %2$d B、再送 %3$d</string>
     <string name="session_status_transport_error">転送エラー: %1$s、トンネル 0x%2$s、ソケット %3$d</string>
     <string name="session_transport_negotiating_udp">TCP · UDP をネゴシエート中</string>
     <string name="session_transport_waiting_soft_sync">TCP · Soft-Sync を待機中</string>
@@ -68,8 +71,10 @@
     <string name="session_status_measuring">測定中…</string>
     <string name="session_status_idle">未接続</string>
     <string name="session_status_connecting">接続中…</string>
+    <string name="session_status_reconnecting">再接続中…</string>
     <string name="session_status_connected">接続済み</string>
     <string name="session_status_disconnected">切断済み (%1$s)</string>
+    <string name="session_status_disconnected_user">ユーザーにより切断</string>
     <string name="session_status_failed">接続失敗</string>
     <string name="session_status_unknown_reason">—</string>
 
@@ -78,7 +83,6 @@
     <string name="session_notification_status_connecting">接続中…</string>
     <string name="session_notification_status_connected">接続済み</string>
     <string name="session_notification_status_reconnecting">接続が中断されました。再接続中…</string>
-    <string name="session_notification_status_failed">接続失敗</string>
     <string name="session_notification_title">リモートデスクトップ セッション</string>
     <string name="session_notification_disconnect_action">切断</string>
     <string name="session_notification_disconnect_all_action">すべて切断</string>
@@ -89,7 +93,15 @@
     <string name="session_local_network_message">LAN 上のリモート デスクトップに接続するには、PocketRDP にローカル ネットワーク権限が必要です。拒否すると Android が接続を遮断する場合があります。</string>
     <string name="session_action_open_settings">設定を開く</string>
     <string name="session_action_continue_without_lan">LAN なしで続行</string>
-    <string name="session_action_cancel">キャンセル</string>
+    <string name="session_credentials_title">認証</string>
+    <string name="session_credentials_message">リモート コンピューター %1$s へのサインイン資格情報が必要です。</string>
+    <string name="session_credentials_message_generic">リモート コンピューターへのサインイン資格情報が必要です。</string>
+    <string name="session_credentials_username">ユーザー名</string>
+    <string name="session_credentials_domain">ドメイン（任意）</string>
+    <string name="session_credentials_password">パスワード</string>
+    <string name="session_credentials_connect">接続</string>
+    <string name="session_credentials_show_password">パスワードを表示</string>
+    <string name="session_credentials_hide_password">パスワードを隠す</string>
     <string name="session_certificate_new_title">リモート コンピューターの証明書を確認</string>
     <string name="session_certificate_new_message">このリモート コンピューターへの初回接続です。信頼する前にフィンガープリントを確認してください。PocketRDP はこの接続に固定します。</string>
     <string name="session_certificate_changed_title">リモート コンピューターの証明書が変更されました</string>

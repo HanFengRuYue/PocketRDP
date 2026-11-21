@@ -10,10 +10,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -89,10 +93,18 @@ private val landscapeThumbnailHeightDp = 124.dp
 private val landscapeThumbnailCornerDp = 10.dp
 private val landscapeContentGapDp = 12.dp
 private val landscapeMetaPillCornerDp = 8.dp
+private val listFabBottomClearanceDp = 88.dp
 private const val DESKTOP_ASPECT = 16f / 9f
 private const val SCRIM_ALPHA = 0.55f
 private const val META_PILL_ALPHA = 0.46f
 private const val PLACEHOLDER_ICON_ALPHA = 0.7f
+private const val DISABLED_ACTION_ALPHA = 0.38f
+
+data class KeepAliveHintActions(
+    val visible: Boolean = false,
+    val onOpenGuide: () -> Unit = {},
+    val onDismiss: () -> Unit = {},
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,20 +113,20 @@ fun ConnectionListScreen(
     onEdit: (Long) -> Unit,
     onConnect: (Long) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenKeepAliveGuide: () -> Unit = {},
-    showKeepAliveHint: Boolean = false,
+    keepAliveHint: KeepAliveHintActions = KeepAliveHintActions(),
     connectionRuntime: ConnectionRuntimeState = ConnectionRuntimeState(),
 ) {
     val viewModel: ConnectionListViewModel = hiltViewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val thumbnailRevision by viewModel.thumbnailRevision.collectAsStateWithLifecycle()
-    // The kill hint is shown at most once per visit — track local dismissal here so we don't need a
-    // separate dismiss callback param (keeps the parameter list under detekt's threshold).
-    var keepAliveHintDismissed by remember { mutableStateOf(false) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Top,
+                ),
                 title = { Text(stringResource(R.string.connection_app_name)) },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
@@ -157,9 +169,9 @@ fun ConnectionListScreen(
     // Surfaced once after a previous session appears to have been killed in the background (the
     // keep-alive flag was still set + the last process exit looks like an OS/OEM kill, not a clean
     // exit or app crash). Points the user at the OEM allow-list guide — the real fix on those ROMs.
-    if (showKeepAliveHint && !keepAliveHintDismissed) {
+    if (keepAliveHint.visible) {
         AlertDialog(
-            onDismissRequest = { keepAliveHintDismissed = true },
+            onDismissRequest = keepAliveHint.onDismiss,
             title = { Text(stringResource(R.string.connection_keep_alive_hint_title)) },
             text = {
                 Text(
@@ -168,12 +180,12 @@ fun ConnectionListScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    keepAliveHintDismissed = true
-                    onOpenKeepAliveGuide()
+                    keepAliveHint.onDismiss()
+                    keepAliveHint.onOpenGuide()
                 }) { Text(stringResource(R.string.connection_keep_alive_hint_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { keepAliveHintDismissed = true }) {
+                TextButton(onClick = keepAliveHint.onDismiss) {
                     Text(stringResource(R.string.connection_action_ignore))
                 }
             },
@@ -256,11 +268,18 @@ private fun ConnectionList(
             modifier = Modifier.fillMaxSize(),
             contentPadding = if (useLandscapeLayout) {
                 PaddingValues(
-                    horizontal = landscapeListHorizontalPaddingDp,
-                    vertical = landscapeListVerticalPaddingDp,
+                    start = landscapeListHorizontalPaddingDp,
+                    top = landscapeListVerticalPaddingDp,
+                    end = landscapeListHorizontalPaddingDp,
+                    bottom = listFabBottomClearanceDp,
                 )
             } else {
-                PaddingValues(horizontal = 16.dp, vertical = 16.dp)
+                PaddingValues(
+                    start = 16.dp,
+                    top = 16.dp,
+                    end = 16.dp,
+                    bottom = listFabBottomClearanceDp,
+                )
             },
             verticalArrangement = Arrangement.spacedBy(
                 if (useLandscapeLayout) landscapeCardSpacingDp else 16.dp,
@@ -321,6 +340,7 @@ private fun ConnectionCard(
     }
     val thumbnail = chooseConnectionThumbnail(connectionRuntime.liveThumbnails[entity.id], diskThumbnail)
     val isActive = connectionRuntime.activeSessionIds.contains(entity.id)
+    val animateRunningBadge = !connectionRuntime.isOccluded
 
     ElevatedCard(
         onClick = actions.onConnect,
@@ -336,12 +356,14 @@ private fun ConnectionCard(
                 onEdit = actions.onEdit,
                 onDelete = { if (!isActive) confirmDelete = true },
                 isActive = isActive,
+                animateRunningBadge = animateRunningBadge,
             )
         } else {
             DesktopThumbnail(
                 bitmap = thumbnail,
                 host = entity.host.takeIf { entity.name.isBlank() },
                 isActive = isActive,
+                animateRunningBadge = animateRunningBadge,
                 modifier = Modifier.fillMaxWidth().aspectRatio(DESKTOP_ASPECT),
             )
             Row(
@@ -359,7 +381,11 @@ private fun ConnectionCard(
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = stringResource(R.string.connection_action_delete),
-                        tint = MaterialTheme.colorScheme.error,
+                        tint = if (!isActive) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.error.copy(alpha = DISABLED_ACTION_ALPHA)
+                        },
                     )
                 }
             }
@@ -389,6 +415,7 @@ private fun LandscapeConnectionCardContent(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     isActive: Boolean,
+    animateRunningBadge: Boolean,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(landscapeCardPaddingDp),
@@ -399,6 +426,7 @@ private fun LandscapeConnectionCardContent(
             bitmap = thumbnail,
             host = entity.host.takeIf { entity.name.isBlank() },
             isActive = isActive,
+            animateRunningBadge = animateRunningBadge,
             modifier = Modifier
                 .size(width = landscapeThumbnailWidthDp, height = landscapeThumbnailHeightDp)
                 .clip(RoundedCornerShape(landscapeThumbnailCornerDp)),
@@ -435,7 +463,11 @@ private fun LandscapeConnectionCardContent(
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = stringResource(R.string.connection_action_delete),
-                        tint = MaterialTheme.colorScheme.error,
+                        tint = if (!isActive) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.error.copy(alpha = DISABLED_ACTION_ALPHA)
+                        },
                     )
                 }
             }
@@ -485,7 +517,13 @@ private fun ConnectionSummary(
  * connect" affordance (the whole card is clickable).
  */
 @Composable
-private fun DesktopThumbnail(bitmap: Bitmap?, host: String?, isActive: Boolean, modifier: Modifier = Modifier) {
+private fun DesktopThumbnail(
+    bitmap: Bitmap?,
+    host: String?,
+    isActive: Boolean,
+    animateRunningBadge: Boolean,
+    modifier: Modifier = Modifier,
+) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         if (bitmap != null) {
             Image(
@@ -529,7 +567,10 @@ private fun DesktopThumbnail(bitmap: Bitmap?, host: String?, isActive: Boolean, 
             }
         }
         if (isActive) {
-            RunningBadge(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp))
+            RunningBadge(
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                animate = animateRunningBadge,
+            )
         }
         Surface(
             modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).size(bannerPlaySizeDp),

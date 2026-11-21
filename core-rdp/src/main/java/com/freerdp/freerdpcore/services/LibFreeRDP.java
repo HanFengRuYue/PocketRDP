@@ -4,7 +4,7 @@
    Reuses the JNI bridge from FreeRDP/client/Android/Studio/freeRDPCore but strips the
    dependencies on FreeRDP's own BookmarkBase/SessionState/ApplicationSettingsActivity so we
    can drive everything from Kotlin code in :core-rdp without dragging in androidx.appcompat,
-   sqlcipher, room 2.8.4 etc.
+   sqlcipher, room 2.8.5 etc.
 
    Class FQN (com.freerdp.freerdpcore.services.LibFreeRDP) MUST stay unchanged: the native
    layer hard-codes this path in android_freerdp_jni.h:JAVA_LIBFREERDP_CLASS.
@@ -58,7 +58,7 @@ public class LibFreeRDP {
             // DT_NEEDED dependency of freerdp-android, newer Android runtimes may not invoke
             // WinPR's JNI_OnLoad when loadLibrary("winpr3") is called later. That leaves its
             // JavaVM pointer null and aborts in winpr_jni_attach_thread during connection setup.
-            // The native core is pinned to FreeRDP 3.30, so its ABI major is intentionally fixed.
+            // The native core is pinned to FreeRDP 3.33.1, so its ABI major is intentionally fixed.
             System.loadLibrary("winpr3");
             System.loadLibrary("freerdp-android");
             String version = freerdp_get_jni_version();
@@ -94,8 +94,6 @@ public class LibFreeRDP {
     private static native boolean freerdp_has_h264();
     private static native String freerdp_get_jni_version();
     public static native String freerdp_get_version();
-    public static native String freerdp_get_build_revision();
-    public static native String freerdp_get_build_config();
     private static native long freerdp_new(Context context);
     private static native void freerdp_free(long inst);
     private static native boolean freerdp_parse_arguments(long inst, String[] args);
@@ -183,8 +181,6 @@ public class LibFreeRDP {
         // JNI may synchronously trigger callbacks that also acquire mInstanceState.
         return !active || freerdp_disconnect(inst);
     }
-
-    public static boolean cancelConnection(long inst) { return freerdp_disconnect(inst); }
 
     /** Pass through any FreeRDP CLI argument array. Caller assembles the args in Kotlin. */
     public static boolean setConnectionArgs(long inst, String[] args) {

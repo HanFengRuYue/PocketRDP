@@ -57,6 +57,7 @@ object PocketLogger {
         val tag: String,
         val message: String,
         val throwableText: String? = null,
+        val id: Long = nextEntryId.incrementAndGet(),
     ) {
         fun format(): String {
             val time = TIME_FMT.get()!!.format(Date(timestampMillis))
@@ -73,6 +74,7 @@ object PocketLogger {
     private val fileLock = Any()
 
     private val appContextRef = AtomicReference<Context?>(null)
+    private val nextEntryId = AtomicLong(0L)
     private val logGeneration = AtomicLong(0L)
     private val writeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val writeChannel: Channel<PersistRequest> = Channel(capacity = 256)
@@ -133,23 +135,22 @@ object PocketLogger {
         writeChannel.trySend(PersistRequest(entry, generation))
     }
 
-    /** Wipe both the in-memory tail and the on-disk log files. */
+    /** Wipe both the in-memory tail and the on-disk log files. Safe to call off the main thread. */
     fun clear() {
         synchronized(ringLock) {
-            synchronized(fileLock) {
-                logGeneration.incrementAndGet()
-                ring.clear()
-                _entries.value = emptyList()
-                appContextRef.get()?.let { ctx ->
-                    runCatching {
-                        logFile(ctx).delete()
-                        logBackup(ctx).delete()
-                        File(ctx.cacheDir, LOG_DIR)
-                            .listFiles()
-                            ?.filter(File::isFile)
-                            ?.forEach(File::delete)
-                    }
-                }
+            logGeneration.incrementAndGet()
+            ring.clear()
+            _entries.value = emptyList()
+        }
+        val ctx = appContextRef.get() ?: return
+        synchronized(fileLock) {
+            runCatching {
+                logFile(ctx).delete()
+                logBackup(ctx).delete()
+                File(ctx.cacheDir, LOG_DIR)
+                    .listFiles()
+                    ?.filter(File::isFile)
+                    ?.forEach(File::delete)
             }
         }
     }

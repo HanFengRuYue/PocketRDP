@@ -5,7 +5,11 @@ plugins {
 
 android {
     namespace = "com.hanfengruyue.pocketrdp.core.ui"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         minSdk = 31

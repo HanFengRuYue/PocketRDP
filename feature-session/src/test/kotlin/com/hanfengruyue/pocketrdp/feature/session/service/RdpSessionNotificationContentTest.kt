@@ -1,10 +1,12 @@
 package com.hanfengruyue.pocketrdp.feature.session.service
 
+import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionInfo
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRegistrySnapshot
 import com.hanfengruyue.pocketrdp.core.rdp.RdpSessionRuntimeState
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.util.Locale
 
 class RdpSessionNotificationContentTest {
     @Test
@@ -37,6 +39,7 @@ class RdpSessionNotificationContentTest {
                 ),
             ),
             strings = strings,
+            locale = Locale.SIMPLIFIED_CHINESE,
         )
 
         assertEquals("正在控制 2 台电脑", content.title)
@@ -59,10 +62,19 @@ class RdpSessionNotificationContentTest {
                 },
             ),
             strings = strings,
+            locale = Locale.SIMPLIFIED_CHINESE,
         )
 
         assertEquals(6, content.bigLines.size)
         assertEquals("另有 1 台…", content.bigLines.last())
+    }
+
+    @Test
+    fun localeForLanguageTagResolvesExplicitOrSystemLocale() {
+        assertEquals(Locale.getDefault(), localeForLanguageTag(LANGUAGE_SYSTEM))
+        assertEquals(Locale.getDefault(), localeForLanguageTag(""))
+        assertEquals(Locale.forLanguageTag("ja"), localeForLanguageTag("ja"))
+        assertEquals(Locale.forLanguageTag("pt-BR"), localeForLanguageTag("pt-BR"))
     }
 
     private fun session(
@@ -79,7 +91,6 @@ class RdpSessionNotificationContentTest {
             connecting = "正在连接…",
             connected = "已连接",
             reconnecting = "连接中断，正在重连…",
-            failed = "连接失败",
             disconnect = "断开",
             disconnectAll = "断开全部",
             multiTitleFormat = "正在控制 %1\$d 台电脑",

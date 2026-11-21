@@ -5,12 +5,12 @@ import android.app.ApplicationExitInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.annotation.ArrayRes
 import androidx.annotation.StringRes
+import androidx.core.net.toUri
 import com.hanfengruyue.pocketrdp.R
 import java.util.Locale
 
@@ -65,46 +65,74 @@ object OemKeepAlive {
         Oem.OTHER -> R.array.keepalive_steps_other
     }
 
-    private fun cn(pkg: String, cls: String) = ComponentName(pkg, cls)
+    private fun componentIntent(pkg: String, cls: String): Intent =
+        Intent().setComponent(ComponentName(pkg, cls))
 
-    /** Candidate autostart/background-manager activities per OEM, tried in order. */
-    private fun autostartTargets(oem: Oem): List<ComponentName> = when (oem) {
+    /** Candidate autostart/background-manager intents per OEM, tried in order. */
+    private fun autostartIntents(oem: Oem, packageName: String): List<Intent> = when (oem) {
         Oem.XIAOMI -> listOf(
-            cn("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+            componentIntent(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            ),
         )
         Oem.HUAWEI, Oem.HONOR -> listOf(
-            cn("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
-            cn("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"),
+            componentIntent(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            ),
+            componentIntent(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.optimize.process.ProtectActivity",
+            ),
         )
         Oem.OPPO, Oem.ONEPLUS -> listOf(
-            cn("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"),
-            cn("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"),
-            cn("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"),
+            componentIntent(
+                "com.coloros.safecenter",
+                "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            ),
+            componentIntent(
+                "com.coloros.safecenter",
+                "com.coloros.safecenter.startupapp.StartupAppListActivity",
+            ),
+            componentIntent(
+                "com.oppo.safe",
+                "com.oppo.safe.permission.startup.StartupAppListActivity",
+            ),
         )
         Oem.VIVO -> listOf(
-            cn("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
-            cn("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
+            componentIntent(
+                "com.vivo.permissionmanager",
+                "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            ),
+            componentIntent(
+                "com.iqoo.secure",
+                "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+            ),
         )
         Oem.SAMSUNG -> listOf(
-            cn("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"),
+            componentIntent(
+                "com.samsung.android.lool",
+                "com.samsung.android.sm.ui.battery.BatteryActivity",
+            ),
         )
         Oem.MEIZU -> listOf(
-            cn("com.meizu.safe", "com.meizu.safe.security.SHOW_APPSEC"),
+            Intent("com.meizu.safe.security.SHOW_APPSEC")
+                .setPackage("com.meizu.safe")
+                .putExtra("packageName", packageName),
         )
         Oem.OTHER -> emptyList()
     }
 
     /**
-     * Try to open the OEM autostart / background-manager screen. Each ComponentName can throw
+     * Try to open the OEM autostart / background-manager screen. Each candidate Intent can throw
      * (SecurityException / ActivityNotFound) on a different ROM version, so we try them in turn and
      * fall back to the app's own details settings (which always exists).
      */
     fun openAutostartSettings(context: Context): Boolean {
-        for (cn in autostartTargets(detect())) {
+        for (intent in autostartIntents(detect(), context.packageName)) {
             val ok = runCatching {
-                context.startActivity(
-                    Intent().setComponent(cn).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }.isSuccess
             if (ok) return true
         }
@@ -115,7 +143,7 @@ object OemKeepAlive {
     fun openAppDetailsSettings(context: Context): Boolean = runCatching {
         context.startActivity(
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                .setData(Uri.parse("package:${context.packageName}"))
+                .setData("package:${context.packageName}".toUri())
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }.isSuccess
@@ -130,7 +158,7 @@ object OemKeepAlive {
         val ok = runCatching {
             context.startActivity(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                    .setData(Uri.parse("package:${context.packageName}"))
+                    .setData("package:${context.packageName}".toUri())
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }.isSuccess
@@ -148,10 +176,9 @@ object OemKeepAlive {
      * Whether the most recent previous process exit looks like an OS/OEM kill (low memory, SIGKILL,
      * "other") rather than a normal user action or an app crash. Used together with
      * [SessionKeepAliveFlag][com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag] to decide
-     * whether to surface the keep-alive guide. Best-effort; returns false on API < 30 or on error.
+     * whether to surface the keep-alive guide. Best-effort; returns false on error.
      */
     fun lastExitWasKill(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
         val info = runCatching { am.getHistoricalProcessExitReasons(context.packageName, 0, 1) }
             .getOrNull()?.firstOrNull() ?: return false

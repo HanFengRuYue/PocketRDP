@@ -8,12 +8,15 @@
     <string name="session_cd_exit_fullscreen">Salir de pantalla completa</string>
     <string name="session_cd_expand_status">Mostrar información de la sesión</string>
     <string name="session_loading_remote_frame">Conectando, esperando imagen remota…</string>
+    <string name="session_reconnecting_remote_frame">Conexión interrumpida, reconectando…</string>
+    <string name="session_action_reconnect">Reconectar</string>
+    <string name="session_action_close">Cerrar</string>
     <string name="session_battery_title">¿Permitir actividad en segundo plano?</string>
     <string name="session_battery_message">Para mantener esta conexión de escritorio remoto cuando cambias de app o bloqueas la pantalla, añade PocketRDP a la lista permitida de optimización de batería. De lo contrario, el sistema puede cortar la conexión en segundo plano para ahorrar energía.</string>
     <string name="session_action_allow">Permitir</string>
     <string name="session_action_not_now">Ahora no</string>
     <string name="session_all_files_title">¿Permitir acceso a todos los archivos?</string>
-    <string name="session_all_files_message">La redirección de carpetas monta todo el almacenamiento del teléfono en el equipo remoto como la unidad PocketRDP en el Explorador de archivos. PocketRDP necesita acceso a todos los archivos. Vuelve a conectar después de conceder el permiso.</string>
+    <string name="session_all_files_message">La redirección de carpetas monta todo el almacenamiento del teléfono en el equipo remoto como la unidad PocketRDP en el Explorador de archivos. PocketRDP necesita acceso a todos los archivos. Vuelve a la app después de conceder el permiso para reanudar automáticamente la conexión y montar la unidad.</string>
     <string name="session_action_grant">Conceder</string>
     <string name="session_zoom_cd">Zoom: desliza hacia arriba para ampliar, hacia abajo para reducir, toca dos veces para restablecer, mantén pulsado y arrastra para mover este botón</string>
     <string name="session_pan_cd">Arrastra para mover la vista ampliada; mantén pulsado y arrastra para mover este botón</string>
@@ -31,6 +34,7 @@
     <string name="session_toolbar_edit_quick_hint">Toca una tecla para añadirla; mantén pulsada y arrastra una seleccionada para ordenarla</string>
     <string name="session_toolbar_add_regular">Añadir tecla normal</string>
     <string name="session_toolbar_add_regular_hint">Elige las teclas de la barra rápida</string>
+    <string name="session_toolbar_quick_limit_reached">Se alcanzó el límite de la barra rápida (%1$d elementos). Quita una tecla antes de añadir más.</string>
     <string name="session_toolbar_reset">Restablecer</string>
     <string name="session_toolbar_done">Listo</string>
     <string name="session_toolbar_add_combo_title">Añadir atajo</string>
@@ -57,7 +61,6 @@
     <string name="session_status_display_latency">Latencia de pantalla: %1$s</string>
     <string name="session_status_network_rtt">Ida y vuelta de red: %1$s</string>
     <string name="session_status_samples">Muestras: %1$d aceptadas / %2$d descartadas</string>
-    <string name="session_status_transport_stats">Tráfico: %1$d B recibidos / %2$d B enviados, %3$d retransmisiones</string>
     <string name="session_status_transport_error">Error de transporte: %1$s, túnel 0x%2$s, socket %3$d</string>
     <string name="session_transport_negotiating_udp">TCP · negociando UDP</string>
     <string name="session_transport_waiting_soft_sync">TCP · esperando Soft-Sync</string>
@@ -68,8 +71,10 @@
     <string name="session_status_measuring">Midiendo…</string>
     <string name="session_status_idle">Sin conexión</string>
     <string name="session_status_connecting">Conectando…</string>
+    <string name="session_status_reconnecting">Reconectando…</string>
     <string name="session_status_connected">Conectado</string>
     <string name="session_status_disconnected">Desconectado (%1$s)</string>
+    <string name="session_status_disconnected_user">Desconectado por el usuario</string>
     <string name="session_status_failed">Error de conexión</string>
     <string name="session_status_unknown_reason">—</string>
 
@@ -78,7 +83,6 @@
     <string name="session_notification_status_connecting">Conectando…</string>
     <string name="session_notification_status_connected">Conectado</string>
     <string name="session_notification_status_reconnecting">Conexión interrumpida, reconectando…</string>
-    <string name="session_notification_status_failed">Error de conexión</string>
     <string name="session_notification_title">Sesión de escritorio remoto</string>
     <string name="session_notification_disconnect_action">Desconectar</string>
     <string name="session_notification_disconnect_all_action">Desconectar todo</string>
@@ -89,7 +93,15 @@
     <string name="session_local_network_message">PocketRDP necesita permiso de red local para acceder a escritorios remotos de la LAN. Android puede bloquear esta conexión si se deniega.</string>
     <string name="session_action_open_settings">Abrir ajustes</string>
     <string name="session_action_continue_without_lan">Continuar sin LAN</string>
-    <string name="session_action_cancel">Cancelar</string>
+    <string name="session_credentials_title">Autenticación</string>
+    <string name="session_credentials_message">El equipo remoto %1$s requiere credenciales.</string>
+    <string name="session_credentials_message_generic">El equipo remoto requiere credenciales.</string>
+    <string name="session_credentials_username">Usuario</string>
+    <string name="session_credentials_domain">Dominio (opcional)</string>
+    <string name="session_credentials_password">Contraseña</string>
+    <string name="session_credentials_connect">Conectar</string>
+    <string name="session_credentials_show_password">Mostrar contraseña</string>
+    <string name="session_credentials_hide_password">Ocultar contraseña</string>
     <string name="session_certificate_new_title">Verificar certificado del equipo remoto</string>
     <string name="session_certificate_new_message">Esta es la primera conexión a este equipo remoto. Verifica la huella antes de confiar; PocketRDP la fijará a esta conexión.</string>
     <string name="session_certificate_changed_title">El certificado del equipo remoto cambió</string>

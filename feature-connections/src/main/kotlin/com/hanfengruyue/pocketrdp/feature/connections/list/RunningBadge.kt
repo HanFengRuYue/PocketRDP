@@ -16,7 +16,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,6 +31,7 @@ private val runningBadgeIconPaddingDp = 7.dp
 private const val RUNNING_PULSE_MS = 620
 private const val RUNNING_HALO_ALPHA_MIN = 0.22f
 private const val RUNNING_HALO_ALPHA_MAX = 0.82f
+private const val RUNNING_HALO_ALPHA_STATIC = 0.52f
 private const val RUNNING_HALO_SCALE_MIN = 0.82f
 private const val RUNNING_HALO_SCALE_MAX = 1.18f
 private const val RUNNING_CORE_SCALE_MIN = 0.94f
@@ -39,9 +39,21 @@ private const val RUNNING_CORE_SCALE_MAX = 1.08f
 private const val RUNNING_BADGE_GREEN = 0xFF00A83B
 
 @Composable
-internal fun RunningBadge(modifier: Modifier = Modifier) {
+internal fun RunningBadge(
+    modifier: Modifier = Modifier,
+    animate: Boolean = true,
+) {
+    if (animate) {
+        AnimatedRunningBadge(modifier = modifier)
+    } else {
+        StaticRunningBadge(modifier = modifier)
+    }
+}
+
+@Composable
+private fun AnimatedRunningBadge(modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "running-session")
-    val haloAlpha by transition.animateFloat(
+    val haloAlpha = transition.animateFloat(
         initialValue = RUNNING_HALO_ALPHA_MIN,
         targetValue = RUNNING_HALO_ALPHA_MAX,
         animationSpec = infiniteRepeatable(
@@ -50,7 +62,7 @@ internal fun RunningBadge(modifier: Modifier = Modifier) {
         ),
         label = "running-session-halo",
     )
-    val haloScale by transition.animateFloat(
+    val haloScale = transition.animateFloat(
         initialValue = RUNNING_HALO_SCALE_MIN,
         targetValue = RUNNING_HALO_SCALE_MAX,
         animationSpec = infiniteRepeatable(
@@ -59,7 +71,7 @@ internal fun RunningBadge(modifier: Modifier = Modifier) {
         ),
         label = "running-session-halo-scale",
     )
-    val coreScale by transition.animateFloat(
+    val coreScale = transition.animateFloat(
         initialValue = RUNNING_CORE_SCALE_MIN,
         targetValue = RUNNING_CORE_SCALE_MAX,
         animationSpec = infiniteRepeatable(
@@ -68,25 +80,50 @@ internal fun RunningBadge(modifier: Modifier = Modifier) {
         ),
         label = "running-session-core-scale",
     )
+    RunningBadgeContent(
+        modifier = modifier,
+        haloModifier = Modifier.graphicsLayer {
+            alpha = haloAlpha.value
+            scaleX = haloScale.value
+            scaleY = haloScale.value
+        },
+        coreModifier = Modifier.graphicsLayer {
+            scaleX = coreScale.value
+            scaleY = coreScale.value
+        },
+    )
+}
+
+@Composable
+private fun StaticRunningBadge(modifier: Modifier = Modifier) {
+    RunningBadgeContent(
+        modifier = modifier,
+        haloModifier = Modifier.graphicsLayer {
+            alpha = RUNNING_HALO_ALPHA_STATIC
+        },
+        coreModifier = Modifier,
+    )
+}
+
+@Composable
+private fun RunningBadgeContent(
+    modifier: Modifier,
+    haloModifier: Modifier,
+    coreModifier: Modifier,
+) {
     Box(modifier = modifier.size(runningBadgeSizeDp), contentAlignment = Alignment.Center) {
         Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = haloScale
-                    scaleY = haloScale
-                },
+                .then(haloModifier),
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = haloAlpha),
+            color = MaterialTheme.colorScheme.primary,
             contentColor = Color.White,
         ) {}
         Surface(
             modifier = Modifier
                 .size(runningBadgeCoreDp)
-                .graphicsLayer {
-                    scaleX = coreScale
-                    scaleY = coreScale
-                },
+                .then(coreModifier),
             shape = CircleShape,
             color = Color(RUNNING_BADGE_GREEN),
             contentColor = Color.White,

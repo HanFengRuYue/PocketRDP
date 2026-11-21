@@ -9,10 +9,11 @@ internal fun buildRdpCommandLine(
     // Validate before FreeRDP allocates its initial GDI framebuffer. The resize callback's bounds
     // check is too late for a corrupted database or another internal caller supplying huge values.
     val (initialWidth, initialHeight) = safeInitialRdpSize(p.initialWidth, p.initialHeight)
+    val formattedHost = formatRdpHost(p.host)
     val args = mutableListOf(
         "freerdp",
         "/gdi:sw",
-        "/v:${p.host}",
+        "/v:$formattedHost",
         "/port:${p.port}",
         "/u:${p.username}",
         "/size:${initialWidth}x$initialHeight",
@@ -62,8 +63,11 @@ internal fun buildRdpCommandLine(
     val scale = p.desktopScaleFactor.coerceIn(MIN_DESKTOP_SCALE, MAX_DESKTOP_SCALE)
     args += "/scale-desktop:$scale"
 
-    val clipDir = if (p.redirectClipboard) "all" else "off"
-    args += "/clipboard:use-selection:primary,direction-to:$clipDir"
+    args += if (p.redirectClipboard) {
+        "/clipboard:use-selection:primary,direction-to:all"
+    } else {
+        "-clipboard"
+    }
 
     driveRedirectionArg(p.redirectFiles, p.drivePath)?.let { args += it }
 
@@ -89,6 +93,15 @@ private const val DEFAULT_INITIAL_WIDTH = 1920
 private const val DEFAULT_INITIAL_HEIGHT = 1080
 private const val DEFAULT_COLOR_DEPTH = 32
 private val SUPPORTED_COLOR_DEPTHS = setOf(16, 24, 32)
+
+internal fun formatRdpHost(host: String): String {
+    val trimmed = host.trim()
+    return if (trimmed.contains(':') && !trimmed.startsWith('[')) {
+        "[$trimmed]"
+    } else {
+        trimmed
+    }
+}
 
 internal fun safeInitialRdpSize(width: Int, height: Int): Pair<Int, Int> =
     if (isSafeFramebufferSize(width, height)) {

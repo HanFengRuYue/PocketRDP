@@ -17,8 +17,8 @@
   </p>
   <p>
     <a href="https://developer.android.com/about/versions/12"><img src="https://img.shields.io/badge/Android-12%2B-3DDC84?style=flat-square&amp;logo=android&amp;logoColor=white" alt="Android 12+" /></a>
-    <a href="gradle/libs.versions.toml"><img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?style=flat-square&amp;logo=kotlin&amp;logoColor=white" alt="Kotlin 2.4.10" /></a>
-    <a href="https://github.com/FreeRDP/FreeRDP/tree/3.30.0"><img src="https://img.shields.io/badge/FreeRDP-3.30.0-2B579A?style=flat-square" alt="FreeRDP 3.30.0" /></a>
+    <a href="gradle/libs.versions.toml"><img src="https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?style=flat-square&amp;logo=kotlin&amp;logoColor=white" alt="Kotlin 2.4.21" /></a>
+    <a href="https://github.com/FreeRDP/FreeRDP/tree/3.33.1"><img src="https://img.shields.io/badge/FreeRDP-3.33.1-2B579A?style=flat-square" alt="FreeRDP 3.33.1" /></a>
   </p>
 
   [功能特色](#-功能特色) · [快速开始](#-快速开始) · [项目架构](#-项目架构) · [原生构建](#-freerdp-原生构建) · [参与贡献](#-参与贡献)
@@ -28,7 +28,7 @@
 
 | 类别 | 能力 |
 | --- | --- |
-| 🖥️ 远程桌面 | 基于 FreeRDP 3.30.0，支持 GFX、H.264、RFX、32 位色深、自动重连与实时会话状态。 |
+| 🖥️ 远程桌面 | 基于 FreeRDP 3.33.1，支持 GFX、H.264、RFX、32 位色深、自动重连与实时会话状态。 |
 | 🎞️ 图像与性能 | Android MediaCodec 优先解码 H.264，静态链接 FFmpeg 作为回退；可选 AVC420 流畅优先或 AVC444 画质优先。 |
 | 📐 分辨率 | 支持动态分辨率、自定义固定分辨率、远程桌面缩放、动态分辨率上限及目标帧率。 |
 | 👆 输入体验 | 支持模拟鼠标、原生 RDPEI 触控、多点触控、手势、虚拟键盘、组合键及中英文文本输入。 |
@@ -57,12 +57,12 @@
 
 | 层级 | 技术与版本 |
 | --- | --- |
-| 语言与 UI | Kotlin 2.4.10、Jetpack Compose、Material 3、Compose BOM 2026.06.01 |
-| 架构与数据 | Hilt 2.60.1、Room 2.8.4、DataStore、Kotlin Coroutines |
-| Android 工具链 | AGP 9.3.1、Gradle 9.6.1、JVM Target 17、JBR/JDK 21 |
-| Android 平台 | compile/target SDK 37、min SDK 31（Android 12） |
-| 原生工具链 | NDK 29.0.14206865、CMake 4.1.2、FreeRDP 3.30.0 |
-| 媒体栈 | Android MediaCodec、静态链接 FFmpeg n8.1.2 |
+| 语言与 UI | Kotlin 2.4.21、Jetpack Compose、Material 3、Compose BOM 2026.11.01 |
+| 架构与数据 | Hilt 2.60.1、Room 2.8.5、DataStore 1.3.0、Kotlin Coroutines |
+| Android 工具链 | AGP 9.5.1、Gradle 9.9.2、JVM Target 17、JBR/JDK 21 |
+| Android 平台 | compile SDK 37.2、target SDK 37、min SDK 31（Android 12） |
+| 原生工具链 | NDK 30.0.16248370、CMake 4.1.2、FreeRDP 3.33.1 |
+| 媒体栈 | Android MediaCodec、静态链接 FFmpeg n9.1 |
 
 ## 🚀 快速开始
 
@@ -158,7 +158,7 @@ flowchart TB
     UI["core-ui<br/>Compose 主题与公共样式"]
     LOG["core-logging<br/>日志与敏感信息脱敏"]
     RDP["core-rdp<br/>Kotlin 客户端、JNI、渲染缓冲"]
-    FREERDP["FreeRDP 3.30.0<br/>预编译四 ABI 原生库"]
+    FREERDP["FreeRDP 3.33.1<br/>预编译四 ABI 原生库"]
     SERVER["Windows / RDP Server"]
 
     APP --> CONNECTIONS
@@ -185,7 +185,7 @@ flowchart TB
 | `core-ui/` | 公共 Compose 主题、颜色与界面样式。 |
 | `core-logging/` | 公共日志、导出与敏感信息脱敏。 |
 | `third_party/FreeRDP/` | 固定到 PocketRDP 审计提交的 FreeRDP 子模块。 |
-| `patches/freerdp/` | 可复现的 PocketRDP FreeRDP 3.30 补丁。 |
+| `patches/freerdp/` | 可复现的 PocketRDP FreeRDP 3.33 补丁。 |
 | `scripts/` | FreeRDP 补丁校验、WSL2 多架构构建与原生产物检查脚本。 |
 | `artwork/` | 应用 Logo 与启动图源文件。 |
 

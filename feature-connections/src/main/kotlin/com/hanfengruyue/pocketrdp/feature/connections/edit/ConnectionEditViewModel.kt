@@ -62,7 +62,6 @@ data class ConnectionEditUiState(
     val useMultitransport: Boolean = false,
     val redirectClipboard: Boolean = true,
     val redirectFiles: Boolean = false,
-    val sharedFolderUri: String? = null,
     // 远程音频路由：0 = 停用 (/audio-mode:none), 1 = 控制端播放 (/audio-mode:redirect),
     // 2 = 被控端播放 (/audio-mode:server)。新建连接默认 2（被控端播放）；编辑已有连接时由 init
     // 用 entity.soundMode 覆盖（存量行的列值都是 0 = 停用，不受此默认影响）。
@@ -126,7 +125,6 @@ class ConnectionEditViewModel @Inject constructor(
                                 useMultitransport = entity.useMultitransport,
                                 redirectClipboard = entity.redirectClipboard,
                                 redirectFiles = entity.redirectFiles,
-                                sharedFolderUri = entity.sharedFolderUri,
                                 soundMode = entity.soundMode,
                                 desktopScaleFactor = entity.desktopScaleFactor,
                                 useCustomResolution = entity.customWidth > 0 && entity.customHeight > 0,
@@ -152,49 +150,122 @@ class ConnectionEditViewModel @Inject constructor(
         }
     }
 
-    fun updateName(value: String) =
-        _state.update { it.copy(name = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS)) }
-    fun updateHost(value: String) =
-        _state.update { it.copy(host = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS)) }
-    fun updatePort(value: String) = _state.update { it.copy(port = value.filter { ch -> ch.isDigit() }.take(5)) }
-    fun updateUsername(value: String) =
-        _state.update { it.copy(username = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
-    fun updateDomain(value: String) =
-        _state.update { it.copy(domain = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
-    fun updatePassword(value: String) =
-        _state.update { it.copy(password = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS)) }
-    fun updateColorDepth(value: Int) = _state.update { it.copy(colorDepth = value) }
+    fun updateName(value: String) = _state.update {
+        it.copy(name = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS))
+            .clearEditErrors(ConnectionEditError.NAME_REQUIRED)
+    }
+
+    fun updateHost(value: String) = _state.update {
+        it.copy(host = value.boundedUtf16(MAX_CONNECTION_FIELD_CHARS))
+            .clearEditErrors(ConnectionEditError.HOST_REQUIRED)
+    }
+
+    fun updatePort(value: String) = _state.update {
+        it.copy(port = value.filter { ch -> ch.isDigit() }.take(5))
+            .clearEditErrors(ConnectionEditError.PORT_INVALID)
+    }
+
+    fun updateUsername(value: String) = _state.update {
+        it.copy(username = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS))
+            .clearEditErrors(ConnectionEditError.USERNAME_REQUIRED)
+    }
+
+    fun updateDomain(value: String) = _state.update {
+        it.copy(domain = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS))
+            .clearEditErrors()
+    }
+
+    fun updatePassword(value: String) = _state.update {
+        it.copy(password = value.boundedUtf16(MAX_CREDENTIAL_FIELD_CHARS))
+            .clearEditErrors(ConnectionEditError.PASSWORD_REQUIRED)
+    }
+
+    fun updateColorDepth(value: Int) = _state.update {
+        it.copy(colorDepth = value).clearEditErrors()
+    }
+
     // H.264 (AVC444) can only run on the GFX/rdpgfx channel, so enabling it implicitly forces the
     // GFX pipeline on. Keep the persisted entity honest (no use_h264=true/use_gfx=false records) —
     // the edit screen also locks the GFX switch ON+disabled while H.264 is enabled.
     fun toggleH264(value: Boolean) = _state.update {
-        it.copy(useH264 = value, useGfx = if (value) true else it.useGfx)
+        it.copy(useH264 = value, useGfx = if (value) true else it.useGfx).clearEditErrors()
     }
+
     /** Codec tier: false = 画质优先 (AVC444), true = 流畅优先 (AVC420). */
-    fun updatePreferAvc420(value: Boolean) = _state.update { it.copy(preferAvc420 = value) }
+    fun updatePreferAvc420(value: Boolean) = _state.update {
+        it.copy(preferAvc420 = value).clearEditErrors()
+    }
+
     fun toggleGfx(value: Boolean) = _state.update {
         // AVC420/AVC444 are rdpgfx modes. Preserve the invariant even if this method is invoked
         // outside the currently disabled UI switch (for example by a future automation/test).
-        it.copy(useGfx = value || it.useH264)
+        it.copy(useGfx = value || it.useH264).clearEditErrors()
     }
-    fun toggleDynamicRes(value: Boolean) = _state.update { it.copy(dynamicResolution = value) }
-    fun updateDynamicResMax(value: Int) = _state.update { it.copy(dynamicResMax = value) }
-    fun toggleMultitransport(value: Boolean) = _state.update { it.copy(useMultitransport = value) }
-    fun toggleClipboard(value: Boolean) = _state.update { it.copy(redirectClipboard = value) }
-    fun toggleFiles(value: Boolean) = _state.update { it.copy(redirectFiles = value) }
-    fun updateSharedFolder(uri: String?) =
-        _state.update { it.copy(sharedFolderUri = uri?.boundedUtf16(MAX_SHARED_FOLDER_URI_CHARS)) }
-    fun updateSoundMode(value: Int) = _state.update { it.copy(soundMode = value) }
-    fun updateScaleFactor(value: Int) = _state.update { it.copy(desktopScaleFactor = value) }
-    fun updateFrameRate(value: Int) = _state.update { it.copy(targetFrameRate = value) }
+
+    fun toggleDynamicRes(value: Boolean) = _state.update {
+        it.copy(dynamicResolution = value).clearEditErrors()
+    }
+
+    fun updateDynamicResMax(value: Int) = _state.update {
+        it.copy(dynamicResMax = value).clearEditErrors()
+    }
+
+    fun toggleMultitransport(value: Boolean) = _state.update {
+        it.copy(useMultitransport = value).clearEditErrors()
+    }
+
+    fun toggleClipboard(value: Boolean) = _state.update {
+        it.copy(redirectClipboard = value).clearEditErrors()
+    }
+
+    fun toggleFiles(value: Boolean) = _state.update {
+        it.copy(redirectFiles = value).clearEditErrors()
+    }
+
+    fun updateSoundMode(value: Int) = _state.update {
+        it.copy(soundMode = value).clearEditErrors()
+    }
+
+    fun updateScaleFactor(value: Int) = _state.update {
+        it.copy(desktopScaleFactor = value).clearEditErrors()
+    }
+
+    fun updateFrameRate(value: Int) = _state.update {
+        it.copy(targetFrameRate = value).clearEditErrors()
+    }
+
     fun toggleCustomResolution(value: Boolean) = _state.update {
         // Turning custom resolution ON forces dynamic-resolution OFF (they are mutually exclusive:
         // a fixed remote size must not be resized by monitor-layout PDUs).
-        it.copy(useCustomResolution = value, dynamicResolution = if (value) false else it.dynamicResolution)
+        it.copy(
+            useCustomResolution = value,
+            dynamicResolution = if (value) false else it.dynamicResolution,
+        ).clearEditErrors(
+            ConnectionEditError.CUSTOM_WIDTH_INVALID,
+            ConnectionEditError.CUSTOM_HEIGHT_INVALID,
+            ConnectionEditError.FRAMEBUFFER_TOO_LARGE,
+        )
     }
-    fun updateCustomWidth(value: String) = _state.update { it.copy(customWidth = value.filter { ch -> ch.isDigit() }.take(5)) }
-    fun updateCustomHeight(value: String) = _state.update { it.copy(customHeight = value.filter { ch -> ch.isDigit() }.take(5)) }
-    fun updateDefaultInputMode(value: Int) = _state.update { it.copy(defaultInputMode = value) }
+
+    fun updateCustomWidth(value: String) = _state.update {
+        it.copy(customWidth = value.filter { ch -> ch.isDigit() }.take(5))
+            .clearEditErrors(
+                ConnectionEditError.CUSTOM_WIDTH_INVALID,
+                ConnectionEditError.FRAMEBUFFER_TOO_LARGE,
+            )
+    }
+
+    fun updateCustomHeight(value: String) = _state.update {
+        it.copy(customHeight = value.filter { ch -> ch.isDigit() }.take(5))
+            .clearEditErrors(
+                ConnectionEditError.CUSTOM_HEIGHT_INVALID,
+                ConnectionEditError.FRAMEBUFFER_TOO_LARGE,
+            )
+    }
+
+    fun updateDefaultInputMode(value: Int) = _state.update {
+        it.copy(defaultInputMode = value).clearEditErrors()
+    }
 
     /** 低延迟视觉: toggle the PERF_LOW_LATENCY_VISUALS bit for lean/rich remote visual effects. */
     fun toggleLowLatencyVisuals(value: Boolean) = _state.update {
@@ -203,7 +274,7 @@ class ConnectionEditViewModel @Inject constructor(
         } else {
             it.performanceFlags and ConnectionEntity.PERF_LOW_LATENCY_VISUALS.inv()
         }
-        it.copy(performanceFlags = flags)
+        it.copy(performanceFlags = flags).clearEditErrors()
     }
 
     fun save() {
@@ -257,7 +328,7 @@ class ConnectionEditViewModel @Inject constructor(
                     useMultitransport = s.useMultitransport,
                     redirectClipboard = s.redirectClipboard,
                     redirectFiles = s.redirectFiles,
-                    sharedFolderUri = s.sharedFolderUri,
+                    sharedFolderUri = existing?.sharedFolderUri,
                     soundMode = s.soundMode,
                     desktopScaleFactor = s.desktopScaleFactor,
                     customWidth = if (s.useCustomResolution) s.customWidth.toIntOrNull() ?: 0 else 0,
@@ -276,15 +347,37 @@ class ConnectionEditViewModel @Inject constructor(
         }
     }
 
-    fun consumeErrors() = _state.update { it.copy(errors = emptyList()) }
+    fun consumeErrors() = _state.update { it.consumeEditErrors() }
 
     private companion object {
         const val MAX_FRAMEBUFFER_PIXELS = 16_777_216L
         const val MAX_CONNECTION_FIELD_CHARS = 1024
         const val MAX_CREDENTIAL_FIELD_CHARS = 4096
-        const val MAX_SHARED_FOLDER_URI_CHARS = 8192
     }
 }
+
+internal fun ConnectionEditUiState.clearEditErrors(
+    vararg cleared: ConnectionEditError,
+): ConnectionEditUiState {
+    val nextErrors = if (cleared.isEmpty() || errors.isEmpty()) {
+        errors
+    } else {
+        val toClear = cleared.toSet()
+        errors.filterNot { it in toClear }
+    }
+    val nextFailure = if (failure == ConnectionEditFailure.SAVE_FAILED) null else failure
+    return if (nextErrors === errors && nextFailure == failure) {
+        this
+    } else {
+        copy(errors = nextErrors, failure = nextFailure)
+    }
+}
+
+internal fun ConnectionEditUiState.consumeEditErrors(): ConnectionEditUiState =
+    copy(
+        errors = emptyList(),
+        failure = if (failure == ConnectionEditFailure.SAVE_FAILED) null else failure,
+    )
 
 internal fun String.boundedUtf16(maxChars: Int): String {
     require(maxChars >= 0) { "maxChars must be non-negative" }

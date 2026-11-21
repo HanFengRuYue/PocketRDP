@@ -170,7 +170,6 @@ class RdpCommandLineTest {
         useMultitransport = false,
         redirectClipboard = true,
         redirectFiles = redirectFiles,
-        sharedFolderUri = null,
         drivePath = drivePath,
         soundMode = 2,
         desktopScaleFactor = 150,

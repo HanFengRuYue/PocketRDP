@@ -1,5 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.session
 
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportPhase
+import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,15 +12,30 @@ class SessionStartPolicyTest {
     fun `text input is accepted only for a live connected session`() {
         assertFalse(canQueueTextInput(SessionConnectionStatus.Idle))
         assertFalse(canQueueTextInput(SessionConnectionStatus.Connecting))
+        assertFalse(canQueueTextInput(SessionConnectionStatus.Reconnecting))
         assertFalse(canQueueTextInput(SessionConnectionStatus.Disconnected("network")))
         assertFalse(canQueueTextInput(SessionConnectionStatus.Failed("auth")))
         assertTrue(canQueueTextInput(SessionConnectionStatus.Connected))
     }
 
     @Test
-    fun sameConnectionDoesNotRestartWhileConnectingOrConnected() {
+    fun sameConnectionDoesNotRestartWhileConnectingReconnectingOrConnected() {
         assertFalse(shouldLaunchConnect(state(status = SessionConnectionStatus.Connecting), CONNECTION_ID))
+        assertFalse(shouldLaunchConnect(state(status = SessionConnectionStatus.Reconnecting), CONNECTION_ID))
         assertFalse(shouldLaunchConnect(state(status = SessionConnectionStatus.Connected), CONNECTION_ID))
+    }
+
+    @Test
+    fun pendingCredentialsPromptBlocksDuplicateRestart() {
+        val prompted = state(status = SessionConnectionStatus.Idle).copy(
+            pendingCredentialsPrompt = CredentialsPromptState(
+                host = "192.168.1.2",
+                initialUsername = "admin",
+                initialDomain = "",
+            ),
+        )
+
+        assertFalse(shouldLaunchConnect(prompted, CONNECTION_ID))
     }
 
     @Test
@@ -112,6 +129,129 @@ class SessionStartPolicyTest {
     @Test
     fun windowsClipboardLineEndingsAreNormalizedWithoutDoublingCarriageReturns() {
         assertEquals("a\r\nb\r\nc\r\nd", toWindowsClipboardText("a\r\nb\nc\rd"))
+    }
+
+    @Test
+    fun singleEnterDoesNotTriggerClipboardPasteWhileMultilineAndLongTextDo() {
+        assertFalse(shouldPasteTextViaClipboard("\n", clipboardSyncEnabled = true))
+        assertFalse(shouldPasteTextViaClipboard("hello", clipboardSyncEnabled = true))
+        assertTrue(shouldPasteTextViaClipboard("line1\nline2", clipboardSyncEnabled = true))
+        assertTrue(shouldPasteTextViaClipboard("a".repeat(201), clipboardSyncEnabled = true))
+        assertFalse(shouldPasteTextViaClipboard("line1\nline2", clipboardSyncEnabled = false))
+    }
+
+    @Test
+    fun connectingOverlayShowsOnlyWhileConnectingReconnectingOrAwaitingFirstFrame() {
+        assertTrue(shouldShowConnectingOverlay(SessionConnectionStatus.Connecting, hasPublishedFrame = false))
+        assertTrue(shouldShowConnectingOverlay(SessionConnectionStatus.Connecting, hasPublishedFrame = true))
+        assertTrue(shouldShowConnectingOverlay(SessionConnectionStatus.Reconnecting, hasPublishedFrame = false))
+        assertTrue(shouldShowConnectingOverlay(SessionConnectionStatus.Reconnecting, hasPublishedFrame = true))
+        assertTrue(shouldShowConnectingOverlay(SessionConnectionStatus.Connected, hasPublishedFrame = false))
+        assertFalse(shouldShowConnectingOverlay(SessionConnectionStatus.Connected, hasPublishedFrame = true))
+        assertFalse(shouldShowConnectingOverlay(SessionConnectionStatus.Idle, hasPublishedFrame = false))
+        assertFalse(shouldShowConnectingOverlay(SessionConnectionStatus.Idle, hasPublishedFrame = true))
+        assertFalse(
+            shouldShowConnectingOverlay(
+                SessionConnectionStatus.Disconnected("user"),
+                hasPublishedFrame = false,
+            ),
+        )
+        assertFalse(
+            shouldShowConnectingOverlay(
+                SessionConnectionStatus.Failed("error"),
+                hasPublishedFrame = false,
+            ),
+        )
+    }
+
+    @Test
+    fun terminalOverlayShowsOnlyForStoppedStatesWithoutModalPrompt() {
+        assertTrue(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Failed("err"), false))
+        assertTrue(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Disconnected("user"), false))
+        assertFalse(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Failed("err"), true))
+        assertFalse(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Idle, false))
+        assertFalse(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Connecting, false))
+        assertFalse(shouldShowTerminalStatusOverlay(SessionConnectionStatus.Connected, false))
+    }
+
+    @Test
+    fun udpDowngradeObserverDetectsAllNativeFailureAndReconnectSignals() {
+        assertFalse(isUdpDowngradeObserved(RdpTransportSnapshot(knownVersion = true, phase = RdpTransportPhase.ACTIVE)))
+        assertTrue(
+            isUdpDowngradeObserved(
+                RdpTransportSnapshot(knownVersion = true, phase = RdpTransportPhase.UDP_FAILED),
+            ),
+        )
+        assertTrue(
+            isUdpDowngradeObserved(
+                RdpTransportSnapshot(knownVersion = true, phase = RdpTransportPhase.RECONNECTING_TCP),
+            ),
+        )
+        assertTrue(
+            isUdpDowngradeObserved(
+                RdpTransportSnapshot(
+                    knownVersion = true,
+                    flags = RdpTransportSnapshot.FLAG_DOWNGRADED_TO_TCP,
+                ),
+            ),
+        )
+        assertTrue(
+            isUdpDowngradeObserved(
+                RdpTransportSnapshot(
+                    knownVersion = true,
+                    flags = RdpTransportSnapshot.FLAG_RECONNECT_REQUESTED,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun deferredMonitorLayoutFlushesWhenImeClosesWhileConnected() {
+        assertTrue(
+            shouldFlushDeferredMonitorLayout(
+                dynamicResolutionEnabled = true,
+                imeVisible = false,
+                status = SessionConnectionStatus.Connected,
+                pendingSize = 1920 to 1080,
+                remoteSize = 1080 to 1920,
+                resizeDeferred = true,
+            ),
+        )
+        assertFalse(
+            shouldFlushDeferredMonitorLayout(
+                dynamicResolutionEnabled = true,
+                imeVisible = true,
+                status = SessionConnectionStatus.Connected,
+                pendingSize = 1920 to 1080,
+                remoteSize = 1080 to 1920,
+                resizeDeferred = true,
+            ),
+        )
+        assertFalse(
+            shouldFlushDeferredMonitorLayout(
+                dynamicResolutionEnabled = false,
+                imeVisible = false,
+                status = SessionConnectionStatus.Connected,
+                pendingSize = 1920 to 1080,
+                remoteSize = 1080 to 1920,
+                resizeDeferred = true,
+            ),
+        )
+    }
+
+    @Test
+    fun imeInsetSyncWaitsForKeyboardToActuallyShowBeforeDetectingExternalDismiss() {
+        val opening = stepImeInsetSync(imeVisible = true, imeBottomPx = 0, wasShown = false)
+        assertFalse(opening.wasShown)
+        assertFalse(opening.shouldDismiss)
+
+        val shown = stepImeInsetSync(imeVisible = true, imeBottomPx = 640, wasShown = opening.wasShown)
+        assertTrue(shown.wasShown)
+        assertFalse(shown.shouldDismiss)
+
+        val dismissed = stepImeInsetSync(imeVisible = true, imeBottomPx = 0, wasShown = shown.wasShown)
+        assertFalse(dismissed.wasShown)
+        assertTrue(dismissed.shouldDismiss)
     }
 
     @Test

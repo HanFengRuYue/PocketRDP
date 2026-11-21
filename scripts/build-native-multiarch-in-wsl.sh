@@ -7,7 +7,7 @@
 # build packages all of them into a single fat APK.
 #
 # Usage (from a WSL2 Ubuntu shell, run as root or with sudo):
-#   cd /mnt/d/Document/Git/PocketRDP
+#   cd /mnt/d/Documents/Git/PocketRDP
 #   bash scripts/build-native-multiarch-in-wsl.sh                 # builds the 3 NEW ABIs
 #   bash scripts/build-native-multiarch-in-wsl.sh x86             # builds just one
 #   bash scripts/build-native-multiarch-in-wsl.sh armeabi-v7a x86 x86_64
@@ -33,16 +33,16 @@ set -eu
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_DIR="${ANDROID_SDK_ROOT:-$HOME/android-sdk}"
 JNILIBS_ROOT="$PROJECT_ROOT/core-rdp/src/main/jniLibs"
-NDK_VERSION="29.0.14206865"
-NDK_ARCHIVE_NAME="android-ndk-r29-linux.zip"
-NDK_ARCHIVE_SHA256="4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf"
+NDK_VERSION="30.0.16248370"
+NDK_ARCHIVE_NAME="android-ndk-r30-linux.zip"
+NDK_ARCHIVE_SHA256="753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2"
 CMAKE_VERSION="4.1.2"
 CMAKE_ARCHIVE_NAME="cmake-4.1.2-linux.zip"
 CMAKE_ARCHIVE_SHA256="46bda18f0f3c28a55f88da4ba05fec21abe3d9bca0a78a8b18d444987b3dc817"
-PLATFORM="platforms;android-37.0"
-CMDLINE_TOOLS_VERSION="15859902_latest"
+PLATFORM="platforms;android-37.2"
+CMDLINE_TOOLS_VERSION="16111833_latest"
 CMDLINE_TOOLS_ARCHIVE_NAME="commandlinetools-linux-${CMDLINE_TOOLS_VERSION}.zip"
-CMDLINE_TOOLS_ARCHIVE_SHA256="4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583"
+CMDLINE_TOOLS_ARCHIVE_SHA256="0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8"
 
 # ABIs to build: CLI args > $ABIS env > default (the 3 new ones)
 if [ "$#" -gt 0 ]; then
@@ -113,9 +113,9 @@ install_ndk_archive() {
     fi
     echo "$NDK_ARCHIVE_SHA256  $archive" | sha256sum -c -
 
-    extract_dir=$(mktemp -d "$SDK_DIR/ndk/.r29-extract.XXXXXX")
+    extract_dir=$(mktemp -d "$SDK_DIR/ndk/.r30-extract.XXXXXX")
     unzip -q "$archive" -d "$extract_dir"
-    extracted="$extract_dir/android-ndk-r29"
+    extracted="$extract_dir/android-ndk-r30"
     if [ ! -x "$extracted/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
         rm -rf "$extract_dir"
         echo "  Downloaded NDK archive did not contain the expected Linux toolchain." >&2
@@ -157,10 +157,10 @@ ensure_native_source_cache() {
     cache_dir="$PROJECT_ROOT/.gradle/android-native-downloads"
     mkdir -p "$cache_dir"
     for spec in \
-        "openssl-4.0.1.tar.gz|2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09|https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz" \
+        "openssl-4.1.0.tar.gz|50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd|https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz" \
         "v1.7.19.tar.gz|7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562|https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz" \
-        "n8.1.2.tar.gz|9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7|https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n8.1.2.tar.gz" \
-        "uriparser-1.0.2.tar.xz|7b2496f9622b4b201186a3d159d278605f1fb7262402a10cc1c0824889798b00|https://github.com/uriparser/uriparser/releases/download/uriparser-1.0.2/uriparser-1.0.2.tar.xz"; do
+        "n9.1.tar.gz|0ac7c9b9806b58eda00a528dcba316a2f33d291d949438900efa811d04b051bd|https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.1.tar.gz" \
+        "uriparser-1.0.3.tar.xz|a327e438e238d6c9093f1845acc44dec20d4264639a3de1f3caf0927bd852e3b|https://github.com/uriparser/uriparser/releases/download/uriparser-1.0.3/uriparser-1.0.3.tar.xz"; do
         IFS='|' read -r filename expected url <<<"$spec"
         archive="$cache_dir/$filename"
         actual=$(sha256sum "$archive" 2>/dev/null | awk '{print $1}')
@@ -176,7 +176,7 @@ ensure_native_source_cache() {
 # target ABI's ExternalProject download dir (same .cxx config-hash dir). The generated
 # download-<dep>.cmake checks "EXISTS + hash match → skip download", so a seeded tarball
 # makes the network step a no-op. This is the China-network-fragility mitigation: the
-# FFmpeg/OpenSSL tarballs (n8.1 16 MB, openssl 55 MB) download ONCE (or reuse arm64's
+# FFmpeg/OpenSSL tarballs (n9.1 16 MB, openssl 55 MB) download ONCE (or reuse arm64's
 # existing cache) and are reused for every other ABI — no per-ABI re-download to flake on
 # (GitHub HTTP/2 framing errors killed the first multiarch run on the FFmpeg fetch).
 seed_tarballs() {
@@ -189,10 +189,10 @@ seed_tarballs() {
     local source_cache="$PROJECT_ROOT/.gradle/android-native-downloads"
     local spec dep filename expected source actual dest
     for spec in \
-        "openssl|openssl-4.0.1.tar.gz|2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09" \
+        "openssl|openssl-4.1.0.tar.gz|50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd" \
         "cjson|v1.7.19.tar.gz|7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562" \
-        "ffmpeg|n8.1.2.tar.gz|9fd092511605bbebafe095ea6d38d9e40f34d12f7386e1258372df8be0576eb7" \
-        "uriparser|uriparser-1.0.2.tar.xz|7b2496f9622b4b201186a3d159d278605f1fb7262402a10cc1c0824889798b00"; do
+        "ffmpeg|n9.1.tar.gz|0ac7c9b9806b58eda00a528dcba316a2f33d291d949438900efa811d04b051bd" \
+        "uriparser|uriparser-1.0.3.tar.xz|a327e438e238d6c9093f1845acc44dec20d4264639a3de1f3caf0927bd852e3b"; do
         IFS='|' read -r dep filename expected <<<"$spec"
         source="$source_cache/$filename"
         [ -f "$source" ] || continue
@@ -234,12 +234,90 @@ fi
 # certificate, input-queue and Android decoder fixes. The helper also rejects partial patches,
 # unrelated tracked changes and untracked files.
 step "Verifying PocketRDP FreeRDP patch"
-if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
-    echo "  powershell.exe and wslpath are required to verify the FreeRDP patch from WSL2." >&2
-    exit 1
+verify_freerdp_patch_native() {
+    local ps1="$PROJECT_ROOT/scripts/apply-freerdp-patches.ps1"
+    local freerdp_dir="$PROJECT_ROOT/third_party/FreeRDP"
+    local patch_rel expected_base expected_integrated expected_sha actual_sha head status
+    patch_rel=$(sed -n 's/^\$patchPath = Join-Path \$repoRoot "\([^"]*\)"/\1/p' "$ps1" | tr -d '\r')
+    expected_base=$(sed -n 's/^\$expectedBase = "\([^"]*\)"/\1/p' "$ps1" | tr -d '\r')
+    expected_integrated=$(sed -n 's/^\$expectedIntegratedCommit = "\([^"]*\)"/\1/p' "$ps1" | tr -d '\r')
+    expected_sha=$(sed -n 's/^\$expectedPatchSha256 = "\([^"]*\)"/\1/p' "$ps1" | tr -d '\r')
+    local patch_file="$PROJECT_ROOT/$patch_rel"
+    if [ ! -f "$patch_file" ] || [ -z "$expected_sha" ]; then
+        echo "  !! Failed to resolve FreeRDP patch metadata from $ps1" >&2
+        return 1
+    fi
+    actual_sha=$(sha256sum "$patch_file" | awk '{print $1}')
+    if [ "$actual_sha" != "$expected_sha" ]; then
+        echo "  !! PocketRDP FreeRDP patch SHA-256 mismatch: expected $expected_sha, got $actual_sha" >&2
+        return 1
+    fi
+    local -a git_flags=(-c core.fileMode=false -c core.quotepath=false)
+    case "$freerdp_dir" in
+        /mnt/*) git_flags+=(-c core.autocrlf=true) ;;
+    esac
+    head=$(git "${git_flags[@]}" -C "$freerdp_dir" rev-parse HEAD)
+    status=$(git "${git_flags[@]}" -C "$freerdp_dir" status --porcelain --untracked-files=all)
+    if [ "$head" = "$expected_integrated" ]; then
+        if [ -n "$status" ]; then
+            echo "  !! Integrated PocketRDP FreeRDP commit has uncommitted changes." >&2
+            return 1
+        fi
+        echo "  PocketRDP FreeRDP custom commit is checked out cleanly."
+        return 0
+    fi
+    if [ "$head" = "$expected_base" ]; then
+        if [ -z "$status" ]; then
+            git "${git_flags[@]}" -C "$freerdp_dir" apply --check --whitespace=error-all "$patch_file"
+            git "${git_flags[@]}" -C "$freerdp_dir" apply --whitespace=error-all "$patch_file"
+            echo "  Applied PocketRDP FreeRDP patch."
+            return 0
+        fi
+        # Match apply-freerdp-patches.ps1: accept an already-applied patch on the official base
+        # only when the full HEAD-relative diff (including untracked files) equals the audited
+        # patch byte-for-byte after newline normalization.
+        local tmp_current tmp_expected rel_path rc
+        tmp_current=$(mktemp)
+        tmp_expected=$(mktemp)
+        git "${git_flags[@]}" -C "$freerdp_dir" diff --binary HEAD -- > "$tmp_current"
+        while IFS= read -r rel_path; do
+            [ -n "$rel_path" ] || continue
+            rc=0
+            git -c core.autocrlf=false -c core.safecrlf=false -C "$freerdp_dir" \
+                diff --no-index --binary -- /dev/null "$rel_path" >> "$tmp_current" 2>/dev/null || rc=$?
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+                rm -f "$tmp_current" "$tmp_expected"
+                echo "  !! Could not inspect new FreeRDP file: $rel_path" >&2
+                return 1
+            fi
+        done < <(printf '%s\n' "$status" | sed -n 's/^?? //p' | LC_ALL=C sort)
+        sed 's/\r$//' "$tmp_current" |
+            awk '{lines[NR]=$0} END{n=NR; while(n>0 && lines[n]=="") n--; for(i=1;i<=n;i++) print lines[i]}' \
+            > "${tmp_current}.norm"
+        sed 's/\r$//' "$patch_file" |
+            awk '{lines[NR]=$0} END{n=NR; while(n>0 && lines[n]=="") n--; for(i=1;i<=n;i++) print lines[i]}' \
+            > "$tmp_expected"
+        if cmp -s "${tmp_current}.norm" "$tmp_expected"; then
+            rm -f "$tmp_current" "${tmp_current}.norm" "$tmp_expected"
+            echo "  PocketRDP FreeRDP 3.33 patch is already applied."
+            return 0
+        fi
+        rm -f "$tmp_current" "${tmp_current}.norm" "$tmp_expected"
+        echo "  !! FreeRDP has unrelated or partially applied changes; refusing to modify it." >&2
+        return 1
+    fi
+    echo "  !! Unexpected FreeRDP HEAD ($head); expected $expected_integrated or $expected_base." >&2
+    return 1
+}
+
+if command -v powershell.exe >/dev/null 2>&1 &&
+   command -v wslpath >/dev/null 2>&1 &&
+   powershell.exe -NoProfile -NonInteractive -Command "exit 0" >/dev/null 2>&1; then
+    PATCH_HELPER_WIN=$(wslpath -w "$PROJECT_ROOT/scripts/apply-freerdp-patches.ps1")
+    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PATCH_HELPER_WIN"
+else
+    verify_freerdp_patch_native
 fi
-PATCH_HELPER_WIN=$(wslpath -w "$PROJECT_ROOT/scripts/apply-freerdp-patches.ps1")
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PATCH_HELPER_WIN"
 
 # 2. apt deps (idempotent)
 step "Installing apt build dependencies"
@@ -349,7 +427,98 @@ cd "$PROJECT_ROOT"
 chmod +x ./gradlew
 
 READELF=$(find "$SDK_DIR/ndk/$NDK_VERSION" -name 'llvm-readelf' 2>/dev/null | head -1)
+STRIP=$(find "$SDK_DIR/ndk/$NDK_VERSION" -name 'llvm-strip' 2>/dev/null | head -1)
+LLVM_NM=$(find "$SDK_DIR/ndk/$NDK_VERSION" -name 'llvm-nm' 2>/dev/null | head -1)
+LLVM_STRINGS=$(find "$SDK_DIR/ndk/$NDK_VERSION" -name 'llvm-strings' 2>/dev/null | head -1)
 NDK_LIBCXX_DIR="$SDK_DIR/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+
+validate_elf_library() {
+    local lib="$1"
+    local need16="$2"
+    local base phdrs align_list align align_val min_align load_count stack_line stack_flags
+    base=$(basename "$lib")
+
+    phdrs=$("$READELF" -lW "$lib" 2>/dev/null) || {
+        echo "  !! llvm-readelf failed on $base" >&2
+        return 1
+    }
+
+    if ! printf '%s\n' "$phdrs" | grep -qE '^[[:space:]]*GNU_RELRO[[:space:]]'; then
+        echo "  !! refusing $base: missing GNU_RELRO" >&2
+        return 1
+    fi
+
+    stack_line=$(printf '%s\n' "$phdrs" | grep -E '^[[:space:]]*GNU_STACK[[:space:]]' | head -1 || true)
+    if [ -z "$stack_line" ]; then
+        echo "  !! refusing $base: missing GNU_STACK" >&2
+        return 1
+    fi
+    stack_flags=$(printf '%s\n' "$stack_line" | awk '{
+        if (NF < 8) exit 1
+        flags = ""
+        for (i = 7; i < NF; i++) flags = flags $i
+        print flags
+    }') || {
+        echo "  !! refusing $base: could not parse GNU_STACK flags ($stack_line)" >&2
+        return 1
+    }
+    case "$stack_flags" in
+        *E*)
+            echo "  !! refusing $base: executable GNU_STACK ($stack_flags)" >&2
+            return 1
+            ;;
+    esac
+
+    align_list=$(printf '%s\n' "$phdrs" | awk '/^[[:space:]]*LOAD[[:space:]]/{print $NF}')
+    if [ -z "$align_list" ]; then
+        echo "  !! refusing $base: invalid ELF or missing PT_LOAD segments" >&2
+        return 1
+    fi
+    load_count=0
+    min_align=""
+    while IFS= read -r align; do
+        [ -n "$align" ] || continue
+        case "$align" in
+            0x[0-9a-fA-F]*) ;;
+            *)
+                echo "  !! refusing $base: unparseable PT_LOAD alignment '$align'" >&2
+                return 1
+                ;;
+        esac
+        align_val=$((align))
+        load_count=$((load_count + 1))
+        if [ -z "$min_align" ] || [ "$align_val" -lt "$min_align" ]; then
+            min_align="$align_val"
+        fi
+        if [ "$need16" -eq 1 ] && [ "$align_val" -lt 16384 ]; then
+            echo "  !! refusing $base: PT_LOAD alignment $align below 16 KiB (0x4000)" >&2
+            return 1
+        fi
+    done <<< "$align_list"
+    if [ "$load_count" -eq 0 ]; then
+        echo "  !! refusing $base: no PT_LOAD segments found" >&2
+        return 1
+    fi
+
+    if "$READELF" -SW "$lib" 2>/dev/null | grep -qE '[[:space:]]\.debug(_|[[:space:]])'; then
+        echo "  !! refusing $base: unstripped .debug section present" >&2
+        return 1
+    fi
+
+    if [ -n "$LLVM_NM" ] &&
+       "$LLVM_NM" -D --undefined-only "$lib" 2>/dev/null | grep -qE '(^|[[:space:]])__assert2(@|$|[[:space:]])'; then
+        echo "  !! refusing $base: unexpected __assert2 import (built without -DNDEBUG)" >&2
+        return 1
+    fi
+
+    if [ "$base" = "libfreerdp3.so" ] && [ -n "$LLVM_STRINGS" ] &&
+       "$LLVM_STRINGS" "$lib" 2>/dev/null | grep -qE '^Build type:[[:space:]]*Debug([[:space:]]|$)'; then
+        echo "  !! refusing $base: embedded FreeRDP Build type is Debug" >&2
+        return 1
+    fi
+
+    printf '0x%x' "$min_align"
+}
 
 stage_built_libraries() {
     local abi="$1"
@@ -357,17 +526,28 @@ stage_built_libraries() {
     local triple="$3"
     local -a name_expr=()
     local -a search_roots=()
+    local -a model_roots=()
     local -A newest=()
-    local model config_hash config_dir obj_dir stage_dir
+    local opt_dir model hash_dir opt_tag config_hash config_dir obj_dir stage_dir
     local lib stamp src name libcxx_source staged_count root_real dst_real
-    local need16 alignment_failed align
+    local need16 validation_failed
 
-    # AGP keeps old CMake configuration hashes indefinitely. Select the configuration model that
-    # the just-finished build invocation actually refreshed, then search only that hash. Searching
-    # merged_native_libs or every .cxx hash by mtime can select a newer packaging copy from an old
-    # native configuration and silently create an ABI-mismatched stack.
+    # AGP keeps old CMake configuration hashes indefinitely. Select the Release/RelWithDebInfo
+    # configuration model that the just-finished build invocation actually refreshed (explicitly
+    # excluding Debug), then search only that hash. Searching merged_native_libs or every .cxx
+    # hash by mtime can select a newer packaging copy from an old native configuration and
+    # silently create an ABI-mismatched stack.
+    for opt_dir in RelWithDebInfo Release; do
+        if [ -d "$PROJECT_ROOT/core-rdp/build/intermediates/cxx/$opt_dir" ]; then
+            model_roots+=("$PROJECT_ROOT/core-rdp/build/intermediates/cxx/$opt_dir")
+        fi
+    done
+    if [ "${#model_roots[@]}" -eq 0 ]; then
+        echo "  !! active AGP native Release/RelWithDebInfo build directory not found for $abi" >&2
+        return 1
+    fi
     model=$(
-        find "$PROJECT_ROOT/core-rdp/build/intermediates/cxx/Debug" -type f \
+        find "${model_roots[@]}" -type f \
             -path "*/logs/$abi/build_model.json" -printf '%T@\t%p\n' 2>/dev/null |
             sort -t $'\t' -k1,1nr |
             head -1 |
@@ -377,11 +557,13 @@ stage_built_libraries() {
         echo "  !! active AGP native build model not found for $abi" >&2
         return 1
     fi
-    config_hash=$(basename "$(dirname "$(dirname "$(dirname "$model")")")")
-    config_dir="$PROJECT_ROOT/core-rdp/.cxx/Debug/$config_hash/$abi"
-    obj_dir="$PROJECT_ROOT/core-rdp/build/intermediates/cxx/Debug/$config_hash/obj/$abi"
+    hash_dir=$(dirname "$(dirname "$(dirname "$model")")")
+    config_hash=$(basename "$hash_dir")
+    opt_tag=$(basename "$(dirname "$hash_dir")")
+    config_dir="$PROJECT_ROOT/core-rdp/.cxx/$opt_tag/$config_hash/$abi"
+    obj_dir="$PROJECT_ROOT/core-rdp/build/intermediates/cxx/$opt_tag/$config_hash/obj/$abi"
     if [ ! -d "$config_dir" ]; then
-        echo "  !! active CMake output directory not found for $abi ($config_hash)" >&2
+        echo "  !! active CMake output directory not found for $abi ($opt_tag/$config_hash)" >&2
         return 1
     fi
     search_roots=("$config_dir")
@@ -414,7 +596,7 @@ stage_built_libraries() {
         if [ -n "$src" ]; then
             cp -Lv "$src" "$stage_dir/"
         else
-            echo "  !! $lib NOT FOUND for $abi in active config $config_hash" >&2
+            echo "  !! $lib NOT FOUND for $abi in active config $opt_tag/$config_hash" >&2
             rm -rf "$stage_dir"
             return 1
         fi
@@ -435,24 +617,25 @@ stage_built_libraries() {
         return 1
     fi
 
-    # Validate the temporary set before replacing the last known-good jniLibs. A failed ELF or
-    # 64-bit 16 KB alignment check must not publish a broken release merely because the script
-    # detects the problem immediately afterwards.
-    if [ -z "$READELF" ]; then
-        echo "  !! llvm-readelf not found; refusing to publish unverified native libraries" >&2
+    # Validate tools, strip debug sections from staged Release libraries, and verify ELF security
+    # headers, Release flags (no __assert2 / no Debug build type), and all PT_LOAD alignments
+    # before replacing the last known-good jniLibs.
+    if [ -z "$READELF" ] || [ -z "$STRIP" ] || [ -z "$LLVM_NM" ]; then
+        echo "  !! llvm-readelf/llvm-strip/llvm-nm not found; refusing to publish unverified native libraries" >&2
         rm -rf "$stage_dir"
         return 1
     fi
+    chmod u+w "$stage_dir"/*.so
+    "$STRIP" --strip-unneeded "$stage_dir"/*.so
+
     case "$abi" in arm64-v8a|x86_64) need16=1 ;; *) need16=0 ;; esac
-    alignment_failed=0
+    validation_failed=0
     for lib in "$stage_dir"/*.so; do
-        align=$("$READELF" -l "$lib" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
-        if [ -z "$align" ] || { [ "$need16" -eq 1 ] && [ "$align" != "0x4000" ]; }; then
-            echo "  !! refusing invalid/alignment-incompatible $(basename "$lib"): ${align:-no LOAD}" >&2
-            alignment_failed=1
+        if ! validate_elf_library "$lib" "$need16" >/dev/null; then
+            validation_failed=1
         fi
     done
-    if [ "$alignment_failed" -ne 0 ]; then
+    if [ "$validation_failed" -ne 0 ]; then
         rm -rf "$stage_dir"
         return 1
     fi
@@ -473,27 +656,30 @@ stage_built_libraries() {
 
 invalidate_freerdp_build_stamps() {
     local abi="$1"
-    local cxx_root="$PROJECT_ROOT/core-rdp/.cxx/Debug"
-    local stamp_root stamp root_real stamp_real
+    local opt_dir cxx_root stamp_root stamp root_real stamp_real
 
-    root_real=$(realpath -m "$cxx_root")
-    while IFS= read -r stamp_root; do
-        stamp_real=$(realpath -m "$stamp_root")
-        case "$stamp_real" in
-            "$root_real"/*/"$abi"/freerdp-prefix/src/freerdp-stamp) ;;
-            *)
-                echo "  !! refusing unexpected FreeRDP stamp directory: $stamp_real" >&2
-                return 1
-                ;;
-        esac
-        for stamp in freerdp-build freerdp-install freerdp-done; do
-            rm -f -- "$stamp_root/$stamp"
-        done
-        echo "  Invalidated cached FreeRDP build/install stamps for $abi."
-    done < <(
-        find "$cxx_root" -type d \
-            -path "*/$abi/freerdp-prefix/src/freerdp-stamp" -print 2>/dev/null
-    )
+    for opt_dir in RelWithDebInfo Release; do
+        cxx_root="$PROJECT_ROOT/core-rdp/.cxx/$opt_dir"
+        [ -d "$cxx_root" ] || continue
+        root_real=$(realpath -m "$cxx_root")
+        while IFS= read -r stamp_root; do
+            stamp_real=$(realpath -m "$stamp_root")
+            case "$stamp_real" in
+                "$root_real"/*/"$abi"/freerdp-prefix/src/freerdp-stamp) ;;
+                *)
+                    echo "  !! refusing unexpected FreeRDP stamp directory: $stamp_real" >&2
+                    return 1
+                    ;;
+            esac
+            for stamp in freerdp-build freerdp-install freerdp-done; do
+                rm -f -- "$stamp_root/$stamp"
+            done
+            echo "  Invalidated cached FreeRDP build/install stamps for $abi ($opt_dir)."
+        done < <(
+            find "$cxx_root" -type d \
+                -path "*/$abi/freerdp-prefix/src/freerdp-stamp" -print 2>/dev/null
+        )
+    done
 }
 
 # 7. Build each ABI in its own gradle invocation, then stage its .so
@@ -504,7 +690,7 @@ for ABI in $ABIS; do
         exit 1
     fi
 
-    step "Building native for $ABI  (gradle :core-rdp:externalNativeBuildDebug -PnativeAbi=$ABI)"
+    step "Building native for $ABI  (gradle :core-rdp:externalNativeBuildRelease -PnativeAbi=$ABI)"
     # Pre-seed so the very first attempt skips the network (works when the ABI's .cxx dir
     # already exists). If a fresh ABI still hits a download, seed again post-failure (the
     # ExternalProject dirs exist by then) and retry once — the retry resumes from the failed
@@ -515,11 +701,11 @@ for ABI in $ABIS; do
     # Invalidate only the active ABI's build/install completion markers so every explicit rebuild
     # relinks the audited source instead of silently restaging an older library set.
     invalidate_freerdp_build_stamps "$ABI"
-    if ! ./gradlew :core-rdp:externalNativeBuildDebug -PnativeAbi="$ABI" \
+    if ! ./gradlew :core-rdp:externalNativeBuildRelease -PnativeAbi="$ABI" \
             --no-configuration-cache --console=plain --no-daemon; then
         echo "  >> first attempt failed — re-seeding download cache and retrying once"
         seed_tarballs "$ABI"
-        ./gradlew :core-rdp:externalNativeBuildDebug -PnativeAbi="$ABI" \
+        ./gradlew :core-rdp:externalNativeBuildRelease -PnativeAbi="$ABI" \
             --no-configuration-cache --console=plain --no-daemon
     fi
 
@@ -528,22 +714,28 @@ for ABI in $ABIS; do
     step "Staging .so into jniLibs/$ABI/"
     stage_built_libraries "$ABI" "$DST" "$TRIPLE"
 
-    # Verify LOAD alignment. 16 KB (0x4000) is REQUIRED for 64-bit ABIs on Android 15+;
-    # 32-bit ABIs (armeabi-v7a, x86) do not require it. Invalid ELF output fails every ABI.
+    # Verify all PT_LOAD alignments, GNU_RELRO, non-exec GNU_STACK, stripped debug sections, and
+    # Release flags. 16 KB (0x4000) is REQUIRED on every PT_LOAD segment for 64-bit ABIs on
+    # Android 15+; 32-bit ABIs (armeabi-v7a, x86) do not require it.
     if [ -n "$READELF" ]; then
-        step "LOAD alignment check — $ABI"
+        step "ELF Release & LOAD alignment check — $ABI"
         case "$ABI" in arm64-v8a|x86_64) NEED16=1 ;; *) NEED16=0 ;; esac
         ALIGNMENT_FAILED=0
         for f in "$DST"/*.so; do
-            align=$("$READELF" -l "$f" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
-            if [ "$align" = "0x4000" ]; then status=OK
-            elif [ -z "$align" ]; then status="!! invalid ELF or missing LOAD segment"; ALIGNMENT_FAILED=1
-            elif [ "$NEED16" = 0 ]; then status="$align (32-bit, 16 KB not required)"
-            else status="!! NOT 16KB ($align)"; ALIGNMENT_FAILED=1; fi
+            if align=$(validate_elf_library "$f" "$NEED16"); then
+                if [ "$((align))" -ge 16384 ]; then
+                    status="OK (min PT_LOAD=$align)"
+                else
+                    status="$align (32-bit, 16 KB not required)"
+                fi
+            else
+                status="!! ELF validation failed"
+                ALIGNMENT_FAILED=1
+            fi
             printf '  %-26s %s\n' "$(basename "$f")" "$status"
         done
         if [ "$ALIGNMENT_FAILED" -ne 0 ]; then
-            echo "  !! native alignment validation failed for $ABI" >&2
+            echo "  !! native ELF/alignment validation failed for $ABI" >&2
             exit 1
         fi
     else

@@ -1,6 +1,8 @@
 package com.hanfengruyue.pocketrdp.core.data.preferences
 
 import android.content.Context
+import android.content.res.Configuration
+import android.os.LocaleList
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -162,6 +164,17 @@ val SUPPORTED_LANGUAGE_TAGS = setOf(
 
 fun sanitizeLanguageTag(tag: String?): String =
     tag?.trim()?.takeIf { it in SUPPORTED_LANGUAGE_TAGS } ?: LANGUAGE_SYSTEM
+
+fun Context.localizedContextForLanguageTag(languageTag: String): Context {
+    val trimmed = languageTag.trim()
+    if (trimmed.isEmpty() || trimmed == LANGUAGE_SYSTEM) {
+        return this
+    }
+    val config = Configuration(resources.configuration).apply {
+        setLocales(LocaleList.forLanguageTags(trimmed))
+    }
+    return createConfigurationContext(config)
+}
 
 const val MAX_FUNCTION_TOOLBAR_QUICK_IDS = 32
 const val TOOLBAR_ID_SEPARATOR = ","

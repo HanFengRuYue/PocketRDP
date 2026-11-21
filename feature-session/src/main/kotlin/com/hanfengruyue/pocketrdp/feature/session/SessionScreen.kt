@@ -70,27 +70,36 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardHide
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.OpenWith
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarDuration
@@ -123,6 +132,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
@@ -143,8 +153,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -165,7 +177,6 @@ import com.hanfengruyue.pocketrdp.core.data.preferences.DEFAULT_FUNCTION_TOOLBAR
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.data.preferences.MIN_SIMULATED_CURSOR_SCALE
-import com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
@@ -179,11 +190,52 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 internal fun shouldDismissIme(event: Lifecycle.Event): Boolean = event == Lifecycle.Event.ON_PAUSE
+
+internal fun shouldShowConnectingOverlay(
+    status: SessionConnectionStatus,
+    hasPublishedFrame: Boolean,
+): Boolean = when (status) {
+    SessionConnectionStatus.Connecting,
+    SessionConnectionStatus.Reconnecting,
+    -> true
+    SessionConnectionStatus.Connected -> !hasPublishedFrame
+    SessionConnectionStatus.Idle,
+    is SessionConnectionStatus.Disconnected,
+    is SessionConnectionStatus.Failed,
+    -> false
+}
+
+internal fun shouldShowTerminalStatusOverlay(
+    status: SessionConnectionStatus,
+    hasActiveModalPrompt: Boolean,
+): Boolean {
+    val isTerminal = status is SessionConnectionStatus.Failed ||
+        status is SessionConnectionStatus.Disconnected
+    return !hasActiveModalPrompt && isTerminal
+}
+
+internal data class ImeInsetSyncState(
+    val wasShown: Boolean = false,
+    val shouldDismiss: Boolean = false,
+)
+
+internal fun stepImeInsetSync(
+    imeVisible: Boolean,
+    imeBottomPx: Int,
+    wasShown: Boolean,
+): ImeInsetSyncState = when {
+    !imeVisible -> ImeInsetSyncState(wasShown = false, shouldDismiss = false)
+    imeBottomPx > 0 -> ImeInsetSyncState(wasShown = true, shouldDismiss = false)
+    wasShown -> ImeInsetSyncState(wasShown = false, shouldDismiss = true)
+    else -> ImeInsetSyncState(wasShown = false, shouldDismiss = false)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -204,7 +256,8 @@ fun SessionScreen(
     val toolbarBg = Color.Black.copy(alpha = toolbarAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
     val controlBg = Color.Black.copy(alpha = controlAlpha.coerceIn(MIN_CHROME_ALPHA, MAX_CHROME_ALPHA))
     val simulatedCursorScale = cursorScale.coerceIn(MIN_SIMULATED_CURSOR_SCALE, MAX_SIMULATED_CURSOR_SCALE)
-    val chromeFrameTick = remember { mutableStateOf(0L) }
+    val hasPublishedFrame by rdpClient.buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
+    val glassBackdropState = remember { mutableStateOf<GlassBackdropFrame?>(null) }
     val chromeViewportSize = remember { mutableStateOf(IntSize.Zero) }
     val chromeViewportTopInRoot = remember { mutableStateOf(0f) }
     val chromeViewportPositionOnScreen = remember { mutableStateOf(Offset.Zero) }
@@ -233,13 +286,23 @@ fun SessionScreen(
             localNetworkPermissionLauncher.launch(ACCESS_LOCAL_NETWORK_PERMISSION)
         }
     }
-    LaunchedEffect(rdpClient) {
-        // The glass chrome is decorative and must not route every remote frame through Compose.
-        // frameUpdates is already conflated; delaying the collector samples only when new content
-        // exists and caps chrome recomposition at a low frequency. RdpSurface continues drawing the
-        // actual desktop independently at its configured frame rate.
+    val canSampleGlassBackdrop = hasPublishedFrame && state.status is SessionConnectionStatus.Connected
+    LaunchedEffect(rdpClient, canSampleGlassBackdrop) {
+        if (!canSampleGlassBackdrop) {
+            glassBackdropState.value = null
+            return@LaunchedEffect
+        }
+        suspend fun refreshBackdrop() {
+            val snap = withContext(Dispatchers.Default) {
+                rdpClient.buffer.snapshot(GLASS_BACKDROP_MAX_DIM)
+            }
+            glassBackdropState.value = snap?.let { GlassBackdropFrame(it.width, it.height, it.asImageBitmap()) }
+        }
+        // Decorative low-frequency snapshot captured off the main thread so glass chrome never
+        // retains a live double-buffer bitmap across frame swaps or after disconnect.
+        refreshBackdrop()
         rdpClient.frameUpdates.collect {
-            chromeFrameTick.value++
+            refreshBackdrop()
             delay(GLASS_SAMPLE_INTERVAL_MS)
         }
     }
@@ -304,10 +367,9 @@ fun SessionScreen(
     // could miss continuous control updates — the transform froze until the interaction ended.)
     val chromeTransformState = controller.userTransform.collectAsStateWithLifecycle()
     val floatingGlassContext = FloatingGlassContext(
-        buffer = rdpClient.buffer,
+        backdropState = glassBackdropState,
         viewportSize = chromeViewportSize.value,
         viewportPositionOnScreen = chromeViewportPositionOnScreen.value,
-        frameTick = chromeFrameTick,
         transformState = chromeTransformState,
     )
 
@@ -327,11 +389,12 @@ fun SessionScreen(
         ic.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         ic.hide(WindowInsetsCompat.Type.systemBars())
     }
-    // Restore system bars when SessionScreen leaves composition (back to connection list).
-    DisposableEffect(insetsController) {
+    // Restore system bars and dismiss the IME when SessionScreen leaves composition.
+    DisposableEffect(insetsController, viewModel) {
         onDispose {
             insetsController?.show(WindowInsetsCompat.Type.systemBars())
-            insetsController?.show(WindowInsetsCompat.Type.ime())
+            insetsController?.hide(WindowInsetsCompat.Type.ime())
+            viewModel.setImeVisible(false)
         }
     }
 
@@ -416,11 +479,19 @@ fun SessionScreen(
         )
     }
 
+    state.pendingCredentialsPrompt?.let { prompt ->
+        CredentialsPromptDialog(
+            prompt = prompt,
+            onSubmit = viewModel::submitCredentials,
+            onCancel = viewModel::cancelCredentials,
+        )
+    }
+
     // --- All Files Access for folder redirection (整盘共享) ---
     // When the connection has 文件夹重定向 on but the app lacks MANAGE_EXTERNAL_STORAGE, the remote
     // "PocketRDP" drive (= the whole internal storage) shows empty. Prompt contextually once per
-    // session to grant it. The drive is mounted from the /drive flag at connect time, so granting
-    // mid-session needs a reconnect — the dialog says so.
+    // session to grant it. Returning after granting automatically resumes connecting; choosing
+    // "Not now" continues connecting without folder redirection.
     LaunchedEffect(state.status, state.filesRedirectEnabled, state.allFilesAccessRequired) {
         if ((state.allFilesAccessRequired || state.status is SessionConnectionStatus.Connected) &&
             state.filesRedirectEnabled && !allFilesPromptShown &&
@@ -436,7 +507,10 @@ fun SessionScreen(
                 showAllFilesDialog = false
                 openAllFilesAccessSettings(context)
             },
-            onDismiss = { showAllFilesDialog = false },
+            onDismiss = {
+                showAllFilesDialog = false
+                viewModel.dismissAllFilesAccessAndContinueWithoutDrive()
+            },
         )
     }
 
@@ -461,9 +535,8 @@ fun SessionScreen(
                     },
                 ) {
                     GlassChromeBackground(
-                        buffer = rdpClient.buffer,
+                        backdropState = glassBackdropState,
                         viewportSize = chromeViewportSize.value,
-                        frameTick = chromeFrameTick,
                         transformState = chromeTransformState,
                         chromeTopPx = topChromeTopInRoot.value - chromeViewportTopInRoot.value,
                         containerColor = toolbarBg,
@@ -500,6 +573,7 @@ fun SessionScreen(
                                 glassViewportSize = chromeViewportSize.value,
                                 glassViewportPositionOnScreen = chromeViewportPositionOnScreen.value,
                                 glassTransformState = chromeTransformState,
+                                onReconnect = viewModel::reconnect,
                                 onErrorClick = {
                                     val err = state.lastError ?: return@SessionStatusTitle
                                     scope.launch {
@@ -518,10 +592,20 @@ fun SessionScreen(
                             }
                         },
                         actions = {
-                    IconButton(
-                        onClick = viewModel::toggleIme,
-                        enabled = state.status is SessionConnectionStatus.Connected,
-                    ) {
+                            if (state.status is SessionConnectionStatus.Failed ||
+                                state.status is SessionConnectionStatus.Disconnected
+                            ) {
+                                IconButton(onClick = viewModel::reconnect) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = stringResource(R.string.session_action_reconnect),
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = viewModel::toggleIme,
+                                enabled = state.status is SessionConnectionStatus.Connected,
+                            ) {
                                 Icon(
                                     imageVector = if (state.imeVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
                                     contentDescription = stringResource(R.string.session_cd_keyboard),
@@ -616,6 +700,22 @@ fun SessionScreen(
                 onFramePresented = rdpClient::recordPresentLag,
             )
 
+            val hasModalPrompt = state.pendingCertificate != null ||
+                state.pendingCredentialsPrompt != null ||
+                showAllFilesDialog
+            val hasAnyPrompt = hasModalPrompt || showLocalNetworkPermissionDialog
+            if (shouldShowConnectingOverlay(state.status, hasPublishedFrame)) {
+                ConnectingFrameOverlay(
+                    isReconnecting = state.status is SessionConnectionStatus.Reconnecting,
+                )
+            } else if (shouldShowTerminalStatusOverlay(state.status, hasAnyPrompt)) {
+                SessionTerminalStatusOverlay(
+                    status = state.status,
+                    onReconnect = viewModel::reconnect,
+                    onClose = onClose,
+                )
+            }
+
             // Immersive exit affordance: a translucent FAB sitting above the framebuffer in
             // the top-right corner. Only visible when system bars are hidden — otherwise
             // the TopAppBar already has the full-screen toggle.
@@ -648,68 +748,26 @@ fun SessionScreen(
                 }
             }
 
-            // Local zoom pill (BOTH input modes) + move handle (native-touch only — see below).
-            // Wrapped in a fillMaxSize box with imePadding() so that when the soft keyboard is up they
-            // relocate into the still-visible strip ABOVE the keyboard (and the function-key toolbar)
-            // instead of being hidden — the user can still zoom the picture WHILE typing, and pan it
-            // too: in TOUCH mode via the move handle, in TRACKPAD mode via the keyboard-aware cursor-
-            // follow (用户需求: 呼出键盘时也能缩放和移动画面). imePadding() collapses to 0 when no keyboard is shown, so the off-keyboard
-            // layout is unchanged; it is a layout-phase inset read (not a composable-body read) so the
-            // keyboard animation re-lays-out only this overlay box, never SessionCanvas. The box has no
-            // pointerInput, so its empty area doesn't intercept gestures — only the controls do (each
-            // consumes its own pointer). Each control collects userTransform itself, so a zoom/pan
-            // recomposes only the small overlay, never the framebuffer.
-            // Track the overlay box's (imePadding-shrunk) size so the relocatable zoom pill can be
-            // clamped to stay reachable inside it even after a keyboard/rotation reflow.
-            var overlaySize by remember { mutableStateOf(IntSize.Zero) }
-            Box(
-                modifier = Modifier.fillMaxSize().imePadding().onSizeChanged { overlaySize = it },
-            ) {
-                ZoomControls(
-                    controller = controller,
-                    containerSize = overlaySize,
-                    containerColor = controlBg,
-                    glass = floatingGlassContext,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .windowInsetsPadding(WindowInsets.displayCutout)
-                        .padding(12.dp),
-                )
-
-                // Move handle: drag it to pan the magnified picture; long-press it then drag to relocate
-                // the handle itself (so it doesn't cover what you want to tap). Shown ONLY in native-touch
-                // mode — including while the keyboard is up. In TRACKPAD mode the picture instead auto-
-                // follows the virtual cursor (RdpInputController.followCursorWhenZoomed), which is now
-                // keyboard-aware: it pans even at 100% zoom while the keyboard has lifted the picture and
-                // keeps the cursor in the visible band above the keyboard, so dragging the cursor already
-                // pans and the handle would just fight it. Keep it hidden in TRACKPAD, keyboard or not
-                // (用户需求: 模拟鼠标模式下呼出键盘仍用光标跟随移动画面，不要切成移动杆). TOUCH mode has no
-                // cursor to follow, so the handle stays the way to pan there (PanHandle shows itself only
-                // while zoomed or keyboard-lifted).
-                if (state.mode == InputMode.TOUCH) {
-                    PanHandle(
-                        controller = controller,
-                        containerSize = overlaySize,
-                        containerColor = controlBg,
-                        glass = floatingGlassContext,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-            }
-
-            // Function-key toolbar (a single scrollable row: Esc / Ctrl / Alt / Shift / Win / Tab /
-            // arrows / Home·End·PgUp·PgDn / Ins·Del / CAD / F1–F12): shown only while the soft keyboard is up. It
-            // FLOATS as a BOTTOM OVERLAY (imePadding lifts it just above the keyboard) instead of being
-            // a Column sibling — being a sibling is exactly what shrank the canvas and reset the
-            // zoom/pan (see the SessionCanvas comment above). As an overlay it sits on top of the
-            // full-screen gesture surface, so SessionToolbar consumes its own touches to stop taps (and
-            // the gaps between chips) leaking through to the canvas beneath.
-            // Its measured visual height feeds ImeLiftEffect so the keyboard-lift clears the toolbar
-            // too. Read via a lambda inside ImeLiftEffect so a height change doesn't recompose
-            // SessionCanvas (keeps the per-frame ime read isolated).
             val functionToolbarHeightPx = remember { mutableIntStateOf(0) }
+            val toolbarVisible = state.imeVisible && state.chromeVisible
+            FloatingSessionControlsOverlay(
+                controller = controller,
+                mode = state.mode,
+                containerColor = controlBg,
+                glass = floatingGlassContext,
+                toolbarVisible = toolbarVisible,
+                toolbarHeightPx = { functionToolbarHeightPx.intValue },
+            )
+
+            val toolbarGlassChrome = ToolbarGlassChrome(
+                backdropState = glassBackdropState,
+                viewportSize = chromeViewportSize.value,
+                viewportTopInRoot = chromeViewportTopInRoot.value,
+                transformState = chromeTransformState,
+                containerColor = toolbarBg,
+            )
             AnimatedVisibility(
-                visible = state.imeVisible && state.chromeVisible,
+                visible = toolbarVisible,
                 enter = slideInVertically { it } + fadeIn(),
                 exit = slideOutVertically { it } + fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter),
@@ -717,38 +775,82 @@ fun SessionScreen(
                 SessionToolbar(
                     viewModel = viewModel,
                     state = state,
-                    buffer = rdpClient.buffer,
-                    viewportSize = chromeViewportSize.value,
-                    viewportTopInRoot = chromeViewportTopInRoot.value,
-                    frameTick = chromeFrameTick,
-                    transformState = chromeTransformState,
-                    containerColor = toolbarBg,
+                    glassChrome = toolbarGlassChrome,
                     onBarHeightChanged = { functionToolbarHeightPx.intValue = it },
                 )
             }
 
             // Feeds the soft-keyboard (+ function-key toolbar) height into the controller so the
-            // framebuffer is lifted just clear of it while typing — see ImeLiftEffect.
+            // framebuffer is lifted just clear of it while typing, and observes external IME
+            // dismissal (Back / keyboard collapse button) to keep imeVisible in sync.
             ImeLiftEffect(
                 controller = controller,
                 chromeVisible = state.chromeVisible,
+                imeVisible = state.imeVisible,
                 toolbarHeightPx = { functionToolbarHeightPx.intValue },
+                onExternalImeDismiss = { viewModel.setImeVisible(false) },
             )
 
-            // Hidden IME bridge — Compose tree always contains it, but it only owns focus while
-            // state.imeVisible is true. Hiding it releases focus so Android cannot restore the IME
-            // after a background/foreground transition without another explicit button tap.
+            val captureHardwareKeys = state.status is SessionConnectionStatus.Connected &&
+                !hasAnyPrompt &&
+                !showBatteryDialog
+            // Hidden IME + hardware keyboard bridge: BasicTextField owns focus only while
+            // state.imeVisible is true; when hidden, a plain non-text focusable node captures
+            // physical Bluetooth/USB keyboards without opening the soft keyboard.
             SessionImeBridge(
                 visible = state.imeVisible,
                 onUnicodeText = viewModel::typeText,
                 onVkKey = viewModel::sendVkRaw,
+                stickyModifiers = state.stickyModifiers,
+                captureHardwareKeys = captureHardwareKeys,
             )
         }
     }
 }
 
 @Composable
-private fun ConnectingFrameOverlay() {
+private fun FloatingSessionControlsOverlay(
+    controller: RdpInputController,
+    mode: InputMode,
+    containerColor: Color,
+    glass: FloatingGlassContext,
+    toolbarVisible: Boolean,
+    toolbarHeightPx: () -> Int,
+) {
+    val density = LocalDensity.current
+    val activeToolbarHeightPx = if (toolbarVisible) toolbarHeightPx() else 0
+    val toolbarBottomPadding = with(density) { activeToolbarHeightPx.toDp() }
+    var overlaySize by remember { mutableStateOf(IntSize.Zero) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(bottom = toolbarBottomPadding)
+            .windowInsetsPadding(WindowInsets.displayCutout)
+            .padding(FLOATING_CONTROLS_EDGE_PADDING)
+            .onSizeChanged { overlaySize = it },
+    ) {
+        ZoomControls(
+            controller = controller,
+            containerSize = overlaySize,
+            containerColor = containerColor,
+            glass = glass,
+            modifier = Modifier.align(Alignment.CenterEnd),
+        )
+        if (mode == InputMode.TOUCH) {
+            PanHandle(
+                controller = controller,
+                containerSize = overlaySize,
+                containerColor = containerColor,
+                glass = glass,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectingFrameOverlay(isReconnecting: Boolean) {
     val transition = rememberInfiniteTransition(label = "session-frame-loading")
     val pulseAlpha by transition.animateFloat(
         initialValue = 0.34f,
@@ -762,6 +864,11 @@ private fun ConnectingFrameOverlay() {
         animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
         label = "session-frame-loading-scale",
     )
+    val messageRes = if (isReconnecting) {
+        R.string.session_reconnecting_remote_frame
+    } else {
+        R.string.session_loading_remote_frame
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -803,13 +910,180 @@ private fun ConnectingFrameOverlay() {
                     )
                 }
                 Text(
-                    text = stringResource(R.string.session_loading_remote_frame),
+                    text = stringResource(messageRes),
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
     }
+}
+
+@Composable
+private fun SessionTerminalStatusOverlay(
+    status: SessionConnectionStatus,
+    onReconnect: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val isFailed = status is SessionConnectionStatus.Failed
+    val title = if (isFailed) {
+        stringResource(R.string.session_status_failed)
+    } else {
+        val reason = (status as? SessionConnectionStatus.Disconnected)?.reason
+        val reasonLabel = when (reason) {
+            "user" -> stringResource(R.string.session_status_disconnected_user)
+            null -> stringResource(R.string.session_status_unknown_reason)
+            else -> reason
+        }
+        stringResource(R.string.session_status_disconnected, reasonLabel)
+    }
+    val detail = (status as? SessionConnectionStatus.Failed)?.error
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = TERMINAL_OVERLAY_SCRIM_ALPHA))
+            .consumeAllPointerInput()
+            .padding(horizontal = 24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = TERMINAL_OVERLAY_MAX_WIDTH),
+            shape = RoundedCornerShape(18.dp),
+            color = Color.Black.copy(alpha = TERMINAL_OVERLAY_CARD_ALPHA),
+            contentColor = Color.White,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = TERMINAL_OVERLAY_BORDER_ALPHA)),
+        ) {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = if (isFailed) Icons.Default.ErrorOutline else Icons.Default.LinkOff,
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp),
+                    tint = if (isFailed) MaterialTheme.colorScheme.error else Color.White,
+                )
+                Text(
+                    text = title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                )
+                if (!detail.isNullOrBlank()) {
+                    Text(
+                        text = detail,
+                        color = Color.White.copy(alpha = TERMINAL_OVERLAY_DETAIL_ALPHA),
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(onClick = onClose) {
+                        Text(
+                            text = stringResource(R.string.session_action_close),
+                            color = Color.White,
+                        )
+                    }
+                    Button(onClick = onReconnect) {
+                        Text(text = stringResource(R.string.session_action_reconnect))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CredentialsPromptDialog(
+    prompt: CredentialsPromptState,
+    onSubmit: (username: String, domain: String, password: String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var username by remember(prompt) { mutableStateOf(prompt.initialUsername) }
+    var domain by remember(prompt) { mutableStateOf(prompt.initialDomain) }
+    var password by remember(prompt) { mutableStateOf("") }
+    var passwordVisible by remember(prompt) { mutableStateOf(false) }
+    val message = if (prompt.host.isNotBlank()) {
+        stringResource(R.string.session_credentials_message, prompt.host)
+    } else {
+        stringResource(R.string.session_credentials_message_generic)
+    }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(stringResource(R.string.session_credentials_title)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(message)
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text(stringResource(R.string.session_credentials_username)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = domain,
+                    onValueChange = { domain = it },
+                    label = { Text(stringResource(R.string.session_credentials_domain)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text(stringResource(R.string.session_credentials_password)) },
+                    singleLine = true,
+                    visualTransformation = if (passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        autoCorrectEnabled = false,
+                    ),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Default.VisibilityOff
+                                } else {
+                                    Icons.Default.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.session_credentials_hide_password
+                                    } else {
+                                        R.string.session_credentials_show_password
+                                    },
+                                ),
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSubmit(username.trim(), domain.trim(), password) }) {
+                Text(stringResource(R.string.session_credentials_connect))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.session_toolbar_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -884,7 +1158,10 @@ private fun CertificateTrustDialog(
         onDismissRequest = onReject,
         title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text(message)
                 Text(
                     stringResource(
@@ -971,15 +1248,36 @@ private const val GLASS_HIGHLIGHT_ALPHA = 0.14f
 private const val GLASS_SHADOW_ALPHA = 0.16f
 private const val GLASS_TINT_MULTIPLIER = 0.58f
 private const val GLASS_SAMPLE_INTERVAL_MS = 250L
+private const val GLASS_BACKDROP_MAX_DIM = 480
+private const val TERMINAL_OVERLAY_SCRIM_ALPHA = 0.58f
+private const val TERMINAL_OVERLAY_CARD_ALPHA = 0.84f
+private const val TERMINAL_OVERLAY_BORDER_ALPHA = 0.22f
+private const val TERMINAL_OVERLAY_DETAIL_ALPHA = 0.82f
+private val TERMINAL_OVERLAY_MAX_WIDTH = 360.dp
+private val FLOATING_CONTROLS_EDGE_PADDING = 12.dp
 private val GLASS_BACKDROP_MIN_BLUR_RADIUS = 0.dp
 private val GLASS_BACKDROP_MAX_BLUR_RADIUS = 10.dp
 private val EXIT_FULLSCREEN_CONTROL_SHAPE = RoundedCornerShape(12.dp)
+
+private data class GlassBackdropFrame(
+    val width: Int,
+    val height: Int,
+    val image: ImageBitmap,
+)
+
 private data class FloatingGlassContext(
-    val buffer: BitmapBuffer,
+    val backdropState: State<GlassBackdropFrame?>,
     val viewportSize: IntSize,
     val viewportPositionOnScreen: Offset,
-    val frameTick: State<Long>,
     val transformState: State<UserTransform>,
+)
+
+private data class ToolbarGlassChrome(
+    val backdropState: State<GlassBackdropFrame?>,
+    val viewportSize: IntSize,
+    val viewportTopInRoot: Float,
+    val transformState: State<UserTransform>,
+    val containerColor: Color,
 )
 private const val DEFAULT_CURSOR_HEIGHT = 26f
 private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
@@ -996,24 +1294,22 @@ private enum class GlassChromeEdge { Top, Bottom }
 
 @Composable
 private fun GlassChromeBackground(
-    buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
+    backdropState: State<GlassBackdropFrame?>,
     viewportSize: IntSize,
-    frameTick: State<Long>,
     transformState: State<UserTransform>,
     chromeTopPx: Float,
     containerColor: Color,
     edge: GlassChromeEdge,
     modifier: Modifier = Modifier,
 ) {
-    val tick = frameTick.value
-    val frame = remember(buffer, tick) { buffer.peekFront() }
+    val frame = backdropState.value
     val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
         .coerceIn(0f, 1f)
     val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
         (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
+    val hasViewport = viewportSize.width > 0 && viewportSize.height > 0
     Box(modifier = modifier) {
-        if (containerColor.alpha > 0f && frame != null && viewportSize.width > 0 && viewportSize.height > 0) {
-            val frameImage = remember(frame, tick) { frame.asImageBitmap() }
+        if (containerColor.alpha > 0f && frame != null && hasViewport) {
             Canvas(
                 modifier = Modifier
                     .matchParentSize()
@@ -1036,7 +1332,7 @@ private fun GlassChromeBackground(
                 val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
                 val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
                 drawImage(
-                    image = frameImage,
+                    image = frame.image,
                     srcOffset = IntOffset.Zero,
                     srcSize = IntSize(frame.width, frame.height),
                     dstOffset = IntOffset(
@@ -1115,10 +1411,25 @@ private fun Modifier.glassChromeTint(containerColor: Color, edge: GlassChromeEdg
 private fun ImeLiftEffect(
     controller: RdpInputController,
     chromeVisible: Boolean,
+    imeVisible: Boolean,
     toolbarHeightPx: () -> Int,
+    onExternalImeDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val currentOnExternalImeDismiss = rememberUpdatedState(onExternalImeDismiss)
+    var wasImeActuallyShown by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible, imeBottomPx) {
+        val next = stepImeInsetSync(
+            imeVisible = imeVisible,
+            imeBottomPx = imeBottomPx,
+            wasShown = wasImeActuallyShown,
+        )
+        wasImeActuallyShown = next.wasShown
+        if (next.shouldDismiss) {
+            currentOnExternalImeDismiss.value()
+        }
+    }
     // Add the function-key toolbar's height only while it actually shows (keyboard up AND chrome
     // visible) — it floats just above the keyboard, so the picture must clear both.
     val toolbarPx = if (imeBottomPx > 0 && chromeVisible) toolbarHeightPx().toFloat() else 0f
@@ -1176,7 +1487,6 @@ private fun SessionCanvas(
     onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
     val hasPublishedFrame by buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
-    var surfaceRef by remember { mutableStateOf<RdpSurface?>(null) }
     var viewSize by remember { mutableStateOf(0 to 0) }
     // Keep these as State<...> (NOT `by`): read .value ONLY inside the graphicsLayer / Canvas draw
     // lambdas below so a zoom/pan/cursor move re-records the layer/draw phase without recomposing
@@ -1231,17 +1541,12 @@ private fun SessionCanvas(
                     // Passive decode→present latency report (METRIC-1) — fired only when a new frame is
                     // drawn; never invalidates or touches the FPS counter.
                     surface.onFramePresented = onFramePresented
-                    surfaceRef = surface
                 }
             },
             update = { surface ->
                 surface.targetFrameRate = targetFrameRate
             },
         )
-
-        if (!hasPublishedFrame) {
-            ConnectingFrameOverlay()
-        }
 
         // Trackpad-mode cursor overlay. FreeRDP routes remote pointer shape changes here
         // (I-beam, resize handles, hand cursor, etc.); until the server sends one, draw
@@ -1263,11 +1568,6 @@ private fun SessionCanvas(
                     .userTransformLayer(transformState),
             )
         }
-    }
-
-    LaunchedEffect(buffer, surfaceRef) {
-        val surface = surfaceRef ?: return@LaunchedEffect
-        buffer.dirty.collect { rect -> surface.markDirty(rect) }
     }
 }
 
@@ -1357,8 +1657,6 @@ private val navigationKeyRows: List<List<ToolbarKeySpec>> = listOf(
     listOf(
         ToolbarKeySpec("key_ins", "Ins", ScancodeMap.VK.INSERT),
         ToolbarKeySpec("key_del", "Del", ScancodeMap.VK.DELETE),
-        ToolbarKeySpec("key_back", "Back", ScancodeMap.VK.BACK),
-        ToolbarKeySpec("key_enter", "Enter", ScancodeMap.VK.RETURN),
     ),
 )
 
@@ -1394,6 +1692,7 @@ private val commonChordKeyRows: List<List<ToolbarKeySpec>> = listOf(
         ToolbarKeySpec("key_space", "Space", ScancodeMap.VK.SPACE),
         ToolbarKeySpec("key_esc", "Esc", ScancodeMap.VK.ESCAPE),
         ToolbarKeySpec("key_tab", "Tab", ScancodeMap.VK.TAB),
+        ToolbarKeySpec("key_back", "Back", ScancodeMap.VK.BACK),
         ToolbarKeySpec("key_enter", "Enter", ScancodeMap.VK.RETURN),
     ),
 )
@@ -1518,6 +1817,16 @@ private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
     )
 }
 
+internal fun regularQuickPickerKeyIds(): List<String> =
+    (quickKeyRows + navigationKeyRows + functionKeyRows).flatten().map { it.id }
+
+internal fun chordBuilderKeyIds(): List<String> =
+    (letterKeyRows + numberKeyRows + commonChordKeyRows + navigationKeyRows + functionKeyRows)
+        .flatten()
+        .map { it.id }
+
+internal fun isKnownToolbarChordId(id: String): Boolean = parseToolbarChordAction(id) != null
+
 /**
  * Positions a sampled framebuffer backdrop behind an individual floating control. Unlike a plain
  * translucent container, this keeps the remote pixels spatially aligned with the control before
@@ -1557,10 +1866,7 @@ private fun FloatingGlassBackground(
     shape: Shape,
     modifier: Modifier = Modifier,
 ) {
-    val tick = glass.frameTick.value
-    val sampledFrame = remember(glass.buffer, tick) {
-        glass.buffer.peekFront()?.let { frame -> frame to frame.asImageBitmap() }
-    }
+    val frame = glass.backdropState.value
     val hasViewport = glass.viewportSize.width > 0 && glass.viewportSize.height > 0
     val canRenderBackdrop = containerColor.alpha > 0f && hasViewport
     val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
@@ -1568,8 +1874,7 @@ private fun FloatingGlassBackground(
     val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
         (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
     Box(modifier = modifier.clip(shape)) {
-        if (canRenderBackdrop && sampledFrame != null && controlPositionOnScreen != null) {
-            val (frame, frameImage) = sampledFrame
+        if (canRenderBackdrop && frame != null && controlPositionOnScreen != null) {
             Canvas(
                 modifier = Modifier
                     .matchParentSize()
@@ -1592,7 +1897,7 @@ private fun FloatingGlassBackground(
                 val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
                 val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
                 drawImage(
-                    image = frameImage,
+                    image = frame.image,
                     srcOffset = IntOffset.Zero,
                     srcSize = IntSize(frame.width, frame.height),
                     dstOffset = IntOffset(
@@ -1643,23 +1948,201 @@ private fun Modifier.floatingGlassTint(containerColor: Color, shape: Shape): Mod
  * long-pressing any regular key remains a shortcut for sending a one-shot chord.
  * The background layer consumes only the empty gaps so toolbar touches never leak into the session canvas.
  */
+private fun toolbarPanelEnterTransition() =
+    expandVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        expandFrom = Alignment.Bottom,
+    ) + slideInVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        initialOffsetY = { height -> height / TOOLBAR_PANEL_SLIDE_DIVISOR },
+    ) + fadeIn(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_FADE_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+    )
+
+private fun toolbarPanelExitTransition() =
+    shrinkVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        shrinkTowards = Alignment.Bottom,
+    ) + slideOutVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        targetOffsetY = { height -> height / 8 },
+    ) + fadeOut(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+    )
+
+private fun toolbarCompactRowEnterTransition() =
+    expandVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        expandFrom = Alignment.Bottom,
+    ) + slideInVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        initialOffsetY = { height -> height / 2 },
+    ) + fadeIn(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_FADE_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+    )
+
+private fun toolbarCompactRowExitTransition() =
+    shrinkVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        shrinkTowards = Alignment.Bottom,
+    ) + slideOutVertically(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+        targetOffsetY = { height -> height / 3 },
+    ) + fadeOut(
+        animationSpec = tween(
+            durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
+            easing = TOOLBAR_MOTION_EASING,
+        ),
+    )
+
+private data class SessionToolbarModeState(
+    val page: ToolbarPage,
+    val editingQuickRow: Boolean,
+    val addingQuickCombo: Boolean,
+    val comboTarget: ToolbarKeySpec?,
+    val comboMask: Int,
+)
+
+private data class SessionToolbarModeCallbacks(
+    val onPage: (ToolbarPage) -> Unit,
+    val onOpenCombo: (ToolbarKeySpec) -> Unit,
+    val onToggleComboModifier: (Int) -> Unit,
+    val onSetEditingQuickRow: (Boolean) -> Unit,
+    val onSetAddingQuickCombo: (Boolean) -> Unit,
+    val onClearComboTarget: () -> Unit,
+    val onCollapse: () -> Unit,
+)
+
+@Composable
+private fun SessionToolbarExpandedBody(
+    viewModel: SessionViewModel,
+    state: SessionUiState,
+    quickIds: List<String>,
+    modeState: SessionToolbarModeState,
+    callbacks: SessionToolbarModeCallbacks,
+) {
+    val target = modeState.comboTarget
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = TOOLBAR_SECTION_SPACING),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        when {
+            modeState.addingQuickCombo -> SavedToolbarChordBuilder(
+                existingIds = quickIds,
+                onAdd = { id ->
+                    if (quickIds.size < MAX_FUNCTION_TOOLBAR_QUICK_IDS && id !in quickIds) {
+                        viewModel.setFunctionToolbarQuickIds((quickIds + id).distinct())
+                        callbacks.onSetAddingQuickCombo(false)
+                        callbacks.onCollapse()
+                    }
+                },
+                onCancel = { callbacks.onSetAddingQuickCombo(false) },
+            )
+            modeState.editingQuickRow -> QuickToolbarEditor(
+                selectedIds = quickIds,
+                onApply = { ids ->
+                    viewModel.setFunctionToolbarQuickIds(ids)
+                    callbacks.onSetEditingQuickRow(false)
+                },
+                onDone = { callbacks.onSetEditingQuickRow(false) },
+            )
+            target != null -> ToolbarComboBuilder(
+                target = target,
+                selectedMask = modeState.comboMask,
+                onToggleModifier = callbacks.onToggleComboModifier,
+                onSend = {
+                    viewModel.sendKeyWithModifiers(target.vk, modeState.comboMask)
+                    callbacks.onCollapse()
+                },
+                onCancel = callbacks.onClearComboTarget,
+            )
+            else -> ToolbarExpandedPanel(
+                page = modeState.page,
+                state = state,
+                viewModel = viewModel,
+                actions = ToolbarExpandedActions(
+                    onPage = callbacks.onPage,
+                    onLongKey = callbacks.onOpenCombo,
+                    onEditQuickRow = { callbacks.onSetEditingQuickRow(true) },
+                    onAddQuickCombo = { callbacks.onSetAddingQuickCombo(true) },
+                    onMomentaryAction = callbacks.onCollapse,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolbarBackdropLayer(
+    glassChrome: ToolbarGlassChrome,
+    modifier: Modifier = Modifier,
+) {
+    var toolbarTopPx by remember { mutableStateOf(0f) }
+    Box(
+        modifier = modifier
+            .onGloballyPositioned { toolbarTopPx = it.positionInRoot().y - glassChrome.viewportTopInRoot }
+            .consumeAllPointerInput(),
+    ) {
+        GlassChromeBackground(
+            backdropState = glassChrome.backdropState,
+            viewportSize = glassChrome.viewportSize,
+            transformState = glassChrome.transformState,
+            chromeTopPx = toolbarTopPx,
+            containerColor = glassChrome.containerColor,
+            edge = GlassChromeEdge.Top,
+            modifier = Modifier.matchParentSize(),
+        )
+    }
+}
+
 @Composable
 private fun SessionToolbar(
     viewModel: SessionViewModel,
     state: SessionUiState,
-    buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
-    viewportSize: IntSize,
-    viewportTopInRoot: Float,
-    frameTick: State<Long>,
-    transformState: State<UserTransform>,
-    containerColor: Color,
+    glassChrome: ToolbarGlassChrome,
     onBarHeightChanged: (Int) -> Unit,
 ) {
     Box(
         modifier = Modifier.fillMaxWidth().imePadding(),
         contentAlignment = Alignment.BottomCenter,
     ) {
-        var toolbarTopPx by remember { mutableStateOf(0f) }
         var page by remember { mutableStateOf(ToolbarPage.QUICK) }
         var expanded by remember { mutableStateOf(false) }
         var editingQuickRow by remember { mutableStateOf(false) }
@@ -1676,163 +2159,50 @@ private fun SessionToolbar(
         val quickActions = sanitizeQuickToolbarActionIds(state.functionToolbarQuickIds)
             .mapNotNull { resolveToolbarAction(it) }
 
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .onGloballyPositioned {
-                    toolbarTopPx = it.positionInRoot().y - viewportTopInRoot
-                }
-                .consumeAllPointerInput(),
-        ) {
-            GlassChromeBackground(
-                buffer = buffer,
-                viewportSize = viewportSize,
-                frameTick = frameTick,
-                transformState = transformState,
-                chromeTopPx = toolbarTopPx,
-                containerColor = containerColor,
-                edge = GlassChromeEdge.Top,
-                modifier = Modifier.matchParentSize(),
-            )
-        }
+        ToolbarBackdropLayer(
+            glassChrome = glassChrome,
+            modifier = Modifier.matchParentSize(),
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .onSizeChanged { onBarHeightChanged(it.height) }
                 .padding(horizontal = 8.dp, vertical = 8.dp),
         ) {
+            // weight(1f, fill = false) ensures CompactToolbarRow (with its collapse button) is
+            // always measured first and stays visible even in short landscape IME viewports.
             AnimatedVisibility(
                 visible = expanded,
-                enter = expandVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    expandFrom = Alignment.Bottom,
-                ) + slideInVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    initialOffsetY = { height -> height / 6 },
-                ) + fadeIn(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_FADE_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                ),
-                exit = shrinkVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    shrinkTowards = Alignment.Bottom,
-                ) + slideOutVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    targetOffsetY = { height -> height / 8 },
-                ) + fadeOut(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                ),
+                modifier = Modifier.weight(1f, fill = false),
+                enter = toolbarPanelEnterTransition(),
+                exit = toolbarPanelExitTransition(),
             ) {
-                val target = comboTarget
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = TOOLBAR_EXPANDED_PANEL_MAX_HEIGHT)
-                        .verticalScroll(rememberScrollState())
-                        .padding(bottom = TOOLBAR_SECTION_SPACING),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (addingQuickCombo) {
-                        SavedToolbarChordBuilder(
-                            existingIds = quickActions.map { it.id },
-                            onAdd = { id ->
-                                val updatedIds = (quickActions.map { it.id } + id).distinct()
-                                viewModel.setFunctionToolbarQuickIds(updatedIds)
-                                expanded = false
-                            },
-                            onCancel = { addingQuickCombo = false },
-                        )
-                    } else if (editingQuickRow) {
-                        QuickToolbarEditor(
-                            selectedIds = quickActions.map { it.id },
-                            onApply = { ids ->
-                                viewModel.setFunctionToolbarQuickIds(ids)
-                                editingQuickRow = false
-                            },
-                            onDone = { editingQuickRow = false },
-                        )
-                    } else if (target != null) {
-                        ToolbarComboBuilder(
-                            target = target,
-                            selectedMask = comboMask,
-                            onToggleModifier = { flag -> comboMask = comboMask xor flag },
-                            onSend = {
-                                viewModel.sendKeyWithModifiers(target.vk, comboMask)
-                                expanded = false
-                            },
-                            onCancel = { comboTarget = null },
-                        )
-                    } else {
-                        ToolbarExpandedPanel(
-                            page = page,
-                            state = state,
-                            viewModel = viewModel,
-                            actions = ToolbarExpandedActions(
-                                onPage = { selected -> page = selected },
-                                onLongKey = openCombo,
-                                onEditQuickRow = { editingQuickRow = true },
-                                onAddQuickCombo = { addingQuickCombo = true },
-                                onMomentaryAction = { expanded = false },
-                            ),
-                        )
-                    }
-                }
+                SessionToolbarExpandedBody(
+                    viewModel = viewModel,
+                    state = state,
+                    quickIds = quickActions.map { it.id },
+                    modeState = SessionToolbarModeState(
+                        page = page,
+                        editingQuickRow = editingQuickRow,
+                        addingQuickCombo = addingQuickCombo,
+                        comboTarget = comboTarget,
+                        comboMask = comboMask,
+                    ),
+                    callbacks = SessionToolbarModeCallbacks(
+                        onPage = { page = it },
+                        onOpenCombo = openCombo,
+                        onToggleComboModifier = { flag -> comboMask = comboMask xor flag },
+                        onSetEditingQuickRow = { editingQuickRow = it },
+                        onSetAddingQuickCombo = { addingQuickCombo = it },
+                        onClearComboTarget = { comboTarget = null },
+                        onCollapse = { expanded = false },
+                    ),
+                )
             }
             AnimatedVisibility(
                 visible = !editingQuickRow,
-                enter = expandVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    expandFrom = Alignment.Bottom,
-                ) + slideInVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    initialOffsetY = { height -> height / 2 },
-                ) + fadeIn(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_FADE_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                ),
-                exit = shrinkVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    shrinkTowards = Alignment.Bottom,
-                ) + slideOutVertically(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                    targetOffsetY = { height -> height / 3 },
-                ) + fadeOut(
-                    animationSpec = tween(
-                        durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
-                        easing = TOOLBAR_MOTION_EASING,
-                    ),
-                ),
+                enter = toolbarCompactRowEnterTransition(),
+                exit = toolbarCompactRowExitTransition(),
             ) {
                 CompactToolbarRow(
                     actions = quickActions,
@@ -2255,31 +2625,39 @@ private fun QuickToolbarRegularKeyPicker(
     selectedIds: List<String>,
     onAction: (ToolbarActionSpec) -> Unit,
 ) {
+    val isAtLimit = selectedIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_add_regular_hint))
+    if (isAtLimit) {
+        ToolbarQuickLimitNotice()
+    }
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_modifiers),
         actions = toolbarModifierSpecs.map { spec ->
             ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag)
         },
         selectedIds = selectedIds,
+        enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_common),
         actions = quickKeyRows.flatten().map(::toolbarActionForKey),
         selectedIds = selectedIds,
+        enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_navigation),
         actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
         selectedIds = selectedIds,
+        enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_function),
         actions = functionKeyRows.flatten().map(::toolbarActionForKey),
         selectedIds = selectedIds,
+        enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
@@ -2294,6 +2672,7 @@ private fun QuickToolbarRegularKeyPicker(
             )
         },
         selectedIds = selectedIds,
+        enabled = !isAtLimit,
         onAction = onAction,
     )
 }
@@ -2303,12 +2682,17 @@ private fun ToolbarEditorActionSection(
     title: String,
     actions: List<ToolbarActionSpec>,
     selectedIds: List<String>,
+    enabled: Boolean,
     onAction: (ToolbarActionSpec) -> Unit,
 ) {
     val availableActions = actions.filterNot { it.id in selectedIds }
     if (availableActions.isEmpty()) return
     ToolbarSectionLabel(text = title, compact = true)
-    ToolbarActionGrid(actions = availableActions, onAction = onAction)
+    ToolbarActionGrid(
+        actions = availableActions,
+        isEnabled = { enabled },
+        onAction = onAction,
+    )
 }
 
 @Composable
@@ -2398,6 +2782,10 @@ private fun ToolbarChordBuilder(
     onAdd: (String) -> Unit,
 ) {
     var modifierMask by remember { mutableIntStateOf(0) }
+    val isAtLimit = existingIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
+    if (isAtLimit) {
+        ToolbarQuickLimitNotice()
+    }
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_modifiers))
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2422,25 +2810,10 @@ private fun ToolbarChordBuilder(
         tone = ToolbarKeyTone.Combination,
     )
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
-    ToolbarChordKeySection(
-        title = stringResource(R.string.session_toolbar_combo_letters),
-        actions = letterKeyRows.flatten().map(::toolbarActionForKey),
+    ToolbarChordKeySections(
         modifierMask = modifierMask,
         existingIds = existingIds,
-        onAdd = onAdd,
-    )
-    ToolbarChordKeySection(
-        title = stringResource(R.string.session_toolbar_combo_numbers),
-        actions = numberKeyRows.flatten().map(::toolbarActionForKey),
-        modifierMask = modifierMask,
-        existingIds = existingIds,
-        onAdd = onAdd,
-    )
-    ToolbarChordKeySection(
-        title = stringResource(R.string.session_toolbar_combo_common),
-        actions = commonChordKeyRows.flatten().map(::toolbarActionForKey),
-        modifierMask = modifierMask,
-        existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
 }
@@ -2548,6 +2921,7 @@ private const val TOOLBAR_REORDER_FADE_DURATION_MS = 160
 private const val TOOLBAR_PANEL_ENTER_DURATION_MS = 280
 private const val TOOLBAR_PANEL_FADE_DURATION_MS = 180
 private const val TOOLBAR_PANEL_EXIT_DURATION_MS = 220
+private const val TOOLBAR_PANEL_SLIDE_DIVISOR = 6
 private const val TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS = 220
 private const val TOOLBAR_COMPACT_ROW_FADE_DURATION_MS = 160
 private const val TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS = 180
@@ -2816,12 +3190,12 @@ private fun Modifier.zoomPillGestures(
  * offset 0 the pill sits at CenterEnd, so it may move LEFT by up to (container − pill), barely right
  * (clamped to 0), and ± half the vertical slack. No-ops until both sizes are measured.
  */
-private fun clampPillOffset(base: Offset, dx: Float, dy: Float, container: IntSize, pill: IntSize): Offset {
+internal fun clampPillOffset(base: Offset, dx: Float, dy: Float, container: IntSize, pill: IntSize): Offset {
     if (minOf(container.width, container.height, pill.width, pill.height) <= 0) {
         return Offset(base.x + dx, base.y + dy)
     }
     val minX = -(container.width - pill.width).coerceAtLeast(0).toFloat()
-    val maxY = ((container.height - pill.height).coerceAtLeast(0) / 2).toFloat()
+    val maxY = (container.height - pill.height).coerceAtLeast(0) / 2f
     return Offset((base.x + dx).coerceIn(minX, 0f), (base.y + dy).coerceIn(-maxY, maxY))
 }
 
@@ -2832,11 +3206,15 @@ private fun SavedToolbarChordBuilder(
     onCancel: () -> Unit,
 ) {
     var modifierMask by remember { mutableIntStateOf(0) }
+    val isAtLimit = existingIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
     ToolbarSectionHeader(
         title = stringResource(R.string.session_toolbar_add_combo_title),
         subtitle = stringResource(R.string.session_toolbar_add_combo_example),
         onClose = onCancel,
     )
+    if (isAtLimit) {
+        ToolbarQuickLimitNotice()
+    }
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_modifiers))
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2861,11 +3239,37 @@ private fun SavedToolbarChordBuilder(
         tone = ToolbarKeyTone.Combination,
     )
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
+    ToolbarChordKeySections(
+        modifierMask = modifierMask,
+        existingIds = existingIds,
+        isAtLimit = isAtLimit,
+        onAdd = onAdd,
+    )
+}
+
+@Composable
+private fun ToolbarQuickLimitNotice() {
+    Text(
+        text = stringResource(R.string.session_toolbar_quick_limit_reached, MAX_FUNCTION_TOOLBAR_QUICK_IDS),
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+@Composable
+private fun ToolbarChordKeySections(
+    modifierMask: Int,
+    existingIds: List<String>,
+    isAtLimit: Boolean,
+    onAdd: (String) -> Unit,
+) {
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_letters),
         actions = letterKeyRows.flatten().map(::toolbarActionForKey),
         modifierMask = modifierMask,
         existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
@@ -2873,6 +3277,7 @@ private fun SavedToolbarChordBuilder(
         actions = numberKeyRows.flatten().map(::toolbarActionForKey),
         modifierMask = modifierMask,
         existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
@@ -2880,6 +3285,7 @@ private fun SavedToolbarChordBuilder(
         actions = commonChordKeyRows.flatten().map(::toolbarActionForKey),
         modifierMask = modifierMask,
         existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
@@ -2887,6 +3293,7 @@ private fun SavedToolbarChordBuilder(
         actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
         modifierMask = modifierMask,
         existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
@@ -2894,6 +3301,7 @@ private fun SavedToolbarChordBuilder(
         actions = functionKeyRows.flatten().map(::toolbarActionForKey),
         modifierMask = modifierMask,
         existingIds = existingIds,
+        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
 }
@@ -2907,6 +3315,7 @@ private fun ToolbarChordKeySection(
     actions: List<ToolbarActionSpec>,
     modifierMask: Int,
     existingIds: List<String>,
+    isAtLimit: Boolean,
     onAdd: (String) -> Unit,
 ) {
     ToolbarSectionLabel(text = title, compact = true)
@@ -2915,12 +3324,12 @@ private fun ToolbarChordKeySection(
         isSelected = { action ->
             modifierMask != 0 && encodeToolbarChordId(modifierMask, action.id) in existingIds
         },
-        isEnabled = { modifierMask != 0 },
+        isEnabled = { modifierMask != 0 && !isAtLimit },
         onAction = { action -> onAdd(encodeToolbarChordId(modifierMask, action.id)) },
     )
 }
 
-private fun clampCenteredControlOffset(
+internal fun clampCenteredControlOffset(
     base: Offset,
     dx: Float,
     dy: Float,
