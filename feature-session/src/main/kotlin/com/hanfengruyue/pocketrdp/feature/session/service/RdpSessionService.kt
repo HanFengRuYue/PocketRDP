@@ -93,6 +93,33 @@ class RdpSessionService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var observing = false
     private var currentLanguageTag: String = LANGUAGE_SYSTEM
+    private var lastChannelLanguageTag: String? = null
+
+    private val contentPendingIntent: PendingIntent? by lazy {
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+            ?.takeIf { it.component?.packageName == packageName }
+            ?.apply {
+                // Bring the existing (singleTask) Activity to the front instead of a fresh task.
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+        launch?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        }
+    }
+
+    private val disconnectPendingIntent: PendingIntent by lazy {
+        PendingIntent.getService(
+            this,
+            1,
+            Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
 
     // Not a bound service — clients talk to it only via start()/stop() intents.
     override fun onBind(intent: Intent?): IBinder? = null
@@ -100,12 +127,16 @@ class RdpSessionService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureRdpNotificationChannel(currentLanguageTag)
+        lastChannelLanguageTag = currentLanguageTag
         preferencesRepository.preferences
             .map { it.languageTag }
             .distinctUntilChanged()
             .onEach { languageTag ->
                 currentLanguageTag = languageTag
-                ensureRdpNotificationChannel(languageTag)
+                if (lastChannelLanguageTag != languageTag) {
+                    ensureRdpNotificationChannel(languageTag)
+                    lastChannelLanguageTag = languageTag
+                }
                 if (observing && sessionRegistry.snapshot.value.hasActiveSessions) {
                     updateStatus(sessionRegistry.snapshot.value)
                 }
@@ -164,7 +195,9 @@ class RdpSessionService : Service() {
     }
 
     private fun acquireLocks() {
-        if (cpuLock?.isHeld != true) {
+        val hadCpu = cpuLock?.isHeld == true
+        val hadWifi = wifiLock?.isHeld == true
+        if (!hadCpu) {
             runCatching {
                 val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                 cpuLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)
@@ -176,7 +209,7 @@ class RdpSessionService : Service() {
         }
         // Acquire independently. A prior CPU-lock success must not suppress a Wi-Fi-lock retry after
         // a transient WifiManager failure.
-        if (wifiLock?.isHeld != true) {
+        if (!hadWifi) {
             runCatching {
                 val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 @Suppress("DEPRECATION")
@@ -187,10 +220,11 @@ class RdpSessionService : Service() {
                 PocketLogger.w(TAG, "acquire wifi lock failed: ${it.message}")
             }
         }
-        PocketLogger.d(
-            TAG,
-            "session locks: cpu=${cpuLock?.isHeld == true}, wifi=${wifiLock?.isHeld == true}",
-        )
+        val hasCpu = cpuLock?.isHeld == true
+        val hasWifi = wifiLock?.isHeld == true
+        if (hasCpu != hadCpu || hasWifi != hadWifi) {
+            PocketLogger.d(TAG, "session locks: cpu=$hasCpu, wifi=$hasWifi")
+        }
     }
 
     private fun releaseLocks() {
@@ -221,36 +255,19 @@ class RdpSessionService : Service() {
     }
 
     private fun buildNotification(snapshot: RdpSessionRegistrySnapshot): Notification {
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
-            ?.takeIf { it.component?.packageName == packageName }
-            ?.apply {
-                // Bring the existing (singleTask) Activity to the front instead of a fresh task.
-                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-        val contentPi = launch?.let {
-            PendingIntent.getActivity(
-                this,
-                0,
-                it,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-        }
-        val disconnectPi = PendingIntent.getService(
-            this, 1,
-            Intent(this, RdpSessionService::class.java).setAction(ACTION_DISCONNECT),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
+        val contentPi = contentPendingIntent
         val localizedContext = localizedContextForLanguageTag(currentLanguageTag)
         val locale = localeForLanguageTag(currentLanguageTag)
+        val strings = localizedContext.rdpSessionNotificationStrings()
         val content = buildRdpSessionNotificationContent(
             snapshot = snapshot,
-            strings = localizedContext.rdpSessionNotificationStrings(),
+            strings = strings,
             locale = locale,
         )
         val publicBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_session)
-            .setContentTitle(localizedContext.getString(R.string.session_notification_title))
-            .setContentText(localizedContext.getString(R.string.session_notification_status_connected))
+            .setContentTitle(strings.defaultTitle)
+            .setContentText(publicNotificationStatusText(snapshot, strings))
             .setOngoing(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -266,7 +283,7 @@ class RdpSessionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicNotification)
-            .addAction(0, content.disconnectAction, disconnectPi)
+            .addAction(0, content.disconnectAction, disconnectPendingIntent)
         if (contentPi != null) builder.setContentIntent(contentPi)
         if (content.bigLines.isNotEmpty()) {
             val style = NotificationCompat.InboxStyle()
@@ -414,6 +431,15 @@ private fun statusLabel(state: RdpSessionRuntimeState, strings: RdpSessionNotifi
         RdpSessionRuntimeState.CONNECTED -> strings.connected
         RdpSessionRuntimeState.RECONNECTING -> strings.reconnecting
     }
+
+internal fun publicNotificationStatusText(
+    snapshot: RdpSessionRegistrySnapshot,
+    strings: RdpSessionNotificationStrings,
+): String = when {
+    snapshot.connectedCount > 0 -> strings.connected
+    snapshot.reconnectingCount > 0 -> strings.reconnecting
+    else -> strings.connecting
+}
 
 internal fun shouldHoldSessionLocks(snapshot: RdpSessionRegistrySnapshot): Boolean =
     snapshot.hasActiveSessions

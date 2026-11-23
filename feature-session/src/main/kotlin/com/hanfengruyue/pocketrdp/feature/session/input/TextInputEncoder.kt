@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.feature.session.input
 
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Encodes committed IME text into RDP key events, choosing the safe wire path per character.
@@ -33,42 +34,21 @@ object TextInputEncoder {
     // Async-typing pacing: after this many code points, pause briefly. A large paste otherwise fired
     // thousands of key events back-to-back, blocking the UI thread (ANR/闪退) and flooding the RDP input
     // channel in one burst (服务端/中间盒断连). ~16 chars / 8 ms ≈ 2000 chars/s — fast to type, gentle on
-    // the channel. Only [typeThrottled] paces; [type] stays synchronous for any caller that needs it.
+    // the channel.
     private const val THROTTLE_BATCH = 16
     private const val THROTTLE_DELAY_MS = 8L
-    private var droppedNonAsciiLogCount = 0
+    private val droppedNonAsciiLogCount = AtomicInteger(0)
 
     /**
-     * Synchronous variant: encode + send the whole string inline. Fine for short input; for large
-     * pastes prefer [typeThrottled] off the main thread (see SessionViewModel.typeText).
+     * Throttled, suspending encoder for committed IME text. Pauses every [THROTTLE_BATCH] code
+     * points so a large paste neither blocks the caller's thread nor floods the RDP input channel.
+     * MUST be called from a coroutine (typically a single-consumer background one so keystroke
+     * order is preserved across overlapping pastes) — see SessionViewModel.typeText.
      *
      * @param unicodeSupported snapshot of [RdpClient.isUnicodeInputSupported] taken once for the
      *   whole string — capability doesn't change mid-session, so we avoid a JNI hop per char.
      * @param sendKey scancode/VK path (Windows VK in, native re-translates to PS/2).
      * @param sendUnicode unicode keyboard path.
-     */
-    fun type(
-        text: String,
-        unicodeSupported: Boolean,
-        sendKey: (vk: Int, down: Boolean) -> Unit,
-        sendUnicode: (codePoint: Int, down: Boolean) -> Unit,
-    ) {
-        var i = 0
-        while (i < text.length) {
-            val cp = text.codePointAt(i)
-            i += Character.charCount(cp)
-            if (cp == '\r'.code && i < text.length && text[i] == '\n') {
-                i++
-            }
-            sendCodePoint(cp, unicodeSupported, sendKey, sendUnicode)
-        }
-    }
-
-    /**
-     * Throttled, suspending variant for large input. Same per-character routing as [type] but pauses
-     * every [THROTTLE_BATCH] code points so a big paste neither blocks the caller's thread nor floods
-     * the RDP input channel. MUST be called from a coroutine (typically a single-consumer background
-     * one so keystroke order is preserved across overlapping pastes) — see SessionViewModel.typeText.
      */
     suspend fun typeThrottled(
         text: String,
@@ -112,8 +92,9 @@ object TextInputEncoder {
                 }
             }
             else -> {
-                if (droppedNonAsciiLogCount < DROP_LOG_LIMIT) {
-                    droppedNonAsciiLogCount++
+                if (droppedNonAsciiLogCount.get() < DROP_LOG_LIMIT &&
+                    droppedNonAsciiLogCount.getAndIncrement() < DROP_LOG_LIMIT
+                ) {
                     PocketLogger.w(
                         TAG,
                         "dropping unsupported non-ASCII input; server has no unicode keyboard input",

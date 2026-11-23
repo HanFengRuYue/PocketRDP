@@ -19,7 +19,7 @@ Preserve the Tencent Gradle wrapper mirror and Aliyun Maven mirrors until this n
 
 ## Native FreeRDP boundary
 
-FreeRDP is based on official 3.33.1 commit `65bcca1913a28cbdd7eb913599f692bd2b707991` and is integrated through PocketRDP fork commit `3429055cda491e6f1db489be2daaf86b01a1c7dc`. PocketRDP changes are also stored reproducibly in `patches/freerdp/pocketrdp-3.33.patch`; verify either the clean integrated commit or the patch applied to the official base with `scripts/apply-freerdp-patches.ps1 -CheckOnly`. Do not alter the `com.freerdp.freerdpcore.services.LibFreeRDP` FQN. Keep the R8 rules for `com.freerdp.freerdpcore.**`, Hilt, and Room.
+FreeRDP is based on official 3.33.1 commit `65bcca1913a28cbdd7eb913599f692bd2b707991` and is integrated through PocketRDP fork commit `afeea4c3e64795e59db43396a0fdde2185b7bbde`. PocketRDP changes are also stored reproducibly in `patches/freerdp/pocketrdp-3.33.patch`; verify either the clean integrated commit or the patch applied to the official base with `scripts/apply-freerdp-patches.ps1 -CheckOnly`. Do not alter the `com.freerdp.freerdpcore.services.LibFreeRDP` FQN. Keep the R8 rules for `com.freerdp.freerdpcore.**`, Hilt, and Room.
 
 Normal Windows builds package prebuilt libraries from `core-rdp/src/main/jniLibs`. Native rebuilds are WSL2-only. Run `scripts/build-native-multiarch-in-wsl.sh` and explicitly pass all four ABIs when changing JNI or FreeRDP core behavior:
 

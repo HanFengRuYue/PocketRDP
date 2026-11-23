@@ -1,9 +1,16 @@
 package com.hanfengruyue.pocketrdp.core.data.preferences
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppPreferencesValidationTest {
+    @Test
+    fun autoReconnectDefaultsToEnabled() {
+        assertTrue(DEFAULT_AUTO_RECONNECT)
+        assertTrue(AppPreferences().autoReconnect)
+    }
+
     @Test
     fun simulatedCursorDefaultsToOneHundredFiftyPercent() {
         assertEquals(1.5f, DEFAULT_SIMULATED_CURSOR_SCALE)

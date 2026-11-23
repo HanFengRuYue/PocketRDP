@@ -1,6 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.connections.list
 
 import android.graphics.Bitmap
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
@@ -18,9 +19,34 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+/**
+ * Immutable UI projection of [ConnectionEntity] for list cards. Excludes mutable credential
+ * [ByteArray] columns so Compose can treat each list item as strongly stable and skip unaffected
+ * cards on 1 Hz live-preview updates.
+ */
+@Immutable
+data class ConnectionListItem(
+    val id: Long,
+    val name: String,
+    val host: String,
+    val port: Int,
+    val username: String,
+    val lastUsedAt: Long,
+)
+
+@Immutable
 data class ConnectionListUiState(
     val isLoading: Boolean = true,
-    val connections: List<ConnectionEntity> = emptyList(),
+    val connections: List<ConnectionListItem> = emptyList(),
+)
+
+internal fun ConnectionEntity.toListItem(): ConnectionListItem = ConnectionListItem(
+    id = id,
+    name = name,
+    host = host,
+    port = port,
+    username = username,
+    lastUsedAt = lastUsedAt,
 )
 
 @HiltViewModel
@@ -33,26 +59,34 @@ class ConnectionListViewModel @Inject constructor(
 
     val uiState: StateFlow<ConnectionListUiState> =
         repository.observeAll()
-            .map { list -> ConnectionListUiState(isLoading = false, connections = list) }
+            .map { list ->
+                ConnectionListUiState(
+                    isLoading = false,
+                    connections = list.map(ConnectionEntity::toListItem),
+                )
+            }
             .stateIn(
                 scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5_000L),
+                started = SharingStarted.WhileSubscribed(STATE_STOP_TIMEOUT_MS),
                 initialValue = ConnectionListUiState(),
             )
 
-    val thumbnailRevision: StateFlow<Long> = thumbnailStore.revision
+    val thumbnailRevisions: StateFlow<Map<Long, Long>> = thumbnailStore.revisionsById
 
-    fun delete(entity: ConnectionEntity) {
+    fun delete(connectionId: Long) {
         viewModelScope.launch {
             operationCoordinator.withExclusiveOperation delete@{
-                if (sessionRegistry.isConnectionActive(entity.id)) return@delete
-                repository.delete(entity)
+                if (sessionRegistry.isConnectionActive(connectionId)) return@delete
+                repository.deleteById(connectionId)
                 // Drop the desktop thumbnail too so a future connection reusing the same row id
                 // cannot inherit a stale picture.
-                thumbnailStore.delete(entity.id)
+                thumbnailStore.delete(connectionId)
             }
         }
     }
+
+    /** Synchronously read an already-cached thumbnail bitmap to avoid placeholder flashes on scroll. */
+    fun peekCachedThumbnail(id: Long): Bitmap? = thumbnailStore.peekCached(id)
 
     /**
      * Load the captured remote-desktop thumbnail for [id], or null if none has been saved yet.
@@ -60,4 +94,8 @@ class ConnectionListViewModel @Inject constructor(
      */
     suspend fun loadThumbnail(id: Long): Bitmap? =
         withContext(Dispatchers.IO) { thumbnailStore.load(id) }
+
+    private companion object {
+        const val STATE_STOP_TIMEOUT_MS = 5_000L
+    }
 }

@@ -62,4 +62,32 @@ class RdpTransportSnapshotTest {
 
         assertEquals(RdpTransportFailure.UNSUPPORTED_ROUTE, RdpTransportSnapshot.decode(raw).failure)
     }
+
+    @Test
+    fun allWireEnumsRoundTripAndMapUnknownValuesSafely() {
+        for (phase in RdpTransportPhase.entries) {
+            assertEquals(phase, RdpTransportPhase.fromWire(phase.wireValue))
+        }
+        assertEquals(RdpTransportPhase.UNKNOWN, RdpTransportPhase.fromWire(-2L))
+        assertEquals(RdpTransportPhase.UNKNOWN, RdpTransportPhase.fromWire(6L))
+
+        for (kind in RdpUdpKind.entries) {
+            assertEquals(kind, RdpUdpKind.fromMask(kind.mask))
+        }
+        assertEquals(RdpUdpKind.UNKNOWN, RdpUdpKind.fromMask(3L))
+        assertEquals(RdpUdpKind.UNKNOWN, RdpUdpKind.fromMask(8L))
+
+        for (state in RdpUdpTunnelState.entries) {
+            assertEquals(state, RdpUdpTunnelState.fromWire(state.wireValue))
+        }
+        assertEquals(RdpUdpTunnelState.UNKNOWN, RdpUdpTunnelState.fromWire(-2L))
+        assertEquals(RdpUdpTunnelState.UNKNOWN, RdpUdpTunnelState.fromWire(8L))
+
+        for (failure in RdpTransportFailure.entries) {
+            assertEquals(failure, RdpTransportFailure.fromWire(failure.wireValue))
+        }
+        for (invalid in listOf(-2L, 17L, 100L, 105L, Long.MIN_VALUE, Long.MAX_VALUE)) {
+            assertEquals(RdpTransportFailure.UNKNOWN, RdpTransportFailure.fromWire(invalid))
+        }
+    }
 }

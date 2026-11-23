@@ -19,8 +19,6 @@ import android.util.Log;
 
 import androidx.collection.LongSparseArray;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,17 +29,8 @@ public class LibFreeRDP {
     private static final String TAG = "LibFreeRDP";
     private static boolean mHasH264 = false;
     private static final LongSparseArray<Boolean> mInstanceState = new LongSparseArray<>();
-    private static final Map<Long, EventListener> eventListeners = new HashMap<>();
-    private static final Map<Long, UIEventListener> uiEventListeners = new HashMap<>();
-
-    public static final long VERIFY_CERT_FLAG_NONE = 0x00;
-    public static final long VERIFY_CERT_FLAG_LEGACY = 0x02;
-    public static final long VERIFY_CERT_FLAG_REDIRECT = 0x10;
-    public static final long VERIFY_CERT_FLAG_GATEWAY = 0x20;
-    public static final long VERIFY_CERT_FLAG_CHANGED = 0x40;
-    public static final long VERIFY_CERT_FLAG_MISMATCH = 0x80;
-    public static final long VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1 = 0x100;
-    public static final long VERIFY_CERT_FLAG_FP_IS_PEM = 0x200;
+    private static final LongSparseArray<EventListener> eventListeners = new LongSparseArray<>();
+    private static final LongSparseArray<UIEventListener> uiEventListeners = new LongSparseArray<>();
 
     /** Required by the JNI bridge — it instantiates LibFreeRDP via NewObject(<init>). */
     public LibFreeRDP() { }
@@ -66,7 +55,9 @@ public class LibFreeRDP {
             if (versions.length > 0) {
                 System.loadLibrary("freerdp-client" + versions[0]);
                 System.loadLibrary("freerdp" + versions[0]);
-                System.loadLibrary("winpr" + versions[0]);
+                if (!"3".equals(versions[0])) {
+                    System.loadLibrary("winpr" + versions[0]);
+                }
             }
             Pattern p = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+).*");
             Matcher m = p.matcher(version);
@@ -151,7 +142,6 @@ public class LibFreeRDP {
         freerdp_free(inst);
         synchronized (mInstanceState) {
             mInstanceState.remove(inst);
-            mInstanceState.notifyAll();
         }
     }
 
@@ -167,7 +157,6 @@ public class LibFreeRDP {
         if (!started) {
             synchronized (mInstanceState) {
                 mInstanceState.put(inst, false);
-                mInstanceState.notifyAll();
             }
         }
         return started;
@@ -226,7 +215,7 @@ public class LibFreeRDP {
     // ============================================================
 
     public static void OnPreConnect(long inst) {
-        synchronized (mInstanceState) { mInstanceState.put(inst, true); mInstanceState.notifyAll(); }
+        synchronized (mInstanceState) { mInstanceState.put(inst, true); }
         EventListener l = eventListenerFor(inst);
         if (l != null) l.OnPreConnect(inst);
     }
@@ -235,7 +224,7 @@ public class LibFreeRDP {
         if (l != null) l.OnConnectionSuccess(inst);
     }
     public static void OnConnectionFailure(long inst) {
-        synchronized (mInstanceState) { mInstanceState.put(inst, false); mInstanceState.notifyAll(); }
+        synchronized (mInstanceState) { mInstanceState.put(inst, false); }
         EventListener l = eventListenerFor(inst);
         if (l != null) l.OnConnectionFailure(inst);
     }
@@ -244,7 +233,7 @@ public class LibFreeRDP {
         if (l != null) l.OnDisconnecting(inst);
     }
     public static void OnDisconnected(long inst) {
-        synchronized (mInstanceState) { mInstanceState.put(inst, false); mInstanceState.notifyAll(); }
+        synchronized (mInstanceState) { mInstanceState.put(inst, false); }
         EventListener l = eventListenerFor(inst);
         if (l != null) l.OnDisconnected(inst);
     }

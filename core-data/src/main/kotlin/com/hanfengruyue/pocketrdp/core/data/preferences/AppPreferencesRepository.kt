@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.os.LocaleList
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -14,9 +15,15 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
 
 private val Context.appPreferencesDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "app_preferences",
@@ -31,6 +38,7 @@ enum class ThemeMode(val value: String) {
 data class AppPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val languageTag: String = LANGUAGE_SYSTEM,
+    val autoReconnect: Boolean = DEFAULT_AUTO_RECONNECT,
     val toolbarAlpha: Float = DEFAULT_CHROME_ALPHA,
     val controlAlpha: Float = DEFAULT_CHROME_ALPHA,
     val simulatedCursorScale: Float = DEFAULT_SIMULATED_CURSOR_SCALE,
@@ -41,7 +49,9 @@ data class AppPreferences(
 class AppPreferencesRepository @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    val preferences: Flow<AppPreferences> = context.appPreferencesDataStore.data
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    val preferences: SharedFlow<AppPreferences> = context.appPreferencesDataStore.data
         .catch { throwable ->
             if (throwable is IOException) {
                 emit(emptyPreferences())
@@ -49,36 +59,46 @@ class AppPreferencesRepository @Inject constructor(
                 throw throwable
             }
         }
-        .map { prefs ->
-            AppPreferences(
-                themeMode = ThemeMode.entries.firstOrNull { it.value == prefs[KEY_THEME_MODE] }
-                    ?: ThemeMode.SYSTEM,
-                languageTag = sanitizeLanguageTag(prefs[KEY_LANGUAGE_TAG]),
-                toolbarAlpha = sanitizeFinitePreference(
-                    prefs[KEY_TOOLBAR_ALPHA],
-                    DEFAULT_CHROME_ALPHA,
-                    MIN_ALPHA,
-                    MAX_ALPHA,
-                ),
-                controlAlpha = sanitizeFinitePreference(
-                    prefs[KEY_CONTROL_ALPHA],
-                    DEFAULT_CHROME_ALPHA,
-                    MIN_ALPHA,
-                    MAX_ALPHA,
-                ),
-                simulatedCursorScale = sanitizeFinitePreference(
-                    prefs[KEY_SIMULATED_CURSOR_SCALE],
-                    DEFAULT_SIMULATED_CURSOR_SCALE,
-                    MIN_SIMULATED_CURSOR_SCALE,
-                    MAX_SIMULATED_CURSOR_SCALE,
-                ),
-                functionToolbarQuickIds = sanitizeFunctionToolbarQuickIds(
-                    prefs[KEY_FUNCTION_TOOLBAR_QUICK_IDS]
-                        ?.split(TOOLBAR_ID_SEPARATOR)
-                        .orEmpty(),
-                ),
-            )
-        }
+        .map(::mapPreferences)
+        .distinctUntilChanged()
+        .shareIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            replay = 1,
+        )
+
+    fun currentPreferencesOrDefault(): AppPreferences =
+        preferences.replayCache.firstOrNull() ?: AppPreferences()
+
+    private fun mapPreferences(prefs: Preferences): AppPreferences = AppPreferences(
+        themeMode = ThemeMode.entries.firstOrNull { it.value == prefs[KEY_THEME_MODE] }
+            ?: ThemeMode.SYSTEM,
+        languageTag = sanitizeLanguageTag(prefs[KEY_LANGUAGE_TAG]),
+        autoReconnect = prefs[KEY_AUTO_RECONNECT] ?: DEFAULT_AUTO_RECONNECT,
+        toolbarAlpha = sanitizeFinitePreference(
+            prefs[KEY_TOOLBAR_ALPHA],
+            DEFAULT_CHROME_ALPHA,
+            MIN_ALPHA,
+            MAX_ALPHA,
+        ),
+        controlAlpha = sanitizeFinitePreference(
+            prefs[KEY_CONTROL_ALPHA],
+            DEFAULT_CHROME_ALPHA,
+            MIN_ALPHA,
+            MAX_ALPHA,
+        ),
+        simulatedCursorScale = sanitizeFinitePreference(
+            prefs[KEY_SIMULATED_CURSOR_SCALE],
+            DEFAULT_SIMULATED_CURSOR_SCALE,
+            MIN_SIMULATED_CURSOR_SCALE,
+            MAX_SIMULATED_CURSOR_SCALE,
+        ),
+        functionToolbarQuickIds = sanitizeFunctionToolbarQuickIds(
+            prefs[KEY_FUNCTION_TOOLBAR_QUICK_IDS]
+                ?.split(TOOLBAR_ID_SEPARATOR)
+                .orEmpty(),
+        ),
+    )
 
     suspend fun setThemeMode(mode: ThemeMode) {
         context.appPreferencesDataStore.edit { it[KEY_THEME_MODE] = mode.value }
@@ -93,6 +113,10 @@ class AppPreferencesRepository @Inject constructor(
                 it[KEY_LANGUAGE_TAG] = sanitized
             }
         }
+    }
+
+    suspend fun setAutoReconnect(enabled: Boolean) {
+        context.appPreferencesDataStore.edit { it[KEY_AUTO_RECONNECT] = enabled }
     }
 
     suspend fun setToolbarAlpha(alpha: Float) {
@@ -142,6 +166,7 @@ class AppPreferencesRepository @Inject constructor(
     private companion object {
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_LANGUAGE_TAG = stringPreferencesKey("language_tag")
+        private val KEY_AUTO_RECONNECT = booleanPreferencesKey("auto_reconnect")
         private val KEY_TOOLBAR_ALPHA = floatPreferencesKey("toolbar_alpha")
         private val KEY_CONTROL_ALPHA = floatPreferencesKey("control_alpha")
         private val KEY_SIMULATED_CURSOR_SCALE = floatPreferencesKey("simulated_cursor_scale")
@@ -149,6 +174,7 @@ class AppPreferencesRepository @Inject constructor(
     }
 }
 
+const val DEFAULT_AUTO_RECONNECT = true
 const val LANGUAGE_SYSTEM = "system"
 val SUPPORTED_LANGUAGE_TAGS = setOf(
     LANGUAGE_SYSTEM,

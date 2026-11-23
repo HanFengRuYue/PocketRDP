@@ -25,29 +25,7 @@ class ConnectionRepository @Inject constructor(
 
     suspend fun save(
         existing: ConnectionEntity?,
-        name: String,
-        host: String,
-        port: Int,
-        username: String,
-        domain: String,
-        plainPassword: String,
-        colorDepth: Int,
-        useH264: Boolean,
-        preferAvc420: Boolean,
-        useGfx: Boolean,
-        dynamicResolution: Boolean,
-        dynamicResMax: Int,
-        useMultitransport: Boolean,
-        redirectClipboard: Boolean,
-        redirectFiles: Boolean,
-        sharedFolderUri: String?,
-        soundMode: Int,
-        desktopScaleFactor: Int,
-        customWidth: Int,
-        customHeight: Int,
-        defaultInputMode: Int,
-        targetFrameRate: Int,
-        performanceFlags: Int,
+        draft: ConnectionSaveDraft,
     ): Long = database.withTransaction {
         // The edit screen can remain open while a live session updates the certificate pin,
         // last-used timestamp, or legacy credential binding. Re-read the authoritative row inside
@@ -57,96 +35,50 @@ class ConnectionRepository @Inject constructor(
             dao.findById(stale.id)
                 ?: error("Connection ${stale.id} was deleted while it was being edited")
         }
-        validateCredentialField("name", name, MAX_CONNECTION_FIELD_CHARS)
-        validateCredentialField("host", host, MAX_CONNECTION_FIELD_CHARS)
-        validateCredentialField("username", username, MAX_CREDENTIAL_FIELD_CHARS)
-        validateCredentialField("domain", domain, MAX_CREDENTIAL_FIELD_CHARS)
-        validateCredentialField("password", plainPassword, MAX_CREDENTIAL_FIELD_CHARS)
-        require(name.isNotBlank()) { "name must not be blank" }
-        require(host.isNotBlank()) { "host must not be blank" }
-        require(username.isNotBlank()) { "username must not be blank" }
-        require(port in 1..65535) { "port is outside the TCP range" }
-        require(colorDepth in SUPPORTED_COLOR_DEPTHS) { "unsupported color depth" }
-        require(dynamicResMax == 0 || dynamicResMax in MIN_REMOTE_EDGE..MAX_REMOTE_EDGE) {
-            "dynamic resolution cap is outside the supported range"
-        }
-        require(soundMode in 0..2) { "unsupported audio mode" }
-        require(desktopScaleFactor in 100..300) { "desktop scale is outside the supported range" }
-        require(defaultInputMode in 0..1) { "unsupported input mode" }
-        require(targetFrameRate == 0 || targetFrameRate in 1..MAX_TARGET_FRAME_RATE) {
-            "target frame rate is outside the supported range"
-        }
-        require(
-            (customWidth == 0 && customHeight == 0) ||
-                (customWidth in MIN_REMOTE_EDGE..MAX_REMOTE_EDGE &&
-                    customHeight in MIN_REMOTE_EDGE..MAX_REMOTE_EDGE &&
-                    customWidth.toLong() * customHeight <= MAX_FRAMEBUFFER_PIXELS),
-        ) { "custom framebuffer dimensions are unsafe" }
-        sharedFolderUri?.let {
-            validateCredentialField("shared folder URI", it, MAX_SHARED_FOLDER_URI_CHARS)
-        }
-        val newAad = credentialAad(host, port, username, domain)
-        val identityUnchanged = persistedExisting != null &&
-            persistedExisting.host.equals(host, ignoreCase = true) &&
-            persistedExisting.port == port &&
-            persistedExisting.username == username &&
-            persistedExisting.domain == domain
-        val sealed = when {
-            persistedExisting == null || plainPassword.isNotEmpty() ->
-                cipher.encryptString(plainPassword, newAad)
-            persistedExisting.passwordCipher.isEmpty() -> cipher.encryptString("", newAad)
-            identityUnchanged && persistedExisting.passwordAadVersion == CREDENTIAL_AAD_VERSION ->
-                CredentialCipher.Sealed(
-                    persistedExisting.passwordCipher,
-                    persistedExisting.passwordIv,
-                )
-            else -> {
-                val retainedPassword = decryptPasswordValue(persistedExisting)
-                cipher.encryptString(retainedPassword, newAad)
-            }
-        }
-        val baseEntity =
-            persistedExisting ?: ConnectionEntity(name = name, host = host, username = username)
+        validateConnectionDraft(draft)
+        val newAad = credentialAad(draft.host, draft.port, draft.username, draft.domain)
+        val sealed = sealPassword(persistedExisting, draft, newAad)
+        val baseEntity = persistedExisting
+            ?: ConnectionEntity(name = draft.name, host = draft.host, username = draft.username)
         val entity = baseEntity.copy(
-            name = name,
-            host = host,
-            port = port,
-            username = username,
-            domain = domain,
+            name = draft.name,
+            host = draft.host,
+            port = draft.port,
+            username = draft.username,
+            domain = draft.domain,
             passwordCipher = sealed.ciphertext,
             passwordIv = sealed.iv,
             passwordAadVersion = CREDENTIAL_AAD_VERSION,
-            colorDepth = colorDepth,
-            useH264 = useH264,
-            preferAvc420 = preferAvc420,
+            colorDepth = draft.colorDepth,
+            useH264 = draft.useH264,
+            preferAvc420 = draft.preferAvc420,
             // H.264 is transported by rdpgfx; normalize stale or programmatic callers that provide
             // the impossible useH264=true/useGfx=false combination.
-            useGfx = useGfx || useH264,
-            dynamicResolution = dynamicResolution,
-            dynamicResMax = dynamicResMax,
-            useMultitransport = useMultitransport,
-            redirectClipboard = redirectClipboard,
-            redirectFiles = redirectFiles,
-            sharedFolderUri = sharedFolderUri,
-            soundMode = soundMode,
-            desktopScaleFactor = desktopScaleFactor,
-            customWidth = customWidth,
-            customHeight = customHeight,
-            defaultInputMode = defaultInputMode,
-            targetFrameRate = targetFrameRate,
-            performanceFlags = performanceFlags,
+            useGfx = draft.useGfx || draft.useH264,
+            dynamicResolution = draft.dynamicResolution,
+            dynamicResMax = draft.dynamicResMax,
+            useMultitransport = draft.useMultitransport,
+            redirectClipboard = draft.redirectClipboard,
+            redirectFiles = draft.redirectFiles,
+            soundMode = draft.soundMode,
+            desktopScaleFactor = draft.desktopScaleFactor,
+            customWidth = draft.customWidth,
+            customHeight = draft.customHeight,
+            defaultInputMode = draft.defaultInputMode,
+            targetFrameRate = draft.targetFrameRate,
+            performanceFlags = draft.performanceFlags,
             // A pin belongs to one endpoint. Carrying it to an edited host/port either bricks the
             // new connection or, worse, makes the trust decision look like it applies there.
             certThumbSha256 = persistedExisting?.certThumbSha256
                 ?.takeIf {
-                    persistedExisting.host.equals(host, ignoreCase = true) &&
-                        persistedExisting.port == port
+                    persistedExisting.host.equals(draft.host, ignoreCase = true) &&
+                        persistedExisting.port == draft.port
                 },
         )
         dao.upsert(entity)
     }
 
-    suspend fun delete(entity: ConnectionEntity) = dao.delete(entity)
+    suspend fun deleteById(id: Long) = dao.deleteById(id)
 
     suspend fun touchLastUsed(id: Long) = dao.touchLastUsed(id, System.currentTimeMillis())
 
@@ -183,6 +115,32 @@ class ConnectionRepository @Inject constructor(
         plain
     }
 
+    private fun sealPassword(
+        persistedExisting: ConnectionEntity?,
+        draft: ConnectionSaveDraft,
+        newAad: ByteArray,
+    ): CredentialCipher.Sealed {
+        val identityUnchanged = persistedExisting != null &&
+            persistedExisting.host.equals(draft.host, ignoreCase = true) &&
+            persistedExisting.port == draft.port &&
+            persistedExisting.username == draft.username &&
+            persistedExisting.domain == draft.domain
+        return when {
+            persistedExisting == null || draft.plainPassword.isNotEmpty() ->
+                cipher.encryptString(draft.plainPassword, newAad)
+            persistedExisting.passwordCipher.isEmpty() -> cipher.encryptString("", newAad)
+            identityUnchanged && persistedExisting.passwordAadVersion == CREDENTIAL_AAD_VERSION ->
+                CredentialCipher.Sealed(
+                    persistedExisting.passwordCipher,
+                    persistedExisting.passwordIv,
+                )
+            else -> {
+                val retainedPassword = decryptPasswordValue(persistedExisting)
+                cipher.encryptString(retainedPassword, newAad)
+            }
+        }
+    }
+
     private fun decryptPasswordValue(entity: ConnectionEntity): String {
         val sealed = CredentialCipher.Sealed(entity.passwordCipher, entity.passwordIv)
         return when (entity.passwordAadVersion) {
@@ -209,23 +167,10 @@ class ConnectionRepository @Inject constructor(
         }.array()
     }
 
-    private fun validateCredentialField(label: String, value: String, maxChars: Int) {
-        require(value.length <= maxChars) { "$label exceeds the supported length" }
-        require('\u0000' !in value) { "$label contains an unsupported NUL character" }
-    }
-
     private companion object {
         const val LEGACY_CREDENTIAL_AAD_VERSION = 0
         const val CREDENTIAL_AAD_VERSION = 1
-        const val MAX_CONNECTION_FIELD_CHARS = 1024
-        const val MAX_CREDENTIAL_FIELD_CHARS = 4096
-        const val MAX_SHARED_FOLDER_URI_CHARS = 8192
-        const val MIN_REMOTE_EDGE = 200
-        const val MAX_REMOTE_EDGE = 8192
-        const val MAX_FRAMEBUFFER_PIXELS = 16_777_216L
-        const val MAX_TARGET_FRAME_RATE = 240
         const val SHA256_HEX_CHARS = 64
-        val SUPPORTED_COLOR_DEPTHS = setOf(16, 24, 32)
     }
 }
 

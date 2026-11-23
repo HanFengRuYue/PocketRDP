@@ -20,4 +20,54 @@ class ConnectionRepositoryValidationTest {
         val entity = ConnectionEntity(name = "Workstation", host = "192.0.2.10", username = "user")
         assertNull(entity.sharedFolderUri)
     }
+
+    @Test
+    fun validDraftPassesValidation() {
+        validateConnectionDraft(sampleDraft())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun blankHostFailsValidation() {
+        validateConnectionDraft(sampleDraft(host = "   "))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun outOfRangeDesktopScaleFailsValidation() {
+        validateConnectionDraft(sampleDraft(desktopScaleFactor = OUT_OF_RANGE_SCALE))
+    }
+
+    private fun sampleDraft(
+        host: String = "192.0.2.10",
+        desktopScaleFactor: Int = DEFAULT_SCALE,
+    ): ConnectionSaveDraft = ConnectionSaveDraft(
+        name = "Workstation",
+        host = host,
+        port = DEFAULT_PORT,
+        username = "user",
+        domain = "",
+        plainPassword = "secret",
+        colorDepth = 32,
+        useH264 = true,
+        preferAvc420 = true,
+        useGfx = true,
+        dynamicResolution = true,
+        dynamicResMax = DEFAULT_DYNAMIC_MAX,
+        useMultitransport = false,
+        redirectClipboard = true,
+        redirectFiles = false,
+        soundMode = 2,
+        desktopScaleFactor = desktopScaleFactor,
+        customWidth = 0,
+        customHeight = 0,
+        defaultInputMode = 0,
+        targetFrameRate = 0,
+        performanceFlags = 0,
+    )
+
+    private companion object {
+        const val DEFAULT_PORT = 3389
+        const val DEFAULT_SCALE = 200
+        const val OUT_OF_RANGE_SCALE = 400
+        const val DEFAULT_DYNAMIC_MAX = 1080
+    }
 }

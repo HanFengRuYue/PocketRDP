@@ -28,9 +28,6 @@ object ScancodeMap {
         const val BACK = 0x08
         const val TAB = 0x09
         const val RETURN = 0x0D
-        const val SHIFT = 0x10
-        const val CONTROL = 0x11
-        const val MENU = 0x12   // Alt
         const val CAPS = 0x14
         const val ESCAPE = 0x1B
         const val SPACE = 0x20

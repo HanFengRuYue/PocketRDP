@@ -1,12 +1,17 @@
 package com.hanfengruyue.pocketrdp.core.rdp
 
-import android.graphics.Bitmap
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.SystemClock
-import android.util.Log
 import com.freerdp.freerdpcore.services.LibFreeRDP
 import com.hanfengruyue.pocketrdp.core.logging.PocketLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -18,12 +23,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.withContext
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.util.Locale
-import java.util.concurrent.atomic.AtomicLong
-import javax.inject.Inject
-import kotlin.math.roundToInt
 
 /**
  * Kotlin facade over the FreeRDP JNI bridge (com.freerdp.freerdpcore.services.LibFreeRDP).
@@ -76,61 +75,24 @@ class RdpClient @Inject constructor(
     @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
     private val nativeCallLock = java.lang.Object()
     private var inFlightNativeCalls: Int = 0
+    private var closingNativeInstanceWaiters: Int = 0
     @Volatile private var nativeInstance: Long = 0L
     private val rejectedNativeInstance = AtomicLong(0L)
-    private var connectThread: Thread? = null
     @Volatile private var acceptedCertThumb: String? = null
     @Volatile private var certificatePromptOutstanding: Boolean = false
     @Volatile private var certificateFatalFailureOutstanding: Boolean = false
     private val credentialPromptGate = CredentialPromptGate()
     @Volatile private var credentialsCancelled: Boolean = false
+    @Volatile private var autoReconnectEnabled: Boolean = true
     private val transportTracker = RdpTransportTracker(logTag = TAG)
 
     // Host/port of the active session — used by [measureLatencyMs] for the latency probe.
     @Volatile private var lastHost: String? = null
     @Volatile private var lastPort: Int = DEFAULT_RDP_PORT
 
-    // --- End-to-end "control latency" (input → on-screen change) ---
-    // measureLatencyMs() below only times a TCP handshake = the raw network path. The latency the
-    // user actually FEELS is much higher: input upload + server input-processing + server-side
-    // encode + downstream network + client H.264 decode (the gdi buffer is already decoded by the
-    // time OnGraphicsUpdate fires). We measure that round-trip empirically: a DISCRETE press (click /
-    // key / touch — see markDiscreteInput) made while the screen was idle is reliably answered by a
-    // framebuffer update, so (frameArrival − inputSent) is a real end-to-end RTT that inherently
-    // includes encode/decode. CURSOR MOVES are deliberately excluded: RDP acks them via a pointer PDU
-    // (hardware cursor), NOT a framebuffer update, so timing move→frame paired a move with a much-
-    // later unrelated frame and read hundreds of ms on a 0ms-RTT local host. Presses that get no
-    // timely frame are discarded (CONTROL_LATENCY_RESPONSE_WINDOW_MS); the rest feed a recent-sample
-    // low-percentile estimator (robust to periodic-frame mispairs). Monotonic clock so a wall-clock
-    // change can't corrupt a sample.
-    @Volatile private var pendingInputAtMs = 0L
-    @Volatile private var lastServerFrameAtMs = 0L
-    // Recent accepted input→frame samples (ms). We report a LOW PERCENTILE (P25) of these — NOT an
-    // EMA-of-all (which a terminal's periodic blink frames inflated to 330ms against a 40ms RTT) and
-    // NOT a hard minimum (a blink frame landing right after a press would lock in a bogus ~0ms floor).
-    // The low end of recent samples is the fastest a frame can follow an input = the trustworthy
-    // estimate; periodic mispairs are always slower and fall in the tail, so P25 rejects both artifacts.
-    private val latencyLock = Any()
-    private val latencySamples = IntArray(CONTROL_LATENCY_SAMPLE_WINDOW)
-    private var latencySampleCount = 0
-    private var latencySampleHead = 0
-    // Diagnostic counters (METRIC-4): how many discrete-input samples were accepted (a timely frame
-    // closed them) vs discarded (no frame within CONTROL_LATENCY_RESPONSE_WINDOW_MS → the press caused
-    // no visible change / we'd have mispaired). A high discard ratio means presses aren't producing
-    // frames — the latency is server-side / the screen is inert, NOT the client being slow.
-    @Volatile private var latencyAcceptedCount = 0
-    @Volatile private var latencyDiscardedCount = 0
-
-    // --- Display-pipeline latency (decode→present), the part controlLatencyMs does NOT measure ---
-    // RdpSurface reports, for each newly-drawn frame, how long it sat between commitFrame (decode done,
-    // back→front swap) and actually being blitted on screen (commit→onDraw self-loop tick + the canvas
-    // record; the async RenderThread texture upload after this is still uncounted). Felt latency ≈
-    // controlLatencyMs (input→decode) + presentLagMs (decode→present). A rolling median over recent
-    // frames rejects the odd outlier. Fed by [recordPresentLag] from the UI/RenderThread; reset on connect.
-    private val presentLagLock = Any()
-    private val presentLagSamples = IntArray(PRESENT_LAG_SAMPLE_WINDOW)
-    private var presentLagCount = 0
-    private var presentLagHead = 0
+    // End-to-end control latency (discrete press → decoded server frame) and display-pipeline lag.
+    private val controlLatency = ControlLatencyTracker()
+    private val presentLag = PresentLagTracker()
 
     // Diagnostic: throttled "frames are still arriving" heartbeat. OnGraphicsUpdate is too frequent
     // to log per-call, but if the remote picture FREEZES (no graphics after the initial resize) the
@@ -155,12 +117,15 @@ class RdpClient @Inject constructor(
         } else {
             params.copy(useMultitransport = false)
         }
+        autoReconnectEnabled = effectiveParams.autoReconnect
         PocketLogger.i(
             TAG,
             "connect() endpoint=<redacted> h264=${effectiveParams.useH264} gfx=${effectiveParams.useGfx} " +
                 "dynRes=${effectiveParams.dynamicResolution} " +
-                "multitransport=${effectiveParams.useMultitransport}",
+                "multitransport=${effectiveParams.useMultitransport} " +
+                "autoReconnect=${effectiveParams.autoReconnect}",
         )
+        logNativeReadinessOnce()
         if (!LibFreeRDP.isNativeReady()) {
             PocketLogger.e(TAG, "native FreeRDP not ready — refusing connect")
             emit(
@@ -221,12 +186,8 @@ class RdpClient @Inject constructor(
         LibFreeRDP.registerUIEventListener(inst, uiEventListener)
         keyEventLogCount = 0
         unicodeEventLogCount = 0
-        pendingInputAtMs = 0L
-        lastServerFrameAtMs = 0L
-        synchronized(latencyLock) { latencySampleCount = 0; latencySampleHead = 0 }
-        latencyAcceptedCount = 0
-        latencyDiscardedCount = 0
-        synchronized(presentLagLock) { presentLagCount = 0; presentLagHead = 0 }
+        controlLatency.reset()
+        presentLag.reset()
         gfxUpdateCount = 0
         lastGfxLogMs = 0L
         PocketLogger.d(TAG, "FreeRDP native instance allocated")
@@ -255,13 +216,29 @@ class RdpClient @Inject constructor(
 
         // JNI connect starts FreeRDP's native worker and returns. Keep the short startup call away
         // from the UI thread; the native worker's lifetime is joined by freerdp_free().
-        connectThread = Thread({
+        Thread({
             PocketLogger.d(TAG, "starting FreeRDP native worker")
             val ok = withSpecificLiveInstance(inst) { LibFreeRDP.connect(inst) } ?: false
             if (!ok) {
                 handleConnectReturnFailure(inst)
             }
-        }, "freerdp-connect-start").also { it.isDaemon = true; it.start() }
+        }, "freerdp-connect-start").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun logNativeReadinessOnce() {
+        if (!nativeReadinessLogged.compareAndSet(false, true)) return
+        if (LibFreeRDP.isNativeReady()) {
+            PocketLogger.i(
+                TAG,
+                "FreeRDP native ready ver=${LibFreeRDP.freerdp_get_version()} " +
+                    "h264=${LibFreeRDP.hasH264Support()}",
+            )
+        } else {
+            PocketLogger.w(TAG, "Native FreeRDP library not loaded; running in UI-stub mode")
+        }
     }
 
     private fun handleConnectReturnFailure(inst: Long) {
@@ -269,8 +246,8 @@ class RdpClient @Inject constructor(
             if (rejectedNativeInstance.get() == inst) {
                 null
             } else {
-                val snapshot = captureAndLogTransportSnapshot(inst, source = "connect-return", force = true)
-                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                captureAndLogTransportSnapshot(inst, source = "connect-return", force = true)
+                val udpDowngraded = transportTracker.hasObservedDowngrade()
                 Triple(
                     LibFreeRDP.freerdp_get_last_error_code(inst),
                     LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty(),
@@ -307,7 +284,11 @@ class RdpClient @Inject constructor(
             }
             CertificateTerminalDisposition.NONE -> Unit
         }
-        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
+        val retryable = shouldAutoReconnectRdpFailure(
+            autoReconnectEnabled = autoReconnectEnabled,
+            credentialsCancelled = credentialsCancelled,
+            errorCode = errorCode,
+        )
         PocketLogger.e(
             TAG,
             "freerdp_connect returned false (code=$errorCode, retryable=$retryable, " +
@@ -337,6 +318,12 @@ class RdpClient @Inject constructor(
     }
 
     fun hasObservedUdpDowngrade(): Boolean = transportTracker.hasObservedDowngrade()
+
+    fun setAutoReconnectEnabled(enabled: Boolean) {
+        autoReconnectEnabled = enabled
+    }
+
+    fun clearReconnectingSession(): Boolean = sessionRegistry.unregisterIfReconnecting(this)
 
     fun disconnect() {
         credentialPromptGate.cancel()
@@ -378,25 +365,19 @@ class RdpClient @Inject constructor(
 
     private fun closeNativeInstance(inst: Long): Boolean {
         val detached = synchronized(nativeCallLock) {
-            if (nativeInstance != inst) {
-                false
-            } else {
-                nativeInstance = 0L
-                credentialPromptGate.cancel(inst)
-                while (inFlightNativeCalls > 0) {
-                    nativeCallLock.wait()
-                }
-                true
-            }
+            if (nativeInstance != inst) return@synchronized false
+            nativeInstance = 0L
+            credentialPromptGate.cancel(inst)
+            waitForInFlightNativeCallsLocked()
+            true
         }
         if (!detached) return false
         LibFreeRDP.unregisterEventListener(inst)
         LibFreeRDP.unregisterUIEventListener(inst)
         Thread {
             // No new JNI call can acquire a lease after detach, and all earlier leases drained
-            // above. Do not hold nativeCallLock while freeInstance joins the native worker: a
-            // callback already in flight may still need to observe the detached state.
-            LibFreeRDP.disconnect(inst)
+            // above. Do not hold nativeCallLock while freeInstance disconnects and joins the
+            // native worker: a callback already in flight may still observe the detached state.
             LibFreeRDP.freeInstance(inst)
         }.apply {
             name = "freerdp-cleanup"
@@ -405,32 +386,48 @@ class RdpClient @Inject constructor(
         return true
     }
 
+    private fun waitForInFlightNativeCallsLocked() {
+        if (inFlightNativeCalls <= 0) return
+        closingNativeInstanceWaiters++
+        try {
+            while (inFlightNativeCalls > 0) {
+                nativeCallLock.wait()
+            }
+        } finally {
+            closingNativeInstanceWaiters--
+        }
+    }
+
     fun sendKeyEvent(scanCode: Int, down: Boolean) {
-        if (!hasLiveInstance()) {
+        val forwarded = withLiveInstance { inst ->
+            if (keyEventLogCount < KEY_LOG_LIMIT) {
+                keyEventLogCount++
+                PocketLogger.d(TAG, "keyboard event forwarded (#$keyEventLogCount)")
+            }
+            if (down) markDiscreteInput()
+            LibFreeRDP.sendKeyEvent(inst, scanCode, down)
+            Unit
+        } != null
+        if (!forwarded) {
             // Caller is sending input after disconnect — silently drop. This used to push to
             // a freed native instance.
             PocketLogger.w(TAG, "keyboard event dropped (no native instance)")
-            return
         }
-        if (keyEventLogCount < KEY_LOG_LIMIT) {
-            keyEventLogCount++
-            PocketLogger.d(TAG, "keyboard event forwarded (#$keyEventLogCount)")
-        }
-        if (down) markDiscreteInput()
-        withLiveInstance { inst -> LibFreeRDP.sendKeyEvent(inst, scanCode, down) }
     }
 
     fun sendUnicodeKey(codePoint: Int, down: Boolean) {
-        if (!hasLiveInstance()) {
+        val forwarded = withLiveInstance { inst ->
+            if (unicodeEventLogCount < KEY_LOG_LIMIT) {
+                unicodeEventLogCount++
+                PocketLogger.d(TAG, "unicode keyboard event forwarded (#$unicodeEventLogCount)")
+            }
+            if (down) markDiscreteInput()
+            LibFreeRDP.sendUnicodeKeyEvent(inst, codePoint, down)
+            Unit
+        } != null
+        if (!forwarded) {
             PocketLogger.w(TAG, "unicode keyboard event dropped (no native instance)")
-            return
         }
-        if (unicodeEventLogCount < KEY_LOG_LIMIT) {
-            unicodeEventLogCount++
-            PocketLogger.d(TAG, "unicode keyboard event forwarded (#$unicodeEventLogCount)")
-        }
-        if (down) markDiscreteInput()
-        withLiveInstance { inst -> LibFreeRDP.sendUnicodeKeyEvent(inst, codePoint, down) }
     }
 
     /**
@@ -456,7 +453,7 @@ class RdpClient @Inject constructor(
     }
 
     fun sendCursorEvent(x: Int, y: Int, flags: Int) {
-        if (hasLiveInstance()) {
+        withLiveInstance { inst ->
             // Latency timing: arm ONLY on a button PRESS (click / drag-start). A plain cursor MOVE is
             // acked by the server via a pointer PDU (hardware cursor), NOT a framebuffer update — so
             // timing move→OnGraphicsUpdate paired the move with a much-later unrelated frame (clock
@@ -465,7 +462,7 @@ class RdpClient @Inject constructor(
             val isButtonPress = flags and RdpPointerFlags.DOWN != 0 &&
                 flags and (RdpPointerFlags.BUTTON1 or RdpPointerFlags.BUTTON2 or RdpPointerFlags.BUTTON3) != 0
             if (isButtonPress) markDiscreteInput()
-            withLiveInstance { inst -> LibFreeRDP.sendCursorEvent(inst, x, y, flags) }
+            LibFreeRDP.sendCursorEvent(inst, x, y, flags)
         }
     }
 
@@ -476,30 +473,19 @@ class RdpClient @Inject constructor(
      * never tears down the session.
      */
     fun sendTouch(contactId: Int, x: Int, y: Int, action: Int) {
-        if (hasLiveInstance()) {
+        withLiveInstance { inst ->
             // Same as cursor: arm latency only on a touch DOWN (the press), not MOVE/UP.
             if (action == RdpTouchAction.DOWN) markDiscreteInput()
-            withLiveInstance { inst -> LibFreeRDP.sendTouch(inst, contactId, x, y, action) }
+            LibFreeRDP.sendTouch(inst, contactId, x, y, action)
         }
     }
 
     /**
      * Arm an end-to-end latency sample for a DISCRETE input (click / key / touch press — NOT a cursor
-     * move; see [sendCursorEvent]). If the screen has been quiet for [CONTROL_LATENCY_IDLE_GAP_MS],
-     * the next server frame is a genuine response to this input, so we remember when it was sent.
-     * Expires a stale pending arm first: a press that produced no timely frame (e.g. a click on inert
-     * desktop) must NOT linger and later pair with an unrelated frame — that's what inflated the
-     * reading. Only one input is pending at a time (paired with the next frame).
+     * move; see [sendCursorEvent]).
      */
     private fun markDiscreteInput() {
-        val now = SystemClock.uptimeMillis()
-        // Drop a pending arm that never got a timely response so it can't pair with a late frame.
-        if (pendingInputAtMs != 0L && now - pendingInputAtMs > CONTROL_LATENCY_RESPONSE_WINDOW_MS) {
-            pendingInputAtMs = 0L
-        }
-        if (pendingInputAtMs == 0L && now - lastServerFrameAtMs > CONTROL_LATENCY_IDLE_GAP_MS) {
-            pendingInputAtMs = now
-        }
+        controlLatency.markDiscreteInput(SystemClock.uptimeMillis())
     }
 
     /**
@@ -510,46 +496,14 @@ class RdpClient @Inject constructor(
      */
     fun controlLatencyMs(): Int {
         if (!hasLiveInstance()) return -1
-        synchronized(latencyLock) {
-            val n = latencySampleCount
-            if (n == 0) return -1
-            val sorted = latencySamples.copyOf(n).also { it.sort() }
-            // Low percentile (P25): rejects both the slow periodic-frame mispairs (tail) and a stray
-            // near-zero from a blink landing right after a press (min). Index clamped into range.
-            val idx = ((n - 1) * CONTROL_LATENCY_PERCENTILE).roundToInt().coerceIn(0, n - 1)
-            return sorted[idx]
-        }
-    }
-
-    /** Called when a decoded server frame lands (OnGraphicsUpdate). Closes a pending latency sample. */
-    private fun recordServerFrameForLatency() {
-        val now = SystemClock.uptimeMillis()
-        lastServerFrameAtMs = now
-        val sent = pendingInputAtMs
-        if (sent == 0L) return
-        pendingInputAtMs = 0L
-        val sample = now - sent
-        // Only accept a TIMELY response. A larger gap means the press caused no visible change and we
-        // caught a later unrelated frame — discard rather than feed a bogus high sample. (The window is
-        // deliberately not tighter than this: real felt latency can be a couple hundred ms, and a too-
-        // tight window would starve the estimator of genuine samples.)
-        if (sample < 0L || sample > CONTROL_LATENCY_RESPONSE_WINDOW_MS) {
-            latencyDiscardedCount++
-            return
-        }
-        latencyAcceptedCount++
-        synchronized(latencyLock) {
-            latencySamples[latencySampleHead] = sample.toInt()
-            latencySampleHead = (latencySampleHead + 1) % latencySamples.size
-            if (latencySampleCount < latencySamples.size) latencySampleCount++
-        }
+        return controlLatency.estimateMs()
     }
 
     /** Accepted-sample count (a discrete input that got a timely frame) — METRIC-4 diagnostic. */
-    fun latencyAccepted(): Int = latencyAcceptedCount
+    fun latencyAccepted(): Int = controlLatency.accepted()
 
     /** Discarded-sample count (a discrete input with no frame within the window) — METRIC-4 diagnostic. */
-    fun latencyDiscarded(): Int = latencyDiscardedCount
+    fun latencyDiscarded(): Int = controlLatency.discarded()
 
     /**
      * Record one decode→present delay (ms) reported by [com.hanfengruyue.pocketrdp.feature.session.render]'s
@@ -558,23 +512,11 @@ class RdpClient @Inject constructor(
      * never feeds the FPS counter (which stays sourced from content frames).
      */
     fun recordPresentLag(lagMs: Long) {
-        if (lagMs < 0L || lagMs > PRESENT_LAG_MAX_MS) return
-        synchronized(presentLagLock) {
-            presentLagSamples[presentLagHead] = lagMs.toInt()
-            presentLagHead = (presentLagHead + 1) % presentLagSamples.size
-            if (presentLagCount < presentLagSamples.size) presentLagCount++
-        }
+        presentLag.record(lagMs)
     }
 
     /** Rolling MEDIAN decode→present delay (ms); -1 until the first sample. See [recordPresentLag]. */
-    fun presentLagMs(): Int {
-        synchronized(presentLagLock) {
-            val n = presentLagCount
-            if (n == 0) return -1
-            val sorted = presentLagSamples.copyOf(n).also { it.sort() }
-            return sorted[n / 2]
-        }
-    }
+    fun presentLagMs(): Int = presentLag.medianMs()
 
     /** One atomic, versioned view of TCP plus both possible RDP-UDP tunnels. */
     fun transportSnapshot(): RdpTransportSnapshot {
@@ -601,7 +543,6 @@ class RdpClient @Inject constructor(
         } ?: false
     }
 
-
     /**
      * Approximate network latency (round-trip, ms) to the RDP host by timing a fresh TCP handshake
      * to host:port. This is a proxy for the true RDP-layer RTT (which FreeRDP's autodetect module
@@ -612,9 +553,11 @@ class RdpClient @Inject constructor(
         val host = lastHost ?: return@withContext -1
         if (!hasLiveInstance()) return@withContext -1
         runCatching {
+            val address = InetSocketAddress(host, lastPort)
+            if (address.isUnresolved) return@runCatching -1
             Socket().use { socket ->
                 val start = System.nanoTime()
-                socket.connect(InetSocketAddress(host, lastPort), LATENCY_PROBE_TIMEOUT_MS)
+                socket.connect(address, LATENCY_PROBE_TIMEOUT_MS)
                 ((System.nanoTime() - start) / NANOS_PER_MILLI).toInt().coerceIn(0, MAX_LATENCY_MS)
             }
         }.getOrDefault(-1)
@@ -626,11 +569,10 @@ class RdpClient @Inject constructor(
 
     private fun isCurrentInstance(inst: Long): Boolean = nativeInstance == inst
 
-    private fun hasLiveInstance(): Boolean = synchronized(nativeCallLock) {
-        nativeInstance != 0L
-    }
+    private fun hasLiveInstance(): Boolean = nativeInstance != 0L
 
     private inline fun <T> withLiveInstance(block: (Long) -> T): T? {
+        if (nativeInstance == 0L) return null
         val inst = synchronized(nativeCallLock) {
             nativeInstance.takeIf { it != 0L }?.also { inFlightNativeCalls++ }
         } ?: return null
@@ -662,7 +604,9 @@ class RdpClient @Inject constructor(
         synchronized(nativeCallLock) {
             inFlightNativeCalls--
             check(inFlightNativeCalls >= 0)
-            if (inFlightNativeCalls == 0) nativeCallLock.notifyAll()
+            if (inFlightNativeCalls == 0 && closingNativeInstanceWaiters > 0) {
+                nativeCallLock.notifyAll()
+            }
         }
     }
 
@@ -703,8 +647,8 @@ class RdpClient @Inject constructor(
                 return
             }
             val handled = withSpecificLiveInstance(inst) {
-                val snapshot = captureAndLogTransportSnapshot(inst, source = "connection-failure", force = true)
-                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                captureAndLogTransportSnapshot(inst, source = "connection-failure", force = true)
+                val udpDowngraded = transportTracker.hasObservedDowngrade()
                 _remoteCursor.value = RdpCursor.Default
                 when (
                     certificateTerminalDisposition(
@@ -723,7 +667,11 @@ class RdpClient @Inject constructor(
                     CertificateTerminalDisposition.NONE -> {
                         val errorCode = LibFreeRDP.freerdp_get_last_error_code(inst)
                         val error = LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty()
-                        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
+                        val retryable = shouldAutoReconnectRdpFailure(
+                            autoReconnectEnabled = autoReconnectEnabled,
+                            credentialsCancelled = credentialsCancelled,
+                            errorCode = errorCode,
+                        )
                         PocketLogger.e(
                             TAG,
                             "OnConnectionFailure code=$errorCode retryable=$retryable " +
@@ -762,8 +710,8 @@ class RdpClient @Inject constructor(
                 return
             }
             val handled = withSpecificLiveInstance(inst) {
-                val snapshot = captureAndLogTransportSnapshot(inst, source = "disconnected", force = true)
-                val udpDowngraded = transportTracker.observeDowngrade(snapshot)
+                captureAndLogTransportSnapshot(inst, source = "disconnected", force = true)
+                val udpDowngraded = transportTracker.hasObservedDowngrade()
                 val errorCode = LibFreeRDP.freerdp_get_last_error_code(inst)
                 val error = LibFreeRDP.freerdp_get_last_error_string(inst).orEmpty()
                 _remoteCursor.value = RdpCursor.Default
@@ -786,8 +734,16 @@ class RdpClient @Inject constructor(
                         sessionRegistry.unregister(this@RdpClient)
                     }
                     CertificateTerminalDisposition.NONE -> {
-                        val retryable = !credentialsCancelled && isRetryableRdpFailure(errorCode)
-                        val reason = if (retryable) null else error.ifBlank { null }
+                        val retryable = shouldAutoReconnectRdpFailure(
+                            autoReconnectEnabled = autoReconnectEnabled,
+                            credentialsCancelled = credentialsCancelled,
+                            errorCode = errorCode,
+                        )
+                        val reason = disconnectReasonForError(
+                            errorCode = errorCode,
+                            errorString = error,
+                            retryable = retryable,
+                        )
                         PocketLogger.i(
                             TAG,
                             "OnDisconnected code=$errorCode retryable=$retryable " +
@@ -821,118 +777,67 @@ class RdpClient @Inject constructor(
             password: StringBuilder,
         ): Boolean = handleAuthenticate(inst, username, domain, password)
 
-        override fun OnGatewayAuthenticate(inst: Long, username: StringBuilder, domain: StringBuilder, password: StringBuilder): Boolean = false
+        override fun OnGatewayAuthenticate(
+            inst: Long,
+            username: StringBuilder,
+            domain: StringBuilder,
+            password: StringBuilder,
+        ): Boolean = false
 
-        override fun OnVerifyCertificateEx(inst: Long, host: String, port: Long, commonName: String, subject: String, issuer: String, fingerprint: String, flags: Long): Int {
-            return withSpecificLiveInstance(inst) {
-                if (!certificateEndpointMatches(lastHost, lastPort, host, port)) {
-                    certificateFatalFailureOutstanding = true
-                    emit(
-                        RdpEvent.Failed(
-                            "Server certificate was presented for an unexpected endpoint",
-                            retryable = false,
-                        ),
-                    )
-                    return@withSpecificLiveInstance 0
-                }
-                val sha256 = normalizeCertificateFingerprint(fingerprint)
-                if (sha256.isEmpty()) {
-                    certificateFatalFailureOutstanding = true
-                    emit(RdpEvent.Failed("Server certificate fingerprint is invalid", retryable = false))
-                    return@withSpecificLiveInstance 0
-                }
-                if (acceptedCertThumb != null && acceptedCertThumb.equals(sha256, ignoreCase = true)) {
-                    1
-                } else {
-                    certificatePromptOutstanding = true
-                    emit(
-                        RdpEvent.CertificatePrompt(
-                            host = host,
-                            port = port.toInt(),
-                            sha256 = sha256,
-                            isChange = acceptedCertThumb != null,
-                        ),
-                    )
-                    0
-                }
-            } ?: 0
-        }
+        override fun OnVerifyCertificateEx(
+            inst: Long,
+            host: String,
+            port: Long,
+            commonName: String,
+            subject: String,
+            issuer: String,
+            fingerprint: String,
+            flags: Long,
+        ): Int = verifyCertificate(inst, host, port, fingerprint, changed = false)
 
-        override fun OnVerifyChangedCertificateEx(inst: Long, host: String, port: Long, commonName: String, subject: String, issuer: String, fingerprint: String, oldSubject: String, oldIssuer: String, oldFingerprint: String, flags: Long): Int {
-            return withSpecificLiveInstance(inst) {
-                if (!certificateEndpointMatches(lastHost, lastPort, host, port)) {
-                    certificateFatalFailureOutstanding = true
-                    emit(
-                        RdpEvent.Failed(
-                            "Changed server certificate was presented for an unexpected endpoint",
-                            retryable = false,
-                        ),
-                    )
-                    return@withSpecificLiveInstance 0
-                }
-                val sha256 = normalizeCertificateFingerprint(fingerprint)
-                if (sha256.isEmpty()) {
-                    certificateFatalFailureOutstanding = true
-                    emit(RdpEvent.Failed("Changed server certificate fingerprint is invalid", retryable = false))
-                    return@withSpecificLiveInstance 0
-                }
-                if (acceptedCertThumb != null && acceptedCertThumb.equals(sha256, ignoreCase = true)) {
-                    1
-                } else {
-                    certificatePromptOutstanding = true
-                    emit(RdpEvent.CertificatePrompt(host, port.toInt(), sha256, isChange = true))
-                    0
-                }
-            } ?: 0
-        }
+        override fun OnVerifyChangedCertificateEx(
+            inst: Long,
+            host: String,
+            port: Long,
+            commonName: String,
+            subject: String,
+            issuer: String,
+            fingerprint: String,
+            oldSubject: String,
+            oldIssuer: String,
+            oldFingerprint: String,
+            flags: Long,
+        ): Int = verifyCertificate(inst, host, port, fingerprint, changed = true)
 
         override fun OnGraphicsUpdate(inst: Long, x: Int, y: Int, w: Int, h: Int) {
             if (rejectedNativeInstance.get() == inst) return
             withSpecificLiveInstance(inst) {
-            // End-to-end control-latency sampling: this frame is fully decoded (the gdi buffer is
-            // ready before this callback). If an input is pending from an idle→action edge, the gap
-            // to now is a genuine press→screen round-trip — feed it to the EMA. (See markDiscreteInput.)
-            recordServerFrameForLatency()
-            // Diagnostic heartbeat (throttled) — see gfxUpdateCount/lastGfxLogMs. Lets a bug report
-            // tell a frozen picture (lines stop) from a live one (lines continue to disconnect).
-            gfxUpdateCount++
-            val gfxNow = SystemClock.uptimeMillis()
-            if (gfxNow - lastGfxLogMs >= GFX_LOG_INTERVAL_MS) {
-                lastGfxLogMs = gfxNow
-                PocketLogger.d(TAG, "gfx alive: $gfxUpdateCount frames received (latest ${w}x$h at $x,$y)")
-            }
-            // Write this frame's dirty region into the BACK buffer (never the one the UI is drawing).
-            val target = buffer.nativeBuffer() ?: return
-            val copied = LibFreeRDP.updateGraphics(inst, target, x, y, w, h)
-            if (!copied) return
-            // The back buffer is one published generation behind — re-apply the region that changed
-            // in the previous frame so the buffer we're about to publish is a complete mirror of the
-            // gdi framebuffer (otherwise the swapped-in frame would be missing last frame's update).
-            // BUT skip that second copy when this frame's rect already fully covers the stale region
-            // (the common case for video / full-screen repaints) — re-copying it would just be a
-            // redundant full-screen blit, the dominant per-frame cost behind the "卡顿". (issue #1)
-            buffer.staleRect()?.let { r ->
-                val updateRight = x.toLong() + w
-                val updateBottom = y.toLong() + h
-                if (!r.isEmpty &&
-                    !(x <= r.left && y <= r.top &&
-                        updateRight >= r.right.toLong() && updateBottom >= r.bottom.toLong())
-                ) {
-                    val staleCopied = LibFreeRDP.updateGraphics(
-                        inst,
-                        target,
-                        r.left,
-                        r.top,
-                        r.width(),
-                        r.height(),
-                    )
-                    if (!staleCopied) return@withSpecificLiveInstance
+                val nowMs = SystemClock.uptimeMillis()
+                // End-to-end control-latency sampling: this frame is fully decoded (the gdi buffer is
+                // ready before this callback). If an input is pending from an idle→action edge, the gap
+                // to now is a genuine press→screen round-trip. (See markDiscreteInput.)
+                controlLatency.recordServerFrame(nowMs)
+                // Diagnostic heartbeat (throttled) — see gfxUpdateCount/lastGfxLogMs. Lets a bug report
+                // tell a frozen picture (lines stop) from a live one (lines continue to disconnect).
+                gfxUpdateCount++
+                if (nowMs - lastGfxLogMs >= GFX_LOG_INTERVAL_MS) {
+                    lastGfxLogMs = nowMs
+                    PocketLogger.d(TAG, "gfx alive: $gfxUpdateCount frames received (latest ${w}x$h at $x,$y)")
                 }
-            }
-            // Swap back→front: the UI's free-running render loop now reads a complete, stable frame,
-            // eliminating the mid-write tearing on large updates ("逐行扫描").
-            buffer.commitFrame(x, y, w, h)
-            _frameUpdates.tryEmit(Unit)
+                // Copy this frame's dirty region (plus previous stale rect if uncovered) into the
+                // BACK buffer, then swap back→front so the UI reads a complete, stable frame.
+                val updated = buffer.updateBackBuffer(
+                    inst = inst,
+                    x = x,
+                    y = y,
+                    w = w,
+                    h = h,
+                    commitTimeMs = nowMs,
+                    copyRegion = LibFreeRDP::updateGraphics,
+                )
+                if (updated) {
+                    _frameUpdates.tryEmit(Unit)
+                }
             }
         }
 
@@ -989,9 +894,7 @@ class RdpClient @Inject constructor(
                     return@withSpecificLiveInstance
                 }
                 val bitmap = runCatching {
-                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
-                        it.setPixels(pixels, 0, width, 0, 0, width, height)
-                    }
+                    Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
                 }.getOrElse {
                     PocketLogger.w(TAG, "ignoring remote cursor bitmap allocation failure")
                     return@withSpecificLiveInstance
@@ -1017,14 +920,40 @@ class RdpClient @Inject constructor(
         }
     }
 
-    init {
-        if (LibFreeRDP.isNativeReady()) {
-            PocketLogger.i(TAG, "FreeRDP native ready ver=${LibFreeRDP.freerdp_get_version()} h264=${LibFreeRDP.hasH264Support()}")
-        } else {
-            PocketLogger.w(TAG, "Native FreeRDP library not loaded; running in UI-stub mode")
-            Log.w(TAG, "Native FreeRDP library not loaded; running in UI-stub mode")
+    private fun verifyCertificate(
+        inst: Long,
+        host: String,
+        port: Long,
+        fingerprint: String,
+        changed: Boolean,
+    ): Int = withSpecificLiveInstance(inst) {
+        val label = if (changed) "Changed server certificate" else "Server certificate"
+        if (!certificateEndpointMatches(lastHost, lastPort, host, port)) {
+            certificateFatalFailureOutstanding = true
+            emit(RdpEvent.Failed("$label was presented for an unexpected endpoint", retryable = false))
+            return@withSpecificLiveInstance 0
         }
-    }
+        val sha256 = normalizeCertificateFingerprint(fingerprint)
+        if (sha256.isEmpty()) {
+            certificateFatalFailureOutstanding = true
+            emit(RdpEvent.Failed("$label fingerprint is invalid", retryable = false))
+            return@withSpecificLiveInstance 0
+        }
+        if (acceptedCertThumb != null && acceptedCertThumb.equals(sha256, ignoreCase = true)) {
+            1
+        } else {
+            certificatePromptOutstanding = true
+            emit(
+                RdpEvent.CertificatePrompt(
+                    host = host,
+                    port = port.toInt(),
+                    sha256 = sha256,
+                    isChange = changed || acceptedCertThumb != null,
+                ),
+            )
+            0
+        }
+    } ?: 0
 
     private fun buildCommandLine(p: RdpConnectionParams): Array<String> =
         buildRdpCommandLine(p, LibFreeRDP.hasH264Support())
@@ -1108,6 +1037,7 @@ class RdpClient @Inject constructor(
 
     companion object {
         private const val TAG = "RdpClient"
+        private val nativeReadinessLogged = AtomicBoolean(false)
         // performanceFlags bit (mirrors ConnectionEntity.PERF_LOW_LATENCY_VISUALS) — use lean visuals.
         // core-rdp does not depend on core-data, so the value is duplicated here; keep the two in sync.
         const val PERF_LOW_LATENCY_VISUALS = 1
@@ -1119,24 +1049,6 @@ class RdpClient @Inject constructor(
         private const val LATENCY_PROBE_TIMEOUT_MS = 2000
         private const val NANOS_PER_MILLI = 1_000_000L
         private const val MAX_LATENCY_MS = 9999
-        // End-to-end control-latency sampling tunables. Only arm a sample when the screen has been
-        // idle this long (so the next frame is a genuine response, not one already streaming).
-        private const val CONTROL_LATENCY_IDLE_GAP_MS = 80L
-        // A press→frame gap beyond this is treated as "no genuine response" and discarded: the press
-        // caused no visible change and we caught a later unrelated frame. Also bounds how stale a
-        // pending arm may get. Tightened 600→420→300ms: with hardware (MediaCodec) decode the true felt
-        // latency is well under 300ms, so a narrower window rejects more periodic-frame (cursor-blink)
-        // mispairs for a truer reading, while still > a typical real response so genuine samples count.
-        private const val CONTROL_LATENCY_RESPONSE_WINDOW_MS = 300L
-        // Recent-sample ring + low percentile replace the old EMA-of-all (the terminal-blink inflation
-        // fix). 20 samples ≈ tens of seconds of interaction; P25 = trustworthy low end without min-lock.
-        private const val CONTROL_LATENCY_SAMPLE_WINDOW = 20
-        private const val CONTROL_LATENCY_PERCENTILE = 0.25f
-        // Decode→present (display-pipeline) latency estimator: rolling median over this many recent
-        // drawn frames; samples above the cap are dropped as outliers (e.g. a frame held while the app
-        // was backgrounded). ~30 frames ≈ 0.5–1 s of drawing at 30–60 fps.
-        private const val PRESENT_LAG_SAMPLE_WINDOW = 30
-        private const val PRESENT_LAG_MAX_MS = 1000L
         // How often the "gfx alive" diagnostic heartbeat is logged (frames keep arriving) — ~2 s.
         private const val GFX_LOG_INTERVAL_MS = 2000L
 
@@ -1200,6 +1112,28 @@ internal fun isRetryableRdpFailure(errorCode: Long): Boolean {
         FREERDP_CONNECT_ERROR_CLASS -> errorType !in NON_RETRYABLE_CONNECT_TYPES
         else -> true
     }
+}
+
+internal fun shouldAutoReconnectRdpFailure(
+    autoReconnectEnabled: Boolean,
+    credentialsCancelled: Boolean,
+    errorCode: Long,
+): Boolean = autoReconnectEnabled && !credentialsCancelled && isRetryableRdpFailure(errorCode)
+
+/**
+ * Resolve a user-visible disconnect reason from FreeRDP's last error state.
+ *
+ * When a link drops with errorCode == 0 (ERRBASE_SUCCESS), FreeRDP maps code 0 to "Success.".
+ * Suppress that placeholder so the UI renders its localized generic disconnect label instead.
+ */
+internal fun disconnectReasonForError(
+    errorCode: Long,
+    errorString: String,
+    retryable: Boolean,
+): String? = when {
+    retryable -> null
+    errorCode == 0L -> null
+    else -> errorString.trim().takeIf { it.isNotEmpty() }
 }
 
 internal enum class CertificateTerminalDisposition {

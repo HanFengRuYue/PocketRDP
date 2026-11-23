@@ -70,6 +70,33 @@ class RdpSessionNotificationContentTest {
     }
 
     @Test
+    fun publicNotificationStatusTextReflectsAggregateStateWithoutLeakingHosts() {
+        val connecting = RdpSessionRegistrySnapshot(
+            activeCount = 1,
+            connectingCount = 1,
+            sessions = listOf(session(1L, "NAS", "8.8.8.8:63389", RdpSessionRuntimeState.CONNECTING)),
+        )
+        val reconnecting = RdpSessionRegistrySnapshot(
+            activeCount = 1,
+            reconnectingCount = 1,
+            sessions = listOf(session(1L, "NAS", "8.8.8.8:63389", RdpSessionRuntimeState.RECONNECTING)),
+        )
+        val mixedConnected = RdpSessionRegistrySnapshot(
+            activeCount = 2,
+            connectedCount = 1,
+            reconnectingCount = 1,
+            sessions = listOf(
+                session(1L, "NAS", "8.8.8.8:63389", RdpSessionRuntimeState.CONNECTED),
+                session(2L, "Desktop", "10.0.0.3:3389", RdpSessionRuntimeState.RECONNECTING),
+            ),
+        )
+
+        assertEquals("正在连接…", publicNotificationStatusText(connecting, strings))
+        assertEquals("连接中断，正在重连…", publicNotificationStatusText(reconnecting, strings))
+        assertEquals("已连接", publicNotificationStatusText(mixedConnected, strings))
+    }
+
+    @Test
     fun localeForLanguageTagResolvesExplicitOrSystemLocale() {
         assertEquals(Locale.getDefault(), localeForLanguageTag(LANGUAGE_SYSTEM))
         assertEquals(Locale.getDefault(), localeForLanguageTag(""))

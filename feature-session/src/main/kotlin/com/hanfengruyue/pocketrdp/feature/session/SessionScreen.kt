@@ -1,9 +1,7 @@
 package com.hanfengruyue.pocketrdp.feature.session
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -37,7 +35,6 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -115,6 +112,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -126,19 +124,15 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -178,23 +172,31 @@ import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCA
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_FUNCTION_TOOLBAR_QUICK_IDS
 import com.hanfengruyue.pocketrdp.core.data.preferences.MIN_SIMULATED_CURSOR_SCALE
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
+import com.hanfengruyue.pocketrdp.core.rdp.RdpClient
 import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
+import com.hanfengruyue.pocketrdp.core.ui.findActivity
 import com.hanfengruyue.pocketrdp.feature.session.input.RdpInputController
 import com.hanfengruyue.pocketrdp.feature.session.input.ScancodeMap
 import com.hanfengruyue.pocketrdp.feature.session.input.SessionImeBridge
 import com.hanfengruyue.pocketrdp.feature.session.input.UserTransform
 import com.hanfengruyue.pocketrdp.feature.session.input.sessionGestures
 import com.hanfengruyue.pocketrdp.feature.session.render.RdpSurface
+import com.hanfengruyue.pocketrdp.feature.session.ui.FloatingGlassBackground
+import com.hanfengruyue.pocketrdp.feature.session.ui.FloatingGlassContext
+import com.hanfengruyue.pocketrdp.feature.session.ui.GlassBackdropFrame
+import com.hanfengruyue.pocketrdp.feature.session.ui.GlassChromeBackground
+import com.hanfengruyue.pocketrdp.feature.session.ui.GlassChromeEdge
 import com.hanfengruyue.pocketrdp.feature.session.ui.SessionStatusTitle
+import com.hanfengruyue.pocketrdp.feature.session.ui.ToolbarGlassChrome
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 internal fun shouldDismissIme(event: Lifecycle.Event): Boolean = event == Lifecycle.Event.ON_PAUSE
 
@@ -259,9 +261,9 @@ fun SessionScreen(
     val hasPublishedFrame by rdpClient.buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
     val glassBackdropState = remember { mutableStateOf<GlassBackdropFrame?>(null) }
     val chromeViewportSize = remember { mutableStateOf(IntSize.Zero) }
-    val chromeViewportTopInRoot = remember { mutableStateOf(0f) }
+    val chromeViewportTopInRoot = remember { mutableFloatStateOf(0f) }
     val chromeViewportPositionOnScreen = remember { mutableStateOf(Offset.Zero) }
-    val topChromeTopInRoot = remember { mutableStateOf(0f) }
+    val topChromeTopInRoot = remember { mutableFloatStateOf(0f) }
     BackHandler { onClose() }
     var showLocalNetworkPermissionDialog by remember(connectionId) { mutableStateOf(false) }
     var allFilesPromptShown by remember(connectionId) { mutableStateOf(false) }
@@ -286,7 +288,10 @@ fun SessionScreen(
             localNetworkPermissionLauncher.launch(ACCESS_LOCAL_NETWORK_PERMISSION)
         }
     }
-    val canSampleGlassBackdrop = hasPublishedFrame && state.status is SessionConnectionStatus.Connected
+    val anyGlassVisible = toolbarBg.alpha > 0f || controlBg.alpha > 0f
+    val canSampleGlassBackdrop = anyGlassVisible &&
+        hasPublishedFrame &&
+        state.status is SessionConnectionStatus.Connected
     LaunchedEffect(rdpClient, canSampleGlassBackdrop) {
         if (!canSampleGlassBackdrop) {
             glassBackdropState.value = null
@@ -307,7 +312,7 @@ fun SessionScreen(
         }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, viewModel, connectionId) {
         val observer = LifecycleEventObserver { _, event ->
             when {
                 shouldDismissIme(event) -> viewModel.setImeVisible(false)
@@ -335,14 +340,10 @@ fun SessionScreen(
     val controller = remember(rdpClient) {
         RdpInputController(
             sendCursor = rdpClient::sendCursorEvent,
-            sendKey = rdpClient::sendKeyEvent,
-            sendUnicode = rdpClient::sendUnicodeKey,
             sendTouch = rdpClient::sendTouch,
-            isUnicodeSupported = rdpClient::isUnicodeInputSupported,
         )
     }
     LaunchedEffect(state.mode) { controller.setMode(state.mode) }
-    LaunchedEffect(state.remoteCursor) { controller.setRemoteCursor(state.remoteCursor) }
     LaunchedEffect(state.remoteWidth, state.remoteHeight) {
         controller.setRemoteSize(state.remoteWidth, state.remoteHeight)
         // Resetting local zoom on resize keeps the picture inside the visible area when the
@@ -361,17 +362,53 @@ fun SessionScreen(
     }
 
     // Local zoom/pan is owned by the controller and exposed as a StateFlow (userTransform).
-    // SessionCanvas collects it into a State that is read DEFERRED inside the graphicsLayer{}
-    // lambda, so a gesture frame re-records only the GPU layer instead of recomposing the canvas.
-    // (The old approach hoisted zoom/pan into Compose state via a virtualPosition sampler that
-    // could miss continuous control updates — the transform froze until the interaction ended.)
+    // Collected ONCE here and passed down as a State<UserTransform> so GPU layers read it
+    // deferred and controls derive only minimal flags without recomposing on every pan frame.
     val chromeTransformState = controller.userTransform.collectAsStateWithLifecycle()
-    val floatingGlassContext = FloatingGlassContext(
-        backdropState = glassBackdropState,
-        viewportSize = chromeViewportSize.value,
-        viewportPositionOnScreen = chromeViewportPositionOnScreen.value,
-        transformState = chromeTransformState,
-    )
+    val floatingGlassContext = remember(
+        glassBackdropState,
+        chromeViewportSize,
+        chromeViewportPositionOnScreen,
+        chromeTransformState,
+    ) {
+        FloatingGlassContext(
+            backdropState = glassBackdropState,
+            viewportSizeState = chromeViewportSize,
+            viewportPositionOnScreenState = chromeViewportPositionOnScreen,
+            transformState = chromeTransformState,
+        )
+    }
+    val toolbarGlassChrome = remember(
+        glassBackdropState,
+        chromeViewportSize,
+        chromeViewportTopInRoot,
+        chromeTransformState,
+        toolbarBg,
+    ) {
+        ToolbarGlassChrome(
+            backdropState = glassBackdropState,
+            viewportSizeState = chromeViewportSize,
+            viewportTopInRootState = chromeViewportTopInRoot,
+            transformState = chromeTransformState,
+            containerColor = toolbarBg,
+        )
+    }
+    val stickyLabels = remember(state.stickyModifiers) { stickyModifierLabels(state.stickyModifiers) }
+    val latestLastError = rememberUpdatedState(state.lastError)
+    val onStatusErrorClick = remember(scope, snackbarHostState) {
+        {
+            val err = latestLastError.value
+            if (err != null) {
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = err,
+                        duration = SnackbarDuration.Long,
+                        withDismissAction = true,
+                    )
+                }
+            }
+        }
+    }
 
     // Drive the system-bars (immersive) state.
     val view = LocalView.current
@@ -531,14 +568,14 @@ fun SessionScreen(
             ) {
                 Box(
                     modifier = Modifier.onGloballyPositioned {
-                        topChromeTopInRoot.value = it.positionInRoot().y
+                        topChromeTopInRoot.floatValue = it.positionInRoot().y
                     },
                 ) {
                     GlassChromeBackground(
                         backdropState = glassBackdropState,
-                        viewportSize = chromeViewportSize.value,
+                        viewportSizeState = chromeViewportSize,
                         transformState = chromeTransformState,
-                        chromeTopPx = topChromeTopInRoot.value - chromeViewportTopInRoot.value,
+                        chromeTopPx = { topChromeTopInRoot.floatValue - chromeViewportTopInRoot.floatValue },
                         containerColor = toolbarBg,
                         edge = GlassChromeEdge.Bottom,
                         modifier = Modifier
@@ -557,33 +594,16 @@ fun SessionScreen(
                                 connectionId = connectionId,
                                 remoteWidth = state.remoteWidth,
                                 remoteHeight = state.remoteHeight,
-                                fps = state.fps,
-                                controlLatencyMs = state.controlLatencyMs,
-                                presentLagMs = state.presentLagMs,
-                                networkRttMs = state.latencyMs,
-                                latencyAccepted = state.latencyAccepted,
-                                latencyDiscarded = state.latencyDiscarded,
-                                transportSnapshot = state.transportSnapshot,
+                                metricsFlow = viewModel.metricsState,
                                 host = state.connectionHost,
-                                stickyModifierLabels = stickyModifierLabels(state.stickyModifiers),
+                                stickyModifierLabels = stickyLabels,
                                 lastError = state.lastError,
                                 menuContainerColor = toolbarBg,
                                 menuContentColor = TOOLBAR_CONTENT,
-                                glassBuffer = rdpClient.buffer,
-                                glassViewportSize = chromeViewportSize.value,
-                                glassViewportPositionOnScreen = chromeViewportPositionOnScreen.value,
-                                glassTransformState = chromeTransformState,
+                                glass = floatingGlassContext,
+                                onExpandedChange = viewModel::onStatusMenuExpandedChange,
                                 onReconnect = viewModel::reconnect,
-                                onErrorClick = {
-                                    val err = state.lastError ?: return@SessionStatusTitle
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            message = err,
-                                            duration = SnackbarDuration.Long,
-                                            withDismissAction = true,
-                                        )
-                                    }
-                                },
+                                onErrorClick = onStatusErrorClick,
                             )
                         },
                         navigationIcon = {
@@ -659,45 +679,28 @@ fun SessionScreen(
                 .padding(padding)
                 .onSizeChanged { chromeViewportSize.value = it }
                 .onGloballyPositioned {
-                    chromeViewportTopInRoot.value = it.positionInRoot().y
+                    chromeViewportTopInRoot.floatValue = it.positionInRoot().y
                     chromeViewportPositionOnScreen.value = it.positionOnScreen()
                 }
                 .consumeWindowInsets(padding),
         ) {
             // The framebuffer fills the ENTIRE content area at all times and is NEVER shrunk by the
-            // soft keyboard. Previously the canvas lived in a Column with weight(1f) above the
-            // function-key toolbar, whose imePadding() grew with the keyboard and squeezed the canvas
-            // — that shrink re-ran SessionCanvas's fit-to-view scale + RdpInputController.clampPan and
-            // visually wiped the user's zoom/pan, so after zooming in to read a field you couldn't
-            // see what you typed (用户需求: 调出键盘不要重置画面缩放和位置). Keeping the canvas a fixed
-            // size means showing the IME never fires onSizeChanged, so zoom/pan are fully preserved;
-            // the keyboard (and the toolbar below) simply overlay the lower part of the picture.
-            //
-            // WHY the IME does NOT resize this canvas (do NOT "fix" this with adjustPan/adjustNothing):
-            // MainActivity calls enableEdgeToEdge() → setDecorFitsSystemWindows(false), so the window
-            // is drawn edge-to-edge and the keyboard arrives ONLY as WindowInsets.ime — it does not
-            // resize the window content (that auto-resize is the LEGACY decorFitsSystemWindows=true
-            // behaviour). The Scaffold's contentWindowInsets is systemBars-only (excludes ime), so the
-            // content Box is not padded down by the keyboard either. (This is the same reason the old
-            // design needed a manual Column+weight to lift content — see CLAUDE.md soft-keyboard
-            // section: Scaffold.bottomBar+imePadding would leave the keyboard overlapping.) Net: the
-            // window keeps `adjustResize` purely so WindowInsets.ime REPORTS (the toolbar's imePadding
-            // below needs it), while the content stays full-size. RdpSurface.onDraw fits to its own
-            // (unchanged) measured size, so the picture neither re-fits nor reflows when typing.
+            // soft keyboard. Keeping the canvas a fixed size means showing the IME never fires
+            // onSizeChanged, so zoom/pan are fully preserved; the keyboard and toolbar overlay the
+            // lower part of the picture while ImeLiftEffect translates the layer up.
             SessionCanvas(
                 modifier = Modifier.fillMaxSize(),
                 controller = controller,
-                buffer = rdpClient.buffer,
-                remoteWidth = state.remoteWidth,
-                remoteHeight = state.remoteHeight,
-                mode = state.mode,
+                rdpClient = rdpClient,
+                transformState = chromeTransformState,
+                config = SessionCanvasConfig(
+                    remoteWidth = state.remoteWidth,
+                    remoteHeight = state.remoteHeight,
+                    mode = state.mode,
+                    targetFrameRate = state.targetFrameRate,
+                    cursorScale = simulatedCursorScale,
+                ),
                 onViewSizeChanged = viewModel::onSurfaceResized,
-                targetFrameRate = state.targetFrameRate,
-                cursorScale = simulatedCursorScale,
-                // Decode→present latency feedback: RdpSurface reports each drawn frame's commit→draw
-                // wait so the status panel can show the display-pipeline lag the input→decode metric
-                // can't see (METRIC-1). Passive — see RdpSurface.onFramePresented / recordPresentLag.
-                onFramePresented = rdpClient::recordPresentLag,
             )
 
             val hasModalPrompt = state.pendingCertificate != null ||
@@ -759,13 +762,6 @@ fun SessionScreen(
                 toolbarHeightPx = { functionToolbarHeightPx.intValue },
             )
 
-            val toolbarGlassChrome = ToolbarGlassChrome(
-                backdropState = glassBackdropState,
-                viewportSize = chromeViewportSize.value,
-                viewportTopInRoot = chromeViewportTopInRoot.value,
-                transformState = chromeTransformState,
-                containerColor = toolbarBg,
-            )
             AnimatedVisibility(
                 visible = toolbarVisible,
                 enter = slideInVertically { it } + fadeIn(),
@@ -852,13 +848,13 @@ private fun FloatingSessionControlsOverlay(
 @Composable
 private fun ConnectingFrameOverlay(isReconnecting: Boolean) {
     val transition = rememberInfiniteTransition(label = "session-frame-loading")
-    val pulseAlpha by transition.animateFloat(
+    val pulseAlphaState = transition.animateFloat(
         initialValue = 0.34f,
         targetValue = 0.82f,
         animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
         label = "session-frame-loading-alpha",
     )
-    val pulseScale by transition.animateFloat(
+    val pulseScaleState = transition.animateFloat(
         initialValue = 0.92f,
         targetValue = 1.12f,
         animationSpec = infiniteRepeatable(animation = tween(680), repeatMode = RepeatMode.Reverse),
@@ -886,17 +882,17 @@ private fun ConnectingFrameOverlay(isReconnecting: Boolean) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Surface(
+                    Box(
                         modifier = Modifier
                             .size(72.dp)
                             .graphicsLayer {
-                                scaleX = pulseScale
-                                scaleY = pulseScale
-                            },
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = pulseAlpha),
-                        contentColor = Color.White,
-                    ) {}
+                                scaleX = pulseScaleState.value
+                                scaleY = pulseScaleState.value
+                                alpha = pulseAlphaState.value
+                            }
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
                     Icon(
                         imageVector = Icons.Default.SettingsEthernet,
                         contentDescription = null,
@@ -1207,15 +1203,6 @@ private fun openAllFilesAccessSettings(context: Context) {
     }
 }
 
-private fun Context.findActivity(): Activity? {
-    var ctx: Context? = this
-    while (ctx is ContextWrapper) {
-        if (ctx is Activity) return ctx
-        ctx = ctx.baseContext
-    }
-    return null
-}
-
 private fun stickyModifierLabels(mask: Int): List<String> = buildList {
     if (mask and ScancodeMap.Modifier.CTRL != 0) add("Ctrl")
     if (mask and ScancodeMap.Modifier.ALT != 0) add("Alt")
@@ -1223,10 +1210,8 @@ private fun stickyModifierLabels(mask: Int): List<String> = buildList {
     if (mask and ScancodeMap.Modifier.WIN != 0) add("Win")
 }
 
-// Session chrome palette (用户需求: 黑色半透明 — 先前的纯不透明黑被否，要半透明；浮动的缩放药丸/移动杆/
-// 退出按钮也一并改黑). Translucent BLACK so the picture shows through the floating function-key bar and the
-// pills like dark glass, while the white content stays legible. Shared by the TopAppBar, the function-key
-// bar, the zoom pill, the move handle and the exit FAB. 0.7 keeps it clearly see-through yet readable.
+// Session chrome palette: translucent black glass so the remote picture shows through while white
+// icons/labels remain legible across TopAppBar, function-key bar, zoom pill, pan handle, exit FAB.
 private const val CHROME_ALPHA = 0.7f
 private const val ANDROID_API_37 = 37
 private const val ACCESS_LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
@@ -1243,11 +1228,7 @@ private val TOOLBAR_ACTION_BORDER = Color(0xFF92E5D3)
 private val TOOLBAR_MODIFIER_FILL = Color(0xFF51478B).copy(alpha = 0.78f)
 private val TOOLBAR_MODIFIER_BORDER = Color(0xFFC6BCFF)
 private val TOOLBAR_MODIFIER_ACTIVE = Color(0xFFC6BCFF)
-private const val GLASS_EDGE_ALPHA = 0.22f
-private const val GLASS_HIGHLIGHT_ALPHA = 0.14f
-private const val GLASS_SHADOW_ALPHA = 0.16f
-private const val GLASS_TINT_MULTIPLIER = 0.58f
-private const val GLASS_SAMPLE_INTERVAL_MS = 250L
+private const val GLASS_SAMPLE_INTERVAL_MS = 500L
 private const val GLASS_BACKDROP_MAX_DIM = 480
 private const val TERMINAL_OVERLAY_SCRIM_ALPHA = 0.58f
 private const val TERMINAL_OVERLAY_CARD_ALPHA = 0.84f
@@ -1255,30 +1236,16 @@ private const val TERMINAL_OVERLAY_BORDER_ALPHA = 0.22f
 private const val TERMINAL_OVERLAY_DETAIL_ALPHA = 0.82f
 private val TERMINAL_OVERLAY_MAX_WIDTH = 360.dp
 private val FLOATING_CONTROLS_EDGE_PADDING = 12.dp
-private val GLASS_BACKDROP_MIN_BLUR_RADIUS = 0.dp
-private val GLASS_BACKDROP_MAX_BLUR_RADIUS = 10.dp
 private val EXIT_FULLSCREEN_CONTROL_SHAPE = RoundedCornerShape(12.dp)
 
-private data class GlassBackdropFrame(
-    val width: Int,
-    val height: Int,
-    val image: ImageBitmap,
+private data class SessionCanvasConfig(
+    val remoteWidth: Int,
+    val remoteHeight: Int,
+    val mode: InputMode,
+    val targetFrameRate: Int,
+    val cursorScale: Float,
 )
 
-private data class FloatingGlassContext(
-    val backdropState: State<GlassBackdropFrame?>,
-    val viewportSize: IntSize,
-    val viewportPositionOnScreen: Offset,
-    val transformState: State<UserTransform>,
-)
-
-private data class ToolbarGlassChrome(
-    val backdropState: State<GlassBackdropFrame?>,
-    val viewportSize: IntSize,
-    val viewportTopInRoot: Float,
-    val transformState: State<UserTransform>,
-    val containerColor: Color,
-)
 private const val DEFAULT_CURSOR_HEIGHT = 26f
 private const val DEFAULT_CURSOR_BOTTOM_Y = 24f
 private const val DEFAULT_CURSOR_TAIL_Y = 15f
@@ -1290,107 +1257,6 @@ private const val DEFAULT_CURSOR_TAIL_OUTER_Y = 24f
 private const val DEFAULT_CURSOR_SHAFT_RIGHT_X = 12f
 private const val DEFAULT_CURSOR_RIGHT_X = 19f
 private const val DEFAULT_CURSOR_OUTLINE_WIDTH = 2f
-private enum class GlassChromeEdge { Top, Bottom }
-
-@Composable
-private fun GlassChromeBackground(
-    backdropState: State<GlassBackdropFrame?>,
-    viewportSize: IntSize,
-    transformState: State<UserTransform>,
-    chromeTopPx: Float,
-    containerColor: Color,
-    edge: GlassChromeEdge,
-    modifier: Modifier = Modifier,
-) {
-    val frame = backdropState.value
-    val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
-        .coerceIn(0f, 1f)
-    val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
-        (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
-    val hasViewport = viewportSize.width > 0 && viewportSize.height > 0
-    Box(modifier = modifier) {
-        if (containerColor.alpha > 0f && frame != null && hasViewport) {
-            Canvas(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blur(blurRadius),
-            ) {
-                val scale = minOf(
-                    viewportSize.width.toFloat() / frame.width.toFloat(),
-                    viewportSize.height.toFloat() / frame.height.toFloat(),
-                )
-                val baseWidth = frame.width * scale
-                val baseHeight = frame.height * scale
-                val baseLeft = (viewportSize.width - baseWidth) / 2f
-                val baseTop = (viewportSize.height - baseHeight) / 2f
-                val transform = transformState.value
-                val centerX = viewportSize.width / 2f
-                val centerY = viewportSize.height / 2f
-                val transformedLeft = centerX + (baseLeft - centerX) * transform.zoom + transform.panX
-                val transformedTop = centerY + (baseTop - centerY) * transform.zoom +
-                    transform.panY + transform.offsetY
-                val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
-                val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
-                drawImage(
-                    image = frame.image,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(frame.width, frame.height),
-                    dstOffset = IntOffset(
-                        transformedLeft.roundToInt(),
-                        transformedTop.roundToInt() - chromeTopPx.roundToInt(),
-                    ),
-                    dstSize = IntSize(transformedWidth, transformedHeight),
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .glassChromeTint(containerColor, edge),
-        )
-    }
-}
-
-private fun Modifier.glassChromeTint(containerColor: Color, edge: GlassChromeEdge): Modifier =
-    this
-        .background(
-            containerColor.copy(
-                alpha = (containerColor.alpha * GLASS_TINT_MULTIPLIER).coerceIn(0f, 0.62f),
-            ),
-        )
-        .background(
-            Brush.verticalGradient(
-                colors = when (edge) {
-                    GlassChromeEdge.Top -> listOf(
-                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.55f * containerColor.alpha),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
-                    )
-                    GlassChromeEdge.Bottom -> listOf(
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
-                        TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.45f * containerColor.alpha),
-                        Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
-                    )
-                },
-            ),
-        )
-        .drawBehind {
-            val stroke = 1.dp.toPx()
-            val edgeY = if (edge == GlassChromeEdge.Top) stroke / 2f else size.height - stroke / 2f
-            val shadowY = if (edge == GlassChromeEdge.Top) stroke * 1.5f else size.height - stroke * 1.5f
-            drawLine(
-                color = Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
-                start = Offset(0f, shadowY),
-                end = Offset(size.width, shadowY),
-                strokeWidth = stroke * 2f,
-            )
-            drawLine(
-                color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA * containerColor.alpha),
-                start = Offset(0f, edgeY),
-                end = Offset(size.width, edgeY),
-                strokeWidth = stroke,
-            )
-        }
 
 /**
  * Drives the keyboard-lift (issue: 呼出键盘后画面被下方键盘挡住看不见). Reads the live soft-keyboard height
@@ -1477,33 +1343,27 @@ private fun Modifier.consumeAllPointerInput(): Modifier = pointerInput(Unit) {
 private fun SessionCanvas(
     modifier: Modifier,
     controller: RdpInputController,
-    buffer: com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer,
-    remoteWidth: Int,
-    remoteHeight: Int,
-    mode: InputMode,
+    rdpClient: RdpClient,
+    transformState: State<UserTransform>,
+    config: SessionCanvasConfig,
     onViewSizeChanged: (width: Int, height: Int) -> Unit,
-    targetFrameRate: Int,
-    cursorScale: Float,
-    onFramePresented: (presentLagMs: Long) -> Unit,
 ) {
+    val buffer = rdpClient.buffer
     val hasPublishedFrame by buffer.hasPublishedFrame.collectAsStateWithLifecycle(initialValue = false)
-    var viewSize by remember { mutableStateOf(0 to 0) }
-    // Keep these as State<...> (NOT `by`): read .value ONLY inside the graphicsLayer / Canvas draw
-    // lambdas below so a zoom/pan/cursor move re-records the layer/draw phase without recomposing
-    // SessionCanvas (which would re-run the AndroidView update lambda every frame).
-    val transformState = controller.userTransform.collectAsStateWithLifecycle()
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    // Keep virtualPosState as State<Offset> (NOT `by`) so cursor moves re-record only the Canvas
+    // draw lambda without recomposing SessionCanvas or re-running AndroidView.update.
     val virtualPosState = controller.virtualPosition.collectAsStateWithLifecycle()
-    val remoteCursorState = controller.remoteCursor.collectAsStateWithLifecycle()
 
     // Same fit-to-view math RdpSurface.onDraw uses. Kept in sync so touch coordinates and
     // the on-screen cursor overlay all share one transform.
-    val viewW = viewSize.first.toFloat()
-    val viewH = viewSize.second.toFloat()
-    val bmW = remoteWidth.toFloat()
-    val bmH = remoteHeight.toFloat()
-    val scale = if (viewW > 0f && viewH > 0f && bmW > 0f && bmH > 0f) {
-        minOf(viewW / bmW, viewH / bmH)
-    } else 1f
+    val viewW = viewSize.width.toFloat()
+    val viewH = viewSize.height.toFloat()
+    val bmW = config.remoteWidth.toFloat()
+    val bmH = config.remoteHeight.toFloat()
+    val hasValidView = viewW > 0f && viewH > 0f
+    val hasValidBitmap = bmW > 0f && bmH > 0f
+    val scale = if (hasValidView && hasValidBitmap) minOf(viewW / bmW, viewH / bmH) else 1f
     val dx = if (bmW > 0f) (viewW - bmW * scale) / 2f else 0f
     val dy = if (bmH > 0f) (viewH - bmH * scale) / 2f else 0f
 
@@ -1515,16 +1375,12 @@ private fun SessionCanvas(
         modifier = modifier
             .background(Color.Black)
             .onSizeChanged { size ->
-                viewSize = size.width to size.height
+                viewSize = size
                 controller.setViewSize(size.width, size.height)
                 onViewSizeChanged(size.width, size.height)
             }
             // sessionGestures sits ABOVE the graphicsLayer so pointer events arrive in
-            // un-transformed view coordinates — that lets the controller's toRemote math
-            // undo the fit-to-view + the user zoom/pan and land on the right remote pixel.
-            // It reads the input mode live from the controller (kept in sync with state.mode by
-            // the LaunchedEffect above), so it doesn't take a mode arg — see sessionGestures' doc
-            // for why a captured `{ mode }` lambda would go stale here.
+            // un-transformed view coordinates and reads the live controller mode on every touch.
             .sessionGestures(controller = controller),
         contentAlignment = Alignment.Center,
     ) {
@@ -1540,27 +1396,26 @@ private fun SessionCanvas(
                     surface.buffer = buffer
                     // Passive decode→present latency report (METRIC-1) — fired only when a new frame is
                     // drawn; never invalidates or touches the FPS counter.
-                    surface.onFramePresented = onFramePresented
+                    surface.onFramePresented = rdpClient::recordPresentLag
                 }
             },
             update = { surface ->
-                surface.targetFrameRate = targetFrameRate
+                surface.targetFrameRate = config.targetFrameRate
             },
         )
 
-        // Trackpad-mode cursor overlay. FreeRDP routes remote pointer shape changes here
-        // (I-beam, resize handles, hand cursor, etc.); until the server sends one, draw
-        // a Windows-style default arrow.
+        // Trackpad-mode cursor overlay. Collects rdpClient.remoteCursor directly inside
+        // RemoteCursorOverlay so remote pointer shape changes never recompose SessionCanvas.
         val hasRemoteFrameSize = bmW > 0f && bmH > 0f
-        val shouldShowRemoteCursor = mode == InputMode.TRACKPAD && hasPublishedFrame && hasRemoteFrameSize
+        val shouldShowRemoteCursor = config.mode == InputMode.TRACKPAD && hasPublishedFrame && hasRemoteFrameSize
         if (shouldShowRemoteCursor) {
             RemoteCursorOverlay(
-                cursor = remoteCursorState.value,
+                remoteCursorFlow = rdpClient.remoteCursor,
                 virtualPositionState = virtualPosState,
                 scale = scale,
                 dx = dx,
                 dy = dy,
-                cursorScale = cursorScale,
+                cursorScale = config.cursorScale,
                 modifier = Modifier
                     .fillMaxSize()
                     // Cursor sits on the same transformed layer as the framebuffer so it
@@ -1573,26 +1428,32 @@ private fun SessionCanvas(
 
 @Composable
 private fun RemoteCursorOverlay(
-    cursor: RdpCursor,
-    virtualPositionState: State<Pair<Float, Float>>,
+    remoteCursorFlow: StateFlow<RdpCursor>,
+    virtualPositionState: State<Offset>,
     scale: Float,
     dx: Float,
     dy: Float,
     cursorScale: Float,
     modifier: Modifier = Modifier,
 ) {
+    val cursor by remoteCursorFlow.collectAsStateWithLifecycle()
     if (cursor == RdpCursor.Hidden) return
-    val cursorImage = when (cursor) {
-        is RdpCursor.Image -> remember(cursor.bitmap) { cursor.bitmap.asImageBitmap() }
+    val cursorImage = when (val c = cursor) {
+        is RdpCursor.Image -> remember(c.bitmap) { c.bitmap.asImageBitmap() }
         else -> null
+    }
+    val defaultCursorPath = remember(cursorScale) { buildDefaultWindowsCursorPath(cursorScale) }
+    val defaultCursorStroke = remember(cursorScale) {
+        Stroke(width = DEFAULT_CURSOR_OUTLINE_WIDTH * cursorScale)
     }
 
     Canvas(modifier = modifier) {
         val virtualPosition = virtualPositionState.value
-        val hotX = if (cursor is RdpCursor.Image) cursor.hotX.toFloat() * cursorScale else 0f
-        val hotY = if (cursor is RdpCursor.Image) cursor.hotY.toFloat() * cursorScale else 0f
-        val left = virtualPosition.first * scale + dx - hotX
-        val top = virtualPosition.second * scale + dy - hotY
+        val imageCursor = cursor as? RdpCursor.Image
+        val hotX = (imageCursor?.hotX ?: 0).toFloat() * cursorScale
+        val hotY = (imageCursor?.hotY ?: 0).toFloat() * cursorScale
+        val left = virtualPosition.x * scale + dx - hotX
+        val top = virtualPosition.y * scale + dy - hotY
 
         if (cursorImage != null) {
             drawImage(
@@ -1606,25 +1467,24 @@ private fun RemoteCursorOverlay(
                 ),
             )
         } else {
-            drawDefaultWindowsCursor(left, top, cursorScale)
+            translate(left = left, top = top) {
+                drawPath(defaultCursorPath, color = Color.White)
+                drawPath(defaultCursorPath, color = Color.Black, style = defaultCursorStroke)
+            }
         }
     }
 }
 
-private fun DrawScope.drawDefaultWindowsCursor(left: Float, top: Float, cursorScale: Float) {
-    val arrow = Path().apply {
-        moveTo(left, top)
-        lineTo(left, top + DEFAULT_CURSOR_BOTTOM_Y * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_TAIL_LEFT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_SHAFT_LEFT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_TAIL_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_HEIGHT * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_TAIL_OUTER_X * cursorScale, top + DEFAULT_CURSOR_TAIL_OUTER_Y * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_SHAFT_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
-        lineTo(left + DEFAULT_CURSOR_RIGHT_X * cursorScale, top + DEFAULT_CURSOR_TAIL_Y * cursorScale)
-        close()
-    }
-    drawPath(arrow, color = Color.White)
-    drawPath(arrow, color = Color.Black, style = Stroke(width = DEFAULT_CURSOR_OUTLINE_WIDTH * cursorScale))
+private fun buildDefaultWindowsCursorPath(cursorScale: Float): Path = Path().apply {
+    moveTo(0f, 0f)
+    lineTo(0f, DEFAULT_CURSOR_BOTTOM_Y * cursorScale)
+    lineTo(DEFAULT_CURSOR_TAIL_LEFT_X * cursorScale, DEFAULT_CURSOR_TAIL_Y * cursorScale)
+    lineTo(DEFAULT_CURSOR_SHAFT_LEFT_X * cursorScale, DEFAULT_CURSOR_TAIL_Y * cursorScale)
+    lineTo(DEFAULT_CURSOR_TAIL_RIGHT_X * cursorScale, DEFAULT_CURSOR_HEIGHT * cursorScale)
+    lineTo(DEFAULT_CURSOR_TAIL_OUTER_X * cursorScale, DEFAULT_CURSOR_TAIL_OUTER_Y * cursorScale)
+    lineTo(DEFAULT_CURSOR_SHAFT_RIGHT_X * cursorScale, DEFAULT_CURSOR_TAIL_Y * cursorScale)
+    lineTo(DEFAULT_CURSOR_RIGHT_X * cursorScale, DEFAULT_CURSOR_TAIL_Y * cursorScale)
+    close()
 }
 
 /** F1–F12 keys for the function-key bar (label → Windows VK). */
@@ -1790,9 +1650,43 @@ private val allToolbarActions: List<ToolbarActionSpec> = buildList {
 private val toolbarActionsById: Map<String, ToolbarActionSpec> = allToolbarActions.associateBy { it.id }
 private val chordKeyActions: List<ToolbarActionSpec> =
     (commonChordKeyRows + letterKeyRows + numberKeyRows + navigationKeyRows + functionKeyRows)
-    .flatten()
-    .distinctBy { it.id }
-    .map { key -> ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk) }
+        .flatten()
+        .distinctBy { it.id }
+        .map { key -> ToolbarActionSpec(id = key.id, label = key.label, vk = key.vk) }
+private val chordKeyActionsById: Map<String, ToolbarActionSpec> = chordKeyActions.associateBy { it.id }
+
+private val modifierToolbarActions: List<ToolbarActionSpec> = toolbarModifierSpecs.map { spec ->
+    ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag)
+}
+private val quickKeyToolbarActions: List<ToolbarActionSpec> =
+    quickKeyRows.flatten().map(::toolbarActionForKey)
+private val navigationKeyToolbarActions: List<ToolbarActionSpec> =
+    navigationKeyRows.flatten().map(::toolbarActionForKey)
+private val functionKeyToolbarActions: List<ToolbarActionSpec> =
+    functionKeyRows.flatten().map(::toolbarActionForKey)
+private val letterToolbarActions: List<ToolbarActionSpec> =
+    letterKeyRows.flatten().map(::toolbarActionForKey)
+private val numberToolbarActions: List<ToolbarActionSpec> =
+    numberKeyRows.flatten().map(::toolbarActionForKey)
+private val commonChordToolbarActions: List<ToolbarActionSpec> =
+    commonChordKeyRows.flatten().map(::toolbarActionForKey)
+private val quickComboToolbarActions: List<ToolbarActionSpec> = quickComboRows.flatten().map { combo ->
+    ToolbarActionSpec(
+        id = combo.id,
+        label = combo.label,
+        vk = combo.keyVk,
+        modifiers = combo.modifiers,
+        isCtrlAltDel = combo.isCtrlAltDel,
+    )
+}
+private val quickKeyGridRows: List<List<ToolbarKeySpec>> =
+    quickKeyRows.flatten().chunked(TOOLBAR_GRID_COLUMNS)
+private val navigationKeyGridRows: List<List<ToolbarKeySpec>> =
+    navigationKeyRows.flatten().chunked(TOOLBAR_GRID_COLUMNS)
+private val functionKeyGridRows: List<List<ToolbarKeySpec>> =
+    functionKeyRows.flatten().chunked(TOOLBAR_GRID_COLUMNS)
+private val quickComboGridRows: List<List<ToolbarComboSpec>> =
+    quickComboRows.flatten().chunked(TOOLBAR_GRID_COLUMNS)
 
 private fun sanitizeQuickToolbarActionIds(ids: List<String>): List<String> {
     val valid = ids
@@ -1807,7 +1701,7 @@ private fun resolveToolbarAction(id: String): ToolbarActionSpec? =
 
 private fun parseToolbarChordAction(id: String): ToolbarActionSpec? {
     val encoded = decodeToolbarChordId(id) ?: return null
-    val key = chordKeyActions.firstOrNull { it.id == encoded.keyId } ?: return null
+    val key = chordKeyActionsById[encoded.keyId] ?: return null
     val vk = key.vk ?: return null
     return ToolbarActionSpec(
         id = id,
@@ -1828,10 +1722,9 @@ internal fun chordBuilderKeyIds(): List<String> =
 internal fun isKnownToolbarChordId(id: String): Boolean = parseToolbarChordAction(id) != null
 
 /**
- * Positions a sampled framebuffer backdrop behind an individual floating control. Unlike a plain
- * translucent container, this keeps the remote pixels spatially aligned with the control before
- * blurring and tinting them. The wrapper leaves the foreground Material surface responsible for
- * elevation, ripple and semantics while the backdrop itself is clipped to the exact control shape.
+ * Positions a sampled framebuffer backdrop behind an individual floating control. Reads
+ * [controlPositionOnScreen] strictly in the draw phase so relocating the control never recomposes
+ * this container or its backdrop.
  */
 @Composable
 private fun GlassControlContainer(
@@ -1841,15 +1734,15 @@ private fun GlassControlContainer(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    var controlPositionOnScreen by remember { mutableStateOf<Offset?>(null) }
+    val controlPositionOnScreen = remember { mutableStateOf<Offset?>(null) }
     Box(
         modifier = modifier.onGloballyPositioned {
-            controlPositionOnScreen = it.positionOnScreen()
+            controlPositionOnScreen.value = it.positionOnScreen()
         },
     ) {
         FloatingGlassBackground(
             glass = glass,
-            controlPositionOnScreen = controlPositionOnScreen,
+            controlPositionOnScreen = { controlPositionOnScreen.value },
             containerColor = containerColor,
             shape = shape,
             modifier = Modifier.matchParentSize(),
@@ -1858,97 +1751,9 @@ private fun GlassControlContainer(
     }
 }
 
-@Composable
-private fun FloatingGlassBackground(
-    glass: FloatingGlassContext,
-    controlPositionOnScreen: Offset?,
-    containerColor: Color,
-    shape: Shape,
-    modifier: Modifier = Modifier,
-) {
-    val frame = glass.backdropState.value
-    val hasViewport = glass.viewportSize.width > 0 && glass.viewportSize.height > 0
-    val canRenderBackdrop = containerColor.alpha > 0f && hasViewport
-    val blurProgress = ((containerColor.alpha - MIN_CHROME_ALPHA) / (MAX_CHROME_ALPHA - MIN_CHROME_ALPHA))
-        .coerceIn(0f, 1f)
-    val blurRadius = GLASS_BACKDROP_MIN_BLUR_RADIUS +
-        (GLASS_BACKDROP_MAX_BLUR_RADIUS - GLASS_BACKDROP_MIN_BLUR_RADIUS) * blurProgress
-    Box(modifier = modifier.clip(shape)) {
-        if (canRenderBackdrop && frame != null && controlPositionOnScreen != null) {
-            Canvas(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blur(blurRadius),
-            ) {
-                val scale = minOf(
-                    glass.viewportSize.width.toFloat() / frame.width.toFloat(),
-                    glass.viewportSize.height.toFloat() / frame.height.toFloat(),
-                )
-                val baseWidth = frame.width * scale
-                val baseHeight = frame.height * scale
-                val baseLeft = (glass.viewportSize.width - baseWidth) / 2f
-                val baseTop = (glass.viewportSize.height - baseHeight) / 2f
-                val transform = glass.transformState.value
-                val centerX = glass.viewportSize.width / 2f
-                val centerY = glass.viewportSize.height / 2f
-                val transformedLeft = centerX + (baseLeft - centerX) * transform.zoom + transform.panX
-                val transformedTop = centerY + (baseTop - centerY) * transform.zoom +
-                    transform.panY + transform.offsetY
-                val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
-                val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
-                drawImage(
-                    image = frame.image,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(frame.width, frame.height),
-                    dstOffset = IntOffset(
-                        transformedLeft.roundToInt() -
-                            (controlPositionOnScreen.x - glass.viewportPositionOnScreen.x).roundToInt(),
-                        transformedTop.roundToInt() -
-                            (controlPositionOnScreen.y - glass.viewportPositionOnScreen.y).roundToInt(),
-                    ),
-                    dstSize = IntSize(transformedWidth, transformedHeight),
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .floatingGlassTint(containerColor, shape),
-        )
-    }
-}
+private val TOOLBAR_MOTION_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
-private fun Modifier.floatingGlassTint(containerColor: Color, shape: Shape): Modifier =
-    this
-        .background(
-            color = containerColor.copy(
-                alpha = (containerColor.alpha * GLASS_TINT_MULTIPLIER).coerceIn(0f, 0.62f),
-            ),
-            shape = shape,
-        )
-        .background(
-            brush = Brush.verticalGradient(
-                listOf(
-                    TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * containerColor.alpha),
-                    TOOLBAR_CONTENT.copy(alpha = GLASS_HIGHLIGHT_ALPHA * 0.42f * containerColor.alpha),
-                    Color.Black.copy(alpha = GLASS_SHADOW_ALPHA * containerColor.alpha),
-                ),
-            ),
-            shape = shape,
-        )
-        .border(
-            width = 1.dp,
-            color = TOOLBAR_CONTENT.copy(alpha = GLASS_EDGE_ALPHA * containerColor.alpha),
-            shape = shape,
-        )
-
-/**
- * Function-key toolbar shown while the soft keyboard is up. It deliberately avoids horizontal scrolling:
- * fixed pages keep every key tappable. The quick-row editor exposes a guided chord builder, while
- * long-pressing any regular key remains a shortcut for sending a one-shot chord.
- * The background layer consumes only the empty gaps so toolbar touches never leak into the session canvas.
- */
-private fun toolbarPanelEnterTransition() =
+private val toolbarPanelEnter =
     expandVertically(
         animationSpec = tween(
             durationMillis = TOOLBAR_PANEL_ENTER_DURATION_MS,
@@ -1968,7 +1773,7 @@ private fun toolbarPanelEnterTransition() =
         ),
     )
 
-private fun toolbarPanelExitTransition() =
+private val toolbarPanelExit =
     shrinkVertically(
         animationSpec = tween(
             durationMillis = TOOLBAR_PANEL_EXIT_DURATION_MS,
@@ -1988,7 +1793,7 @@ private fun toolbarPanelExitTransition() =
         ),
     )
 
-private fun toolbarCompactRowEnterTransition() =
+private val toolbarCompactRowEnter =
     expandVertically(
         animationSpec = tween(
             durationMillis = TOOLBAR_COMPACT_ROW_ENTER_DURATION_MS,
@@ -2008,7 +1813,7 @@ private fun toolbarCompactRowEnterTransition() =
         ),
     )
 
-private fun toolbarCompactRowExitTransition() =
+private val toolbarCompactRowExit =
     shrinkVertically(
         animationSpec = tween(
             durationMillis = TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS,
@@ -2114,17 +1919,17 @@ private fun ToolbarBackdropLayer(
     glassChrome: ToolbarGlassChrome,
     modifier: Modifier = Modifier,
 ) {
-    var toolbarTopPx by remember { mutableStateOf(0f) }
+    val toolbarTopInRoot = remember { mutableFloatStateOf(0f) }
     Box(
         modifier = modifier
-            .onGloballyPositioned { toolbarTopPx = it.positionInRoot().y - glassChrome.viewportTopInRoot }
+            .onGloballyPositioned { toolbarTopInRoot.floatValue = it.positionInRoot().y }
             .consumeAllPointerInput(),
     ) {
         GlassChromeBackground(
             backdropState = glassChrome.backdropState,
-            viewportSize = glassChrome.viewportSize,
+            viewportSizeState = glassChrome.viewportSizeState,
             transformState = glassChrome.transformState,
-            chromeTopPx = toolbarTopPx,
+            chromeTopPx = { toolbarTopInRoot.floatValue - glassChrome.viewportTopInRootState.value },
             containerColor = glassChrome.containerColor,
             edge = GlassChromeEdge.Top,
             modifier = Modifier.matchParentSize(),
@@ -2156,8 +1961,11 @@ private fun SessionToolbar(
             comboTarget = target
             comboMask = state.stickyModifiers.takeIf { it != 0 } ?: ScancodeMap.Modifier.CTRL
         }
-        val quickActions = sanitizeQuickToolbarActionIds(state.functionToolbarQuickIds)
-            .mapNotNull { resolveToolbarAction(it) }
+        val quickActions = remember(state.functionToolbarQuickIds) {
+            sanitizeQuickToolbarActionIds(state.functionToolbarQuickIds)
+                .mapNotNull(::resolveToolbarAction)
+        }
+        val quickIds = remember(quickActions) { quickActions.map { it.id } }
 
         ToolbarBackdropLayer(
             glassChrome = glassChrome,
@@ -2174,13 +1982,13 @@ private fun SessionToolbar(
             AnimatedVisibility(
                 visible = expanded,
                 modifier = Modifier.weight(1f, fill = false),
-                enter = toolbarPanelEnterTransition(),
-                exit = toolbarPanelExitTransition(),
+                enter = toolbarPanelEnter,
+                exit = toolbarPanelExit,
             ) {
                 SessionToolbarExpandedBody(
                     viewModel = viewModel,
                     state = state,
-                    quickIds = quickActions.map { it.id },
+                    quickIds = quickIds,
                     modeState = SessionToolbarModeState(
                         page = page,
                         editingQuickRow = editingQuickRow,
@@ -2201,8 +2009,8 @@ private fun SessionToolbar(
             }
             AnimatedVisibility(
                 visible = !editingQuickRow,
-                enter = toolbarCompactRowEnterTransition(),
-                exit = toolbarCompactRowExitTransition(),
+                enter = toolbarCompactRowEnter,
+                exit = toolbarCompactRowExit,
             ) {
                 CompactToolbarRow(
                     actions = quickActions,
@@ -2210,7 +2018,6 @@ private fun SessionToolbar(
                     viewModel = viewModel,
                     expanded = expanded,
                     onLongKey = openCombo,
-                    onMomentaryAction = { },
                     onToggleExpanded = {
                         if (expanded) {
                             expanded = false
@@ -2234,7 +2041,6 @@ private fun CompactToolbarRow(
     viewModel: SessionViewModel,
     expanded: Boolean,
     onLongKey: (ToolbarKeySpec) -> Unit,
-    onMomentaryAction: () -> Unit,
     onToggleExpanded: () -> Unit,
 ) {
     val quickScroll = rememberScrollState()
@@ -2263,7 +2069,6 @@ private fun CompactToolbarRow(
                     state = state,
                     viewModel = viewModel,
                     onLongKey = onLongKey,
-                    onMomentaryAction = onMomentaryAction,
                     modifier = Modifier.widthIn(min = compactCellWidth(action.label)),
                 )
             }
@@ -2329,7 +2134,7 @@ private fun ToolbarExpandedPanel(
     when (page) {
         ToolbarPage.QUICK -> {
             ToolbarKeyRows(
-                rows = quickKeyRows,
+                rows = quickKeyGridRows,
                 onKey = {
                     viewModel.sendKey(it)
                     actions.onMomentaryAction()
@@ -2337,7 +2142,7 @@ private fun ToolbarExpandedPanel(
                 onLongKey = actions.onLongKey,
             )
             ToolbarComboRows(
-                rows = quickComboRows,
+                rows = quickComboGridRows,
                 onCombo = { combo ->
                     dispatchToolbarCombo(combo, viewModel)
                     actions.onMomentaryAction()
@@ -2346,7 +2151,7 @@ private fun ToolbarExpandedPanel(
         }
         ToolbarPage.NAVIGATION -> {
             ToolbarKeyRows(
-                rows = navigationKeyRows,
+                rows = navigationKeyGridRows,
                 onKey = {
                     viewModel.sendKey(it)
                     actions.onMomentaryAction()
@@ -2356,7 +2161,7 @@ private fun ToolbarExpandedPanel(
         }
         ToolbarPage.FUNCTION -> {
             ToolbarKeyRows(
-                rows = functionKeyRows,
+                rows = functionKeyGridRows,
                 onKey = {
                     viewModel.sendKey(it)
                     actions.onMomentaryAction()
@@ -2625,6 +2430,7 @@ private fun QuickToolbarRegularKeyPicker(
     selectedIds: List<String>,
     onAction: (ToolbarActionSpec) -> Unit,
 ) {
+    val selectedIdSet = remember(selectedIds) { selectedIds.toSet() }
     val isAtLimit = selectedIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_add_regular_hint))
     if (isAtLimit) {
@@ -2632,46 +2438,36 @@ private fun QuickToolbarRegularKeyPicker(
     }
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_modifiers),
-        actions = toolbarModifierSpecs.map { spec ->
-            ToolbarActionSpec(id = spec.id, label = spec.label, modifierFlag = spec.flag)
-        },
-        selectedIds = selectedIds,
+        actions = modifierToolbarActions,
+        selectedIdSet = selectedIdSet,
         enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_common),
-        actions = quickKeyRows.flatten().map(::toolbarActionForKey),
-        selectedIds = selectedIds,
+        actions = quickKeyToolbarActions,
+        selectedIdSet = selectedIdSet,
         enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_navigation),
-        actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
-        selectedIds = selectedIds,
+        actions = navigationKeyToolbarActions,
+        selectedIdSet = selectedIdSet,
         enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_combo_function),
-        actions = functionKeyRows.flatten().map(::toolbarActionForKey),
-        selectedIds = selectedIds,
+        actions = functionKeyToolbarActions,
+        selectedIdSet = selectedIdSet,
         enabled = !isAtLimit,
         onAction = onAction,
     )
     ToolbarEditorActionSection(
         title = stringResource(R.string.session_toolbar_saved_combos),
-        actions = quickComboRows.flatten().map { combo ->
-            ToolbarActionSpec(
-                id = combo.id,
-                label = combo.label,
-                vk = combo.keyVk,
-                modifiers = combo.modifiers,
-                isCtrlAltDel = combo.isCtrlAltDel,
-            )
-        },
-        selectedIds = selectedIds,
+        actions = quickComboToolbarActions,
+        selectedIdSet = selectedIdSet,
         enabled = !isAtLimit,
         onAction = onAction,
     )
@@ -2681,11 +2477,13 @@ private fun QuickToolbarRegularKeyPicker(
 private fun ToolbarEditorActionSection(
     title: String,
     actions: List<ToolbarActionSpec>,
-    selectedIds: List<String>,
+    selectedIdSet: Set<String>,
     enabled: Boolean,
     onAction: (ToolbarActionSpec) -> Unit,
 ) {
-    val availableActions = actions.filterNot { it.id in selectedIds }
+    val availableActions = remember(actions, selectedIdSet) {
+        actions.filterNot { it.id in selectedIdSet }
+    }
     if (availableActions.isEmpty()) return
     ToolbarSectionLabel(text = title, compact = true)
     ToolbarActionGrid(
@@ -2782,6 +2580,7 @@ private fun ToolbarChordBuilder(
     onAdd: (String) -> Unit,
 ) {
     var modifierMask by remember { mutableIntStateOf(0) }
+    val existingIdSet = remember(existingIds) { existingIds.toSet() }
     val isAtLimit = existingIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
     if (isAtLimit) {
         ToolbarQuickLimitNotice()
@@ -2812,7 +2611,7 @@ private fun ToolbarChordBuilder(
     ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
     ToolbarChordKeySections(
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
@@ -2825,7 +2624,8 @@ private fun ToolbarActionGrid(
     isSelected: (ToolbarActionSpec) -> Boolean = { false },
     isEnabled: (ToolbarActionSpec) -> Boolean = { true },
 ) {
-    actions.chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
+    val rows = remember(actions) { actions.chunked(TOOLBAR_GRID_COLUMNS) }
+    rows.forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2928,7 +2728,6 @@ private const val TOOLBAR_COMPACT_ROW_EXIT_DURATION_MS = 180
 private const val TOOLBAR_TOGGLE_ICON_DURATION_MS = 260
 private const val TOOLBAR_GRID_COLUMNS = 4
 private const val TOOLBAR_PRIMARY_ACTION_WEIGHT = 1.35f
-private val TOOLBAR_MOTION_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 private val TOOLBAR_SECTION_SPACING = 6.dp
 private val TOOLBAR_EDITOR_ITEM_SPACING = 8.dp
 private val TOOLBAR_REORDER_DRAG_ELEVATION = 10.dp
@@ -2941,7 +2740,6 @@ private fun ToolbarActionButton(
     state: SessionUiState,
     viewModel: SessionViewModel,
     onLongKey: (ToolbarKeySpec) -> Unit,
-    onMomentaryAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val modifierFlag = action.modifierFlag
@@ -2958,10 +2756,7 @@ private fun ToolbarActionButton(
             ?.let { ToolbarKeySpec(action.id, action.label, it) }
         ToolbarKey(
             label = action.label,
-            onClick = {
-                dispatchToolbarAction(action, viewModel)
-                onMomentaryAction()
-            },
+            onClick = { dispatchToolbarAction(action, viewModel) },
             onLongClick = keySpec?.let { { onLongKey(it) } },
             modifier = modifier,
             tone = toolbarToneForAction(action),
@@ -2971,7 +2766,6 @@ private fun ToolbarActionButton(
 
 private fun dispatchToolbarAction(action: ToolbarActionSpec, viewModel: SessionViewModel) {
     when {
-        action.modifierFlag != 0 -> viewModel.toggleStickyModifier(action.modifierFlag)
         action.isCtrlAltDel -> viewModel.sendCtrlAltDel()
         action.modifiers != 0 -> action.vk?.let { viewModel.sendKeyWithModifiers(it, action.modifiers) }
         action.vk != null -> viewModel.sendKey(action.vk)
@@ -3024,14 +2818,17 @@ private fun ZoomControls(
     glass: FloatingGlassContext,
     modifier: Modifier = Modifier,
 ) {
-    val transform by controller.userTransform.collectAsStateWithLifecycle()
-    val pct = (transform.zoom * 100).roundToInt()
+    val transformState = glass.transformState
+    val pct by remember(transformState) {
+        derivedStateOf { (transformState.value.zoom * 100).roundToInt() }
+    }
     val zoomed = pct > 100
     var dragging by remember { mutableStateOf(false) }
     var movingSelf by remember { mutableStateOf(false) }
     // The pill remembers where it was dragged (long-press-then-drag relocates it, like the move handle).
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
     var pillSize by remember { mutableStateOf(IntSize.Zero) }
+    val latestContainerSize = rememberUpdatedState(containerSize)
     // Re-clamp on container/pill reflow (soft keyboard, rotation) so the pill stays reachable.
     LaunchedEffect(containerSize, pillSize) {
         handleOffset = clampPillOffset(handleOffset, 0f, 0f, containerSize, pillSize)
@@ -3046,7 +2843,7 @@ private fun ZoomControls(
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
             .zoomPillGestures(
                 controller = controller,
-                containerSize = containerSize,
+                containerSize = { latestContainerSize.value },
                 pillSize = { pillSize },
                 handleOffset = { handleOffset },
                 setHandleOffset = { handleOffset = it },
@@ -3082,106 +2879,124 @@ private fun ZoomControls(
     }
 }
 
-/**
- * The zoom pill's gesture vocab, factored out of [ZoomControls] so that composable stays small:
- * drag up/down = continuous zoom, double-tap = reset to 100%, long-press-then-drag = relocate the
- * pill (armed only while the finger holds still within the slop, exactly like PanHandle). Pill state
- * lives in the composable and is read/written through getter/setter lambdas so a gesture recomposes
- * ONLY the small overlay. The relocate offset runs through [clampPillOffset] so the pill can never be
- * dragged off-screen and lost — it is the only zoom control (no pinch gesture). Consumes only its own
- * tracked pointer, so it never leaks into the canvas gesture surface beneath.
- */
+private class ZoomPillGestureState(
+    val pointerId: androidx.compose.ui.input.pointer.PointerId,
+    val startZoom: Float,
+    val startOffset: Offset,
+    val startMs: Long,
+) {
+    var totalDx: Float = 0f
+    var totalDy: Float = 0f
+    var tapCancelled: Boolean = false
+    var endedNormally: Boolean = false
+    var isDrag: Boolean = false
+    var moveSelf: Boolean = false
+}
+
 private fun Modifier.zoomPillGestures(
     controller: RdpInputController,
-    containerSize: IntSize,
+    containerSize: () -> IntSize,
     pillSize: () -> IntSize,
     handleOffset: () -> Offset,
     setHandleOffset: (Offset) -> Unit,
     setDragging: (Boolean) -> Unit,
     setMovingSelf: (Boolean) -> Unit,
-): Modifier = pointerInput(controller, containerSize) {
+): Modifier = pointerInput(controller) {
     var lastTapMs = 0L
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         down.consume()
-        val startZoom = controller.userZoom()
-        val startOffset = handleOffset()
-        val startMs = SystemClock.uptimeMillis()
-        var totalDx = 0f
-        var totalDy = 0f
-        var tapCancelled = false
-        var endedNormally = false
-        var isDrag = false    // vertical travel past slop → zoom drag
-        var moveSelf = false  // long-press fired while still → relocate the pill itself
+        val gesture = ZoomPillGestureState(
+            pointerId = down.id,
+            startZoom = controller.userZoom(),
+            startOffset = handleOffset(),
+            startMs = SystemClock.uptimeMillis(),
+        )
         var tracking = true
         try {
             while (tracking) {
-            // While still and not yet zoom-dragging, arm a long-press → relocate mode
-            // (same vocab as PanHandle); moving past the slop first makes it a zoom drag.
-            val armLong = !isDrag && !moveSelf &&
-                hypot(totalDx, totalDy) <= ZOOM_DRAG_SLOP_PX
-            val event = if (armLong) {
-                val remaining = (ZOOM_RELOCATE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
-                    .coerceAtLeast(1L)
-                withTimeoutOrNull(remaining) { awaitPointerEvent() }
-            } else {
-                awaitPointerEvent()
-            }
-            if (event == null) {
-                // Held still long enough → relocate the pill for the rest of the gesture.
-                moveSelf = true
-                setMovingSelf(true)
-                continue
-            }
-            val change = event.changes.firstOrNull { it.id == down.id }
-            if (change != null && change.pressed) {
-                val d = change.positionChange()
-                totalDx += d.x
-                totalDy += d.y
-                if (hypot(totalDx, totalDy) > ZOOM_DRAG_SLOP_PX) tapCancelled = true
-                if (!moveSelf && !isDrag &&
-                    abs(totalDy) > ZOOM_DRAG_SLOP_PX && abs(totalDy) >= abs(totalDx)
-                ) {
-                    isDrag = true
-                    setDragging(true)
+                val event = awaitZoomPillEvent(gesture)
+                if (event == null) {
+                    gesture.moveSelf = true
+                    setMovingSelf(true)
+                } else {
+                    tracking = processZoomPillEvent(
+                        event = event,
+                        gesture = gesture,
+                        controller = controller,
+                        containerSize = containerSize(),
+                        pillSize = pillSize(),
+                        setHandleOffset = setHandleOffset,
+                        setDragging = setDragging,
+                    )
                 }
-                if (moveSelf) {
-                    // Relocate the pill itself (follows the finger 1:1), clamped on-screen.
-                    setHandleOffset(clampPillOffset(startOffset, totalDx, totalDy, containerSize, pillSize()))
-                } else if (isDrag) {
-                    // Drag UP (negative dy) magnifies; multiplicative so a fixed travel
-                    // is a constant zoom ratio at any level.
-                    val factor = ZOOM_DRAG_BASE.pow(-totalDy / ZOOM_DRAG_TRAVEL_PX)
-                    controller.setUserZoom(startZoom * factor)
-                }
-                change.consume()
-            } else {
-                // Our pointer lifted (or vanished) → end this gesture.
-                change?.consume()
-                endedNormally = change != null
-                tracking = false
             }
-        }
         } finally {
             setDragging(false)
             setMovingSelf(false)
         }
-        if (!endedNormally) {
-            lastTapMs = 0L
-        } else if (isDrag || moveSelf || tapCancelled) {
-            // A zoom drag or relocate breaks the double-tap chain so a stray tap after it
-            // can't be read as a double-tap and wipe the zoom just set.
-            lastTapMs = 0L
-        } else {
-            // It was a tap; a second tap inside the window resets the zoom to 100%.
-            val now = SystemClock.uptimeMillis()
-            if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
-                controller.resetZoom()
-                lastTapMs = 0L
-            } else {
-                lastTapMs = now
-            }
-        }
+        lastTapMs = resolveZoomPillTapReset(gesture, lastTapMs, controller)
+    }
+}
+
+private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitZoomPillEvent(
+    gesture: ZoomPillGestureState,
+): androidx.compose.ui.input.pointer.PointerEvent? {
+    val armLong = !gesture.isDrag && !gesture.moveSelf &&
+        hypot(gesture.totalDx, gesture.totalDy) <= ZOOM_DRAG_SLOP_PX
+    if (!armLong) return awaitPointerEvent()
+    val remaining = (ZOOM_RELOCATE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - gesture.startMs))
+        .coerceAtLeast(1L)
+    return withTimeoutOrNull(remaining) { awaitPointerEvent() }
+}
+
+private fun processZoomPillEvent(
+    event: androidx.compose.ui.input.pointer.PointerEvent,
+    gesture: ZoomPillGestureState,
+    controller: RdpInputController,
+    containerSize: IntSize,
+    pillSize: IntSize,
+    setHandleOffset: (Offset) -> Unit,
+    setDragging: (Boolean) -> Unit,
+): Boolean {
+    val change = event.changes.firstOrNull { it.id == gesture.pointerId }
+    if (change == null || !change.pressed) {
+        change?.consume()
+        gesture.endedNormally = change != null
+        return false
+    }
+    val d = change.positionChange()
+    gesture.totalDx += d.x
+    gesture.totalDy += d.y
+    if (hypot(gesture.totalDx, gesture.totalDy) > ZOOM_DRAG_SLOP_PX) gesture.tapCancelled = true
+    val verticalDrag = abs(gesture.totalDy) > ZOOM_DRAG_SLOP_PX && abs(gesture.totalDy) >= abs(gesture.totalDx)
+    if (!gesture.moveSelf && !gesture.isDrag && verticalDrag) {
+        gesture.isDrag = true
+        setDragging(true)
+    }
+    if (gesture.moveSelf) {
+        setHandleOffset(clampPillOffset(gesture.startOffset, gesture.totalDx, gesture.totalDy, containerSize, pillSize))
+    } else if (gesture.isDrag) {
+        val factor = ZOOM_DRAG_BASE.pow(-gesture.totalDy / ZOOM_DRAG_TRAVEL_PX)
+        controller.setUserZoom(gesture.startZoom * factor)
+    }
+    change.consume()
+    return true
+}
+
+private fun resolveZoomPillTapReset(
+    gesture: ZoomPillGestureState,
+    lastTapMs: Long,
+    controller: RdpInputController,
+): Long {
+    val moved = gesture.isDrag || gesture.moveSelf || gesture.tapCancelled
+    if (!gesture.endedNormally || moved) return 0L
+    val now = SystemClock.uptimeMillis()
+    return if (now - lastTapMs in 1..ZOOM_DOUBLE_TAP_MS) {
+        controller.resetUserTransform()
+        0L
+    } else {
+        now
     }
 }
 
@@ -3205,44 +3020,13 @@ private fun SavedToolbarChordBuilder(
     onAdd: (String) -> Unit,
     onCancel: () -> Unit,
 ) {
-    var modifierMask by remember { mutableIntStateOf(0) }
-    val isAtLimit = existingIds.size >= MAX_FUNCTION_TOOLBAR_QUICK_IDS
     ToolbarSectionHeader(
         title = stringResource(R.string.session_toolbar_add_combo_title),
         subtitle = stringResource(R.string.session_toolbar_add_combo_example),
         onClose = onCancel,
     )
-    if (isAtLimit) {
-        ToolbarQuickLimitNotice()
-    }
-    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_modifiers))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        toolbarModifierSpecs.forEach { spec ->
-            ToolbarToggleChip(
-                label = spec.label,
-                active = modifierMask and spec.flag != 0,
-                onClick = { modifierMask = modifierMask xor spec.flag },
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-    ToolbarPreviewChip(
-        label = if (modifierMask == 0) {
-            stringResource(R.string.session_toolbar_combo_preview_empty)
-        } else {
-            stringResource(R.string.session_toolbar_combo_preview, buildChordLabel(modifierMask, "…"))
-        },
-        modifier = Modifier.fillMaxWidth(),
-        tone = ToolbarKeyTone.Combination,
-    )
-    ToolbarSectionLabel(text = stringResource(R.string.session_toolbar_combo_step_key))
-    ToolbarChordKeySections(
-        modifierMask = modifierMask,
+    ToolbarChordBuilder(
         existingIds = existingIds,
-        isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
 }
@@ -3260,47 +3044,47 @@ private fun ToolbarQuickLimitNotice() {
 @Composable
 private fun ToolbarChordKeySections(
     modifierMask: Int,
-    existingIds: List<String>,
+    existingIdSet: Set<String>,
     isAtLimit: Boolean,
     onAdd: (String) -> Unit,
 ) {
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_letters),
-        actions = letterKeyRows.flatten().map(::toolbarActionForKey),
+        actions = letterToolbarActions,
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_numbers),
-        actions = numberKeyRows.flatten().map(::toolbarActionForKey),
+        actions = numberToolbarActions,
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_common),
-        actions = commonChordKeyRows.flatten().map(::toolbarActionForKey),
+        actions = commonChordToolbarActions,
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_navigation),
-        actions = navigationKeyRows.flatten().map(::toolbarActionForKey),
+        actions = navigationKeyToolbarActions,
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
     ToolbarChordKeySection(
         title = stringResource(R.string.session_toolbar_combo_function),
-        actions = functionKeyRows.flatten().map(::toolbarActionForKey),
+        actions = functionKeyToolbarActions,
         modifierMask = modifierMask,
-        existingIds = existingIds,
+        existingIdSet = existingIdSet,
         isAtLimit = isAtLimit,
         onAdd = onAdd,
     )
@@ -3314,7 +3098,7 @@ private fun ToolbarChordKeySection(
     title: String,
     actions: List<ToolbarActionSpec>,
     modifierMask: Int,
-    existingIds: List<String>,
+    existingIdSet: Set<String>,
     isAtLimit: Boolean,
     onAdd: (String) -> Unit,
 ) {
@@ -3322,7 +3106,7 @@ private fun ToolbarChordKeySection(
     ToolbarActionGrid(
         actions = actions,
         isSelected = { action ->
-            modifierMask != 0 && encodeToolbarChordId(modifierMask, action.id) in existingIds
+            modifierMask != 0 && encodeToolbarChordId(modifierMask, action.id) in existingIdSet
         },
         isEnabled = { modifierMask != 0 && !isAtLimit },
         onAction = { action -> onAdd(encodeToolbarChordId(modifierMask, action.id)) },
@@ -3375,12 +3159,13 @@ private fun PanHandle(
     glass: FloatingGlassContext,
     modifier: Modifier = Modifier,
 ) {
-    val transform by controller.userTransform.collectAsStateWithLifecycle()
+    val transformState = glass.transformState
     // remember is called unconditionally (before the early return) so the slot table stays stable;
     // the handle keeps its dragged-to position across hide/show.
     var handleOffset by remember { mutableStateOf(Offset.Zero) }
     var handleSize by remember { mutableStateOf(IntSize.Zero) }
     var movingSelf by remember { mutableStateOf(false) }
+    val latestContainerSize = rememberUpdatedState(containerSize)
     LaunchedEffect(containerSize, handleSize) {
         handleOffset = clampCenteredControlOffset(
             base = handleOffset,
@@ -3390,11 +3175,13 @@ private fun PanHandle(
             control = handleSize,
         )
     }
-    val zoomed = (transform.zoom * 100).roundToInt() > 100
-    // offsetY < 0 means the keyboard auto-lift pushed the picture up — show the handle so the top
-    // (now off-screen) can be pulled back into view, even when not magnified.
-    val keyboardLifted = transform.offsetY < 0f
-    if (!zoomed && !keyboardLifted) return
+    val visible by remember(transformState) {
+        derivedStateOf {
+            val t = transformState.value
+            (t.zoom * 100).roundToInt() > 100 || t.offsetY < 0f
+        }
+    }
+    if (!visible) return
 
     GlassControlContainer(
         glass = glass,
@@ -3404,64 +3191,14 @@ private fun PanHandle(
             .offset { IntOffset(handleOffset.x.roundToInt(), handleOffset.y.roundToInt()) }
             .size(PAN_HANDLE_SIZE_DP.dp)
             .onSizeChanged { handleSize = it }
-            .pointerInput(controller, containerSize) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-                    val startPanX = controller.userPanX()
-                    val startPanY = controller.userPanY()
-                    val gain = if (controller.userZoom() > 1f) controller.userZoom() else PAN_HANDLE_KEYBOARD_GAIN
-                    val startOffset = handleOffset
-                    val startMs = SystemClock.uptimeMillis()
-                    var totalDx = 0f
-                    var totalDy = 0f
-                    var moveSelf = false
-                    var tracking = true
-                    try {
-                    while (tracking) {
-                        // While still stationary, arm a long-press that switches to "move the handle".
-                        val armLong = !moveSelf && abs(totalDx) + abs(totalDy) <= PAN_HANDLE_SLOP_PX
-                        val event = if (armLong) {
-                            val remaining = (PAN_HANDLE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - startMs))
-                                .coerceAtLeast(1L)
-                            withTimeoutOrNull(remaining) { awaitPointerEvent() }
-                        } else {
-                            awaitPointerEvent()
-                        }
-                        if (event == null) {
-                            moveSelf = true
-                            movingSelf = true
-                            continue
-                        }
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                        if (change == null || !change.pressed) {
-                            change?.consume()
-                            tracking = false
-                        } else {
-                            val d = change.positionChange()
-                            totalDx += d.x
-                            totalDy += d.y
-                            if (moveSelf) {
-                                // Relocate the handle itself (follows the finger 1:1).
-                                handleOffset = clampCenteredControlOffset(
-                                    base = startOffset,
-                                    dx = totalDx,
-                                    dy = totalDy,
-                                    container = containerSize,
-                                    control = handleSize,
-                                )
-                            } else {
-                                // Pan the picture the same direction the handle is dragged.
-                                controller.setUserPan(startPanX + totalDx * gain, startPanY + totalDy * gain)
-                            }
-                            change.consume()
-                        }
-                    }
-                    } finally {
-                        movingSelf = false
-                    }
-                }
-            },
+            .panHandleGestures(
+                controller = controller,
+                containerSize = { latestContainerSize.value },
+                handleSize = { handleSize },
+                handleOffset = { handleOffset },
+                setHandleOffset = { handleOffset = it },
+                setMovingSelf = { movingSelf = it },
+            ),
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -3478,6 +3215,109 @@ private fun PanHandle(
             }
         }
     }
+}
+
+private class PanHandleGestureState(
+    val pointerId: androidx.compose.ui.input.pointer.PointerId,
+    val startPanX: Float,
+    val startPanY: Float,
+    val gain: Float,
+    val startOffset: Offset,
+    val startMs: Long,
+) {
+    var totalDx: Float = 0f
+    var totalDy: Float = 0f
+    var moveSelf: Boolean = false
+}
+
+private fun Modifier.panHandleGestures(
+    controller: RdpInputController,
+    containerSize: () -> IntSize,
+    handleSize: () -> IntSize,
+    handleOffset: () -> Offset,
+    setHandleOffset: (Offset) -> Unit,
+    setMovingSelf: (Boolean) -> Unit,
+): Modifier = pointerInput(controller) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        down.consume()
+        val gain = if (controller.userZoom() > 1f) controller.userZoom() else PAN_HANDLE_KEYBOARD_GAIN
+        val gesture = PanHandleGestureState(
+            pointerId = down.id,
+            startPanX = controller.userPanX(),
+            startPanY = controller.userPanY(),
+            gain = gain,
+            startOffset = handleOffset(),
+            startMs = SystemClock.uptimeMillis(),
+        )
+        var tracking = true
+        try {
+            while (tracking) {
+                val event = awaitPanHandleEvent(gesture)
+                if (event == null) {
+                    gesture.moveSelf = true
+                    setMovingSelf(true)
+                } else {
+                    tracking = processPanHandleEvent(
+                        event = event,
+                        gesture = gesture,
+                        controller = controller,
+                        containerSize = containerSize(),
+                        handleSize = handleSize(),
+                        setHandleOffset = setHandleOffset,
+                    )
+                }
+            }
+        } finally {
+            setMovingSelf(false)
+        }
+    }
+}
+
+private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitPanHandleEvent(
+    gesture: PanHandleGestureState,
+): androidx.compose.ui.input.pointer.PointerEvent? {
+    val armLong = !gesture.moveSelf && abs(gesture.totalDx) + abs(gesture.totalDy) <= PAN_HANDLE_SLOP_PX
+    if (!armLong) return awaitPointerEvent()
+    val remaining = (PAN_HANDLE_LONG_PRESS_MS - (SystemClock.uptimeMillis() - gesture.startMs))
+        .coerceAtLeast(1L)
+    return withTimeoutOrNull(remaining) { awaitPointerEvent() }
+}
+
+private fun processPanHandleEvent(
+    event: androidx.compose.ui.input.pointer.PointerEvent,
+    gesture: PanHandleGestureState,
+    controller: RdpInputController,
+    containerSize: IntSize,
+    handleSize: IntSize,
+    setHandleOffset: (Offset) -> Unit,
+): Boolean {
+    val change = event.changes.firstOrNull { it.id == gesture.pointerId }
+    if (change == null || !change.pressed) {
+        change?.consume()
+        return false
+    }
+    val d = change.positionChange()
+    gesture.totalDx += d.x
+    gesture.totalDy += d.y
+    if (gesture.moveSelf) {
+        setHandleOffset(
+            clampCenteredControlOffset(
+                base = gesture.startOffset,
+                dx = gesture.totalDx,
+                dy = gesture.totalDy,
+                container = containerSize,
+                control = handleSize,
+            ),
+        )
+    } else {
+        controller.setUserPan(
+            gesture.startPanX + gesture.totalDx * gesture.gain,
+            gesture.startPanY + gesture.totalDy * gesture.gain,
+        )
+    }
+    change.consume()
+    return true
 }
 
 @Composable
@@ -3503,7 +3343,7 @@ private fun ToolbarKeyRows(
     onKey: (Int) -> Unit,
     onLongKey: (ToolbarKeySpec) -> Unit,
 ) {
-    rows.flatten().chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
+    rows.forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -3525,7 +3365,7 @@ private fun ToolbarKeyRows(
 
 @Composable
 private fun ToolbarComboRows(rows: List<List<ToolbarComboSpec>>, onCombo: (ToolbarComboSpec) -> Unit) {
-    rows.flatten().chunked(TOOLBAR_GRID_COLUMNS).forEach { row ->
+    rows.forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),

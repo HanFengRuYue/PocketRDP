@@ -150,6 +150,20 @@ class RdpCommandLineTest {
 
         assertTrue(args.contains("/auto-reconnect"))
         assertTrue(args.contains("/auto-reconnect-max-retries:5"))
+        assertFalse(args.contains("-auto-reconnect"))
+    }
+
+    @Test
+    fun disablingAutoReconnectUsesFreeRdpBooleanSigilAndOmitsRetries() {
+        val args = buildRdpCommandLine(
+            params(redirectFiles = false, drivePath = null).copy(autoReconnect = false),
+            h264Supported = true,
+        ).toList()
+
+        assertTrue(args.contains("-auto-reconnect"))
+        assertFalse(args.contains("/auto-reconnect"))
+        assertFalse(args.any { it.startsWith("/auto-reconnect:") })
+        assertFalse(args.any { it.startsWith("/auto-reconnect-max-retries:") })
     }
 
     private fun params(

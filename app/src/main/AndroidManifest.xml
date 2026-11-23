@@ -6,7 +6,6 @@
     <!-- Android 17/API 37 gates direct LAN TCP/UDP behind this runtime permission. PocketRDP
          requests it only when a session screen is opened, before starting FreeRDP. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Prevent untrusted overlay windows from covering the interactive remote-desktop surface. -->
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -20,9 +19,6 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- WifiLock (WIFI_MODE_FULL_*): stop the Wi-Fi radio dropping into power-save while a session
-         is held in the background / screen-off, which otherwise spikes interactive latency. -->
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- One-tap battery-optimization exemption (Doze): lets the held session keep network + wake
          locks during deep Doze. Prompted only while a session is actually connecting. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

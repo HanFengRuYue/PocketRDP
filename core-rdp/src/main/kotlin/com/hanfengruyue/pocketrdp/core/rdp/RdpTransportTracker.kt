@@ -21,7 +21,7 @@ internal class RdpTransportTracker(
     private var transportRequestObserved: Boolean = false
     private var missingTransportRequestLogged: Boolean = false
     private var incompatibleTransportSnapshotLogged: Boolean = false
-    private var lastLoggedTransportControl: String? = null
+    private var lastLoggedTransportSnapshot: RdpTransportSnapshot? = null
     private var lastTransportTrafficLogMs: Long = 0L
 
     fun hasObservedDowngrade(): Boolean = downgradeLatch.hasObservedDowngrade()
@@ -39,7 +39,7 @@ internal class RdpTransportTracker(
             transportRequestObserved = false
             missingTransportRequestLogged = false
             incompatibleTransportSnapshotLogged = false
-            lastLoggedTransportControl = null
+            lastLoggedTransportSnapshot = null
             lastTransportTrafficLogMs = 0L
         }
     }
@@ -95,7 +95,6 @@ internal class RdpTransportTracker(
         force: Boolean,
     ) {
         val now = elapsedRealtimeMs()
-        val control = snapshot.controlDiagnostic()
         var logMissingRequest = false
         var logControlState = false
         var logTrafficHeartbeat = false
@@ -105,8 +104,8 @@ internal class RdpTransportTracker(
                 logMissingRequest = true
             }
 
-            if (force || control != lastLoggedTransportControl) {
-                lastLoggedTransportControl = control
+            if (force || !snapshot.hasSameControlStateAs(lastLoggedTransportSnapshot)) {
+                lastLoggedTransportSnapshot = snapshot
                 lastTransportTrafficLogMs = now
                 logControlState = true
             } else if (snapshot.udpActive &&
@@ -128,7 +127,8 @@ internal class RdpTransportTracker(
 
         if (logControlState) {
             val message =
-                "RDP-UDP diagnostic source=$source $control; ${snapshot.trafficDiagnostic()}"
+                "RDP-UDP diagnostic source=$source ${snapshot.controlDiagnostic()}; " +
+                    snapshot.trafficDiagnostic()
             val isFailurePhase = snapshot.phase == RdpTransportPhase.UDP_FAILED ||
                 snapshot.phase == RdpTransportPhase.RECONNECTING_TCP
             val failed = snapshot.failure != RdpTransportFailure.NONE ||
@@ -189,3 +189,25 @@ internal fun RdpTransportSnapshot.indicatesUdpDowngrade(): Boolean {
         phase == RdpTransportPhase.UDP_FAILED
     return downgradedToTcp || reconnectRequested || failedPhase
 }
+
+internal fun RdpTransportSnapshot.hasSameControlStateAs(other: RdpTransportSnapshot?): Boolean {
+    if (other == null || phase != other.phase || failure != other.failure) return false
+    val sameMasks = requestedMask == other.requestedMask &&
+        readyMask == other.readyMask &&
+        activeMask == other.activeMask
+    val sameProtocol = softSyncMask == other.softSyncMask &&
+        flags == other.flags &&
+        securityProtocol == other.securityProtocol
+    if (!sameMasks || !sameProtocol) return false
+    val sameDetails = routedDvcCount == other.routedDvcCount &&
+        tunnelHresult == other.tunnelHresult &&
+        socketError == other.socketError
+    val sameTunnels = reliable.hasSameControlStateAs(other.reliable) &&
+        lossy.hasSameControlStateAs(other.lossy)
+    return sameDetails && sameTunnels
+}
+
+private fun RdpUdpTunnelSnapshot.hasSameControlStateAs(other: RdpUdpTunnelSnapshot): Boolean =
+    kind == other.kind &&
+        state == other.state &&
+        protocolVersion == other.protocolVersion

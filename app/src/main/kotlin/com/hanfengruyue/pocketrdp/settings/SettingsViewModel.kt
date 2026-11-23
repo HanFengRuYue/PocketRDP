@@ -18,8 +18,8 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
     val preferences: StateFlow<AppPreferences> = repository.preferences.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = AppPreferences(),
+        started = SharingStarted.WhileSubscribed(STATE_STOP_TIMEOUT_MS),
+        initialValue = repository.currentPreferencesOrDefault(),
     )
 
     fun setThemeMode(mode: ThemeMode) {
@@ -28,6 +28,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setLanguageTag(tag: String) {
         viewModelScope.launch { repository.setLanguageTag(tag) }
+    }
+
+    fun setAutoReconnect(enabled: Boolean) {
+        viewModelScope.launch { repository.setAutoReconnect(enabled) }
     }
 
     fun setToolbarAlpha(alpha: Float) {
@@ -40,5 +44,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setSimulatedCursorScale(scale: Float) {
         viewModelScope.launch { repository.setSimulatedCursorScale(scale) }
+    }
+
+    private companion object {
+        const val STATE_STOP_TIMEOUT_MS = 5_000L
     }
 }

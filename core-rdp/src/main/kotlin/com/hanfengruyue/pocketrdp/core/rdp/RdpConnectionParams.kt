@@ -31,4 +31,7 @@ data class RdpConnectionParams(
     // explicit low-latency visual set; 0 selects the explicit rich visual set. Font smoothing stays on in
     // both modes. Default 0 keeps existing call sites on the rich desktop experience.
     val performanceFlags: Int = 0,
+    // App-wide auto-reconnect preference snapshot for this connection attempt. When false, both
+    // FreeRDP native auto-reconnect (-auto-reconnect) and app-level retries stay disabled.
+    val autoReconnect: Boolean = true,
 )

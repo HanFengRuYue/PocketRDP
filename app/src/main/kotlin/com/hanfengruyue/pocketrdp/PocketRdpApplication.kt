@@ -9,8 +9,7 @@ class PocketRdpApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         PocketLogger.install(this)
-        val pkg = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
-        PocketLogger.i(TAG, "PocketRDP app start (pkg=$packageName, ver=${pkg?.versionName})")
+        PocketLogger.i(TAG, "PocketRDP app start (pkg=$packageName, ver=${BuildConfig.VERSION_NAME})")
     }
 
     companion object {

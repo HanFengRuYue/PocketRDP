@@ -8,6 +8,9 @@
     <string name="settings_logs_title">Protokolle</string>
     <string name="settings_logs_subtitle">Protokolle anzeigen, exportieren oder löschen</string>
     <string name="settings_quick_actions_title">Schnellzugriffe</string>
+    <string name="settings_connection_title">Verbindung</string>
+    <string name="settings_auto_reconnect_title">Automatisch wiederverbinden</string>
+    <string name="settings_auto_reconnect_subtitle">Bei unerwartetem Verbindungsabbruch oder Fehler automatisch neu verbinden</string>
     <string name="settings_appearance_title">Darstellung und Sprache</string>
     <string name="settings_app_tagline">Leichter Android-RDP-Client für Remote-Desktops</string>
     <string name="settings_theme_title">Designfarbe</string>

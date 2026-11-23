@@ -1,10 +1,10 @@
 package com.hanfengruyue.pocketrdp.feature.session.render
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.os.SystemClock
@@ -45,12 +45,8 @@ class RdpSurface @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
 
-    private val lock = Any()
-    private val viewportMatrix: Matrix = Matrix()
-    // Reused in onDraw for the (rare) non-identity viewport path so we don't allocate a Matrix on
-    // every frame — at 60 fps that was 60 short-lived Matrix objects/s of pure GC churn.
-    private val drawMatrix: Matrix = Matrix()
     private val paint: Paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val invalidateRunnable = Runnable { invalidate() }
 
     /** Source of frames. The render loop reads [BitmapBuffer.peekFront] each onDraw. */
     @Volatile
@@ -65,8 +61,10 @@ class RdpSurface @JvmOverloads constructor(
     var targetFrameRate: Int = 0
 
     /** uptimeMillis of the current frame's start; scheduleNextFrame paces the next frame from it. */
-    @Volatile
     private var lastFrameAtMs: Long = 0L
+
+    /** Cached display refresh rate (Hz), refreshed on attach and configuration changes. */
+    private var cachedRefreshHz: Int = DEFAULT_REFRESH_HZ
 
     /**
      * Passive decode→present latency report. Invoked from [onDraw] (UI thread) ONLY when a newly
@@ -88,14 +86,20 @@ class RdpSurface @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        refreshCachedDisplayRate()
         // Kick the self-loop so the first frame shows promptly (cold-start guard against the
         // historical "connected but black screen" window). onDraw re-schedules itself thereafter.
         postInvalidateOnAnimation()
     }
 
-    fun applyViewport(matrix: Matrix) {
-        synchronized(lock) { viewportMatrix.set(matrix) }
-        postInvalidate()
+    override fun onDetachedFromWindow() {
+        removeCallbacks(invalidateRunnable)
+        super.onDetachedFromWindow()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration?) {
+        super.onConfigurationChanged(newConfig)
+        refreshCachedDisplayRate()
     }
 
     /**
@@ -117,50 +121,21 @@ class RdpSurface @JvmOverloads constructor(
         lastFrameAtMs = SystemClock.uptimeMillis()
         // Pull the current complete frame (front buffer) — never a buffer being written by the
         // worker, so no mid-write tearing.
-        val bm: Bitmap? = buffer?.peekFront()
-        val identity: Boolean
-        synchronized(lock) {
-            identity = viewportMatrix.isIdentity
-            if (!identity) drawMatrix.set(viewportMatrix)
-        }
+        val currentBuffer = buffer
+        val bm: Bitmap? = currentBuffer?.peekFront()
         if (bm != null) {
-            if (identity) {
-                val viewW = width.toFloat()
-                val viewH = height.toFloat()
-                val bmW = bm.width.toFloat()
-                val bmH = bm.height.toFloat()
-                if (viewW > 0f && viewH > 0f && bmW > 0f && bmH > 0f) {
-                    // Default viewport: fit-to-view, preserve aspect ratio, centre. Without
-                    // this a 1920x1080 desktop is blitted 1:1 from the top-left and most of
-                    // it lands off-screen on a phone.
-                    val scale = minOf(viewW / bmW, viewH / bmH)
-                    val dx = (viewW - bmW * scale) / 2f
-                    val dy = (viewH - bmH * scale) / 2f
-                    canvas.save()
-                    canvas.translate(dx, dy)
-                    canvas.scale(scale, scale)
-                    canvas.drawBitmap(bm, 0f, 0f, paint)
-                    canvas.restore()
-                } else {
-                    canvas.drawBitmap(bm, 0f, 0f, paint)
-                }
-            } else {
-                canvas.save()
-                canvas.concat(drawMatrix)
-                canvas.drawBitmap(bm, 0f, 0f, paint)
-                canvas.restore()
-            }
+            drawFittedBitmap(canvas, bm)
         }
+        val drawEndMs = SystemClock.uptimeMillis()
         // Decode→present latency (passive metric): if this draw shows a freshly-committed front frame
         // (its sequence advanced since we last reported), tell the listener how long it waited between
         // commit and now. Strictly passive — no invalidate, never touches the FPS counter — so it cannot
         // re-inflate the render rate or unfix the throttle (the markDirty no-op rationale stays intact).
-        val b = buffer
-        if (bm != null && b != null) {
-            val seq = b.peekFrontSeq()
+        if (bm != null && currentBuffer != null) {
+            val seq = currentBuffer.peekFrontSeq()
             if (seq != lastPresentedSeq) {
                 lastPresentedSeq = seq
-                onFramePresented?.invoke(SystemClock.uptimeMillis() - b.peekFrontCommitMs())
+                onFramePresented?.invoke(drawEndMs - currentBuffer.peekFrontCommitMs())
             }
         }
         // Belt-and-braces continuous redraw: always re-schedule the next frame as long as we are
@@ -168,28 +143,59 @@ class RdpSurface @JvmOverloads constructor(
         // against the historical "connected but black screen" bug (markDirty can't be relied on to
         // reach us from every codepath in time). Throttling only DELAYS the next frame to honour
         // targetFrameRate; it never cancels it.
-        if (isAttachedToWindow) scheduleNextFrame()
+        if (isAttachedToWindow) scheduleNextFrame(drawEndMs)
+    }
+
+    private fun drawFittedBitmap(canvas: Canvas, bm: Bitmap) {
+        val viewW = width.toFloat()
+        val viewH = height.toFloat()
+        val bmW = bm.width.toFloat()
+        val bmH = bm.height.toFloat()
+        val hasValidView = viewW > 0f && viewH > 0f
+        val hasValidBitmap = bmW > 0f && bmH > 0f
+        if (hasValidView && hasValidBitmap) {
+            // Default viewport: fit-to-view, preserve aspect ratio, centre. Without
+            // this a 1920x1080 desktop is blitted 1:1 from the top-left and most of
+            // it lands off-screen on a phone.
+            val scale = minOf(viewW / bmW, viewH / bmH)
+            val dx = (viewW - bmW * scale) / 2f
+            val dy = (viewH - bmH * scale) / 2f
+            canvas.save()
+            canvas.translate(dx, dy)
+            canvas.scale(scale, scale)
+            canvas.drawBitmap(bm, 0f, 0f, paint)
+            canvas.restore()
+        } else {
+            canvas.drawBitmap(bm, 0f, 0f, paint)
+        }
+    }
+
+    private fun refreshCachedDisplayRate() {
+        cachedRefreshHz = display?.refreshRate?.toInt()?.takeIf { it > 0 } ?: DEFAULT_REFRESH_HZ
     }
 
     /** Effective fps: 0 = uncapped (follow VSync); otherwise target clamped to screen refresh. */
     private fun effectiveFps(): Int {
-        if (targetFrameRate <= 0) return 0
-        val screen = display?.refreshRate?.toInt()?.takeIf { it > 0 } ?: DEFAULT_REFRESH_HZ
-        return minOf(targetFrameRate, screen)
+        val target = targetFrameRate
+        if (target <= 0) return 0
+        return minOf(target, cachedRefreshHz)
     }
 
-    private fun scheduleNextFrame() {
+    private fun scheduleNextFrame(nowMs: Long) {
+        // Cancel any previously pending delayed invalidate so external redraws (e.g. cursor/overlay
+        // animations) cannot stack multiple delayed ticks in ViewRootImpl's handler queue.
+        removeCallbacks(invalidateRunnable)
         val fps = effectiveFps()
         if (fps <= 0) {
             postInvalidateOnAnimation() // uncapped: pace with VSync (≈ screen refresh)
             return
         }
         val intervalMs = MILLIS_PER_SECOND / fps
-        val elapsed = SystemClock.uptimeMillis() - lastFrameAtMs
+        val elapsed = nowMs - lastFrameAtMs
         if (elapsed >= intervalMs) {
             postInvalidateOnAnimation()
         } else {
-            postInvalidateDelayed(intervalMs - elapsed)
+            postDelayed(invalidateRunnable, intervalMs - elapsed)
         }
     }
 

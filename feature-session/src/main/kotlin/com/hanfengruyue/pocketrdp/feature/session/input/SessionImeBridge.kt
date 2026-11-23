@@ -236,7 +236,7 @@ fun SessionImeBridge(
         }
     }
 
-    LaunchedEffect(visible, captureHardwareKeys) {
+    LaunchedEffect(visible) {
         applyImeVisibility(
             visible = visible,
             requestFocus = { runCatching { imeFocusRequester.requestFocus() } },
@@ -244,6 +244,9 @@ fun SessionImeBridge(
             showKeyboard = { keyboard?.show() },
             hideKeyboard = { keyboard?.hide() },
         )
+    }
+
+    LaunchedEffect(visible, captureHardwareKeys) {
         if (!visible && captureHardwareKeys) {
             runCatching { hardwareFocusRequester.requestFocus() }
         }

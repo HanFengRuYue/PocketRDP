@@ -1,14 +1,15 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TextInputEncoderTest {
     @Test
-    fun astralCharacterIsSentAsUtf16SurrogatePair() {
+    fun astralCharacterIsSentAsUtf16SurrogatePair() = runBlocking {
         val unicodeEvents = mutableListOf<Pair<Int, Boolean>>()
 
-        TextInputEncoder.type(
+        TextInputEncoder.typeThrottled(
             text = "\uD83D\uDE00",
             unicodeSupported = true,
             sendKey = { _, _ -> error("emoji must use the unicode path") },
@@ -27,10 +28,10 @@ class TextInputEncoderTest {
     }
 
     @Test
-    fun printableAsciiUsesVirtualKeyPath() {
+    fun printableAsciiUsesVirtualKeyPath() = runBlocking {
         val keyEvents = mutableListOf<Pair<Int, Boolean>>()
 
-        TextInputEncoder.type(
+        TextInputEncoder.typeThrottled(
             text = "A",
             unicodeSupported = true,
             sendKey = { key, down -> keyEvents += key to down },
@@ -49,11 +50,11 @@ class TextInputEncoderTest {
     }
 
     @Test
-    fun lineFeedAndCarriageReturnSendSingleReturnVirtualKey() {
+    fun lineFeedAndCarriageReturnSendSingleReturnVirtualKey() = runBlocking {
         for (newline in listOf("\n", "\r", "\r\n")) {
             val keyEvents = mutableListOf<Pair<Int, Boolean>>()
 
-            TextInputEncoder.type(
+            TextInputEncoder.typeThrottled(
                 text = newline,
                 unicodeSupported = true,
                 sendKey = { key, down -> keyEvents += key to down },

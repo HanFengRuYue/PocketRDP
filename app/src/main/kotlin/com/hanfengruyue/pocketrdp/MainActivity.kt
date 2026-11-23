@@ -1,9 +1,6 @@
 package com.hanfengruyue.pocketrdp
 
-import android.app.Activity
 import android.app.LocaleManager
-import android.content.Context
-import android.content.ContextWrapper
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -20,7 +17,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +44,7 @@ import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
 import com.hanfengruyue.pocketrdp.core.data.preferences.ThemeMode
 import com.hanfengruyue.pocketrdp.core.data.preferences.localizedContextForLanguageTag
 import com.hanfengruyue.pocketrdp.core.data.preferences.sanitizeLanguageTag
+import com.hanfengruyue.pocketrdp.core.ui.findActivity
 import com.hanfengruyue.pocketrdp.core.ui.theme.PocketRdpTheme
 import com.hanfengruyue.pocketrdp.feature.session.SessionScreen
 import com.hanfengruyue.pocketrdp.nav.PocketRdpNavHost
@@ -88,9 +85,11 @@ private fun AppRoot(appViewModel: AppViewModel = hiltViewModel()) {
     val localizedResources = remember(baseResources, localizedContext, languageTag) {
         if (languageTag == LANGUAGE_SYSTEM) baseResources else localizedContext.resources
     }
+    var foregroundSessionId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val isSessionForeground = foregroundSessionId != null
 
     SyncAppLocale(persistedLanguageTag = persistedLanguageTag)
-    SyncSystemBars(darkTheme = darkTheme)
+    SyncSystemBars(darkTheme = darkTheme, isSessionForeground = isSessionForeground)
 
     PocketRdpTheme(darkTheme = darkTheme) {
         CompositionLocalProvider(
@@ -99,13 +98,6 @@ private fun AppRoot(appViewModel: AppViewModel = hiltViewModel()) {
         ) {
             val sessionSnapshot by appViewModel.sessionSnapshot.collectAsStateWithLifecycle()
             val showKeepAliveHint by appViewModel.showKeepAliveHint.collectAsStateWithLifecycle()
-            var foregroundSessionId by rememberSaveable { mutableStateOf<Long?>(null) }
-            val isSessionForeground = foregroundSessionId != null
-            val livePreviews = if (!isSessionForeground) {
-                appViewModel.livePreviews.collectAsStateWithLifecycle().value
-            } else {
-                emptyMap()
-            }
             LaunchedEffect(Unit) {
                 appViewModel.checkKeepAliveKillOnce(context, sessionSnapshot.activeConnectionIds)
             }
@@ -118,7 +110,7 @@ private fun AppRoot(appViewModel: AppViewModel = hiltViewModel()) {
                 Box(modifier = Modifier.fillMaxSize().occludedBySession(isSessionForeground)) {
                     PocketRdpNavHost(
                         activeSessionIds = sessionSnapshot.activeConnectionIds,
-                        liveThumbnails = livePreviews,
+                        livePreviewsFlow = appViewModel.livePreviews,
                         isOccluded = isSessionForeground,
                         showKeepAliveHint = showKeepAliveHint,
                         onDismissKeepAliveHint = appViewModel::dismissKeepAliveHint,
@@ -165,10 +157,10 @@ private fun SyncAppLocale(persistedLanguageTag: String?) {
 }
 
 @Composable
-private fun SyncSystemBars(darkTheme: Boolean) {
+private fun SyncSystemBars(darkTheme: Boolean, isSessionForeground: Boolean) {
     val view = LocalView.current
     val activity = remember(view) { view.context.findActivity() }
-    LaunchedEffect(activity, darkTheme) {
+    LaunchedEffect(activity, view, darkTheme, isSessionForeground) {
         val componentActivity = activity as? ComponentActivity ?: return@LaunchedEffect
         val barStyle = if (darkTheme) {
             SystemBarStyle.dark(Color.TRANSPARENT)
@@ -179,12 +171,11 @@ private fun SyncSystemBars(darkTheme: Boolean) {
             statusBarStyle = barStyle,
             navigationBarStyle = barStyle,
         )
-    }
-    SideEffect {
-        val window = activity?.window ?: return@SideEffect
-        val controller = WindowCompat.getInsetsController(window, view)
-        controller.isAppearanceLightStatusBars = !darkTheme
-        controller.isAppearanceLightNavigationBars = !darkTheme
+        if (!isSessionForeground) {
+            val controller = WindowCompat.getInsetsController(componentActivity.window, view)
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
+        }
     }
 }
 
@@ -246,12 +237,3 @@ private fun Modifier.occludedBySession(occluded: Boolean): Modifier =
     } else {
         this
     }
-
-private fun Context.findActivity(): Activity? {
-    var current: Context? = this
-    while (current is ContextWrapper) {
-        if (current is Activity) return current
-        current = current.baseContext
-    }
-    return null
-}

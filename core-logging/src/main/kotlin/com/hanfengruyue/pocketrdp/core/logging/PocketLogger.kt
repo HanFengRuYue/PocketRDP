@@ -6,11 +6,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -43,6 +42,7 @@ object PocketLogger {
     private const val MAX_MESSAGE_CHARS = 8_192
     private const val MAX_THROWABLE_CHARS = 32_768
     private const val MAX_EXPORTED_LOGS = 8
+    private const val WRITE_BATCH_LIMIT = 64
 
     enum class Level(val tag: String, val androidPriority: Int) {
         DEBUG("D", Log.DEBUG),
@@ -66,16 +66,14 @@ object PocketLogger {
         }
     }
 
-    private val _entries = MutableStateFlow<List<Entry>>(emptyList())
-    val entries: StateFlow<List<Entry>> = _entries.asStateFlow()
+    private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val entryBuffer = LogEntryBuffer(MEMORY_CAPACITY, observerScope)
+    val entries: StateFlow<List<Entry>> = entryBuffer.entries
 
-    private val ring: ArrayDeque<Entry> = ArrayDeque(MEMORY_CAPACITY)
-    private val ringLock = Any()
     private val fileLock = Any()
 
     private val appContextRef = AtomicReference<Context?>(null)
     private val nextEntryId = AtomicLong(0L)
-    private val logGeneration = AtomicLong(0L)
     private val writeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val writeChannel: Channel<PersistRequest> = Channel(capacity = 256)
 
@@ -95,7 +93,6 @@ object PocketLogger {
     fun install(context: Context) {
         val app = context.applicationContext
         if (!appContextRef.compareAndSet(null, app)) return
-        synchronized(fileLock) { migrateLegacyLogs(app) }
         writeScope.launch { runWriter(app) }
         i(TAG, "PocketLogger installed")
     }
@@ -117,31 +114,21 @@ object PocketLogger {
             message = safeMessage,
             throwableText = safeThrowable,
         )
-        // Logcat mirror.
-        when (level) {
-            Level.DEBUG -> Log.d(tag, safeMessage)
-            Level.INFO -> Log.i(tag, safeMessage)
-            Level.WARN -> Log.w(tag, safeMessage)
-            Level.ERROR -> Log.e(tag, safeMessage)
+        // Logcat mirror (preserve sanitized throwable when present).
+        val logcatBody = if (safeThrowable.isNullOrEmpty()) {
+            safeMessage
+        } else {
+            "$safeMessage\n$safeThrowable"
         }
-        val generation: Long
-        synchronized(ringLock) {
-            generation = logGeneration.get()
-            if (ring.size >= MEMORY_CAPACITY) ring.removeFirst()
-            ring.addLast(entry)
-            _entries.value = ring.toList()
-        }
+        Log.println(level.androidPriority, tag, logcatBody)
+        val generation = entryBuffer.append(entry)
         // Best-effort: drop on overflow rather than block the caller.
         writeChannel.trySend(PersistRequest(entry, generation))
     }
 
     /** Wipe both the in-memory tail and the on-disk log files. Safe to call off the main thread. */
     fun clear() {
-        synchronized(ringLock) {
-            logGeneration.incrementAndGet()
-            ring.clear()
-            _entries.value = emptyList()
-        }
+        entryBuffer.clear()
         val ctx = appContextRef.get() ?: return
         synchronized(fileLock) {
             runCatching {
@@ -161,9 +148,7 @@ object PocketLogger {
      */
     fun snapshotForExport(context: Context): File {
         val ctx = context.applicationContext
-        val (memoryGeneration, memoryEntries) = synchronized(ringLock) {
-            logGeneration.get() to ring.toList()
-        }
+        val (memoryGeneration, memoryEntries) = entryBuffer.snapshotWithGeneration()
         return synchronized(fileLock) {
             val cacheDir = File(ctx.cacheDir, LOG_DIR).apply { mkdirs() }
             val stamp = DATE_FMT.get()!!.format(Date())
@@ -176,13 +161,20 @@ object PocketLogger {
                 writer.write("-------------------------------------\n")
                 val live = logFile(ctx)
                 val backup = logBackup(ctx)
-                if (backup.exists()) writer.write(backup.readText(Charsets.UTF_8))
-                if (live.exists()) writer.write(live.readText(Charsets.UTF_8))
+                if (backup.exists()) {
+                    backup.bufferedReader(Charsets.UTF_8).use { it.copyTo(writer) }
+                }
+                if (live.exists()) {
+                    live.bufferedReader(Charsets.UTF_8).use { it.copyTo(writer) }
+                }
                 // Also flush whatever is in the ring but might not be on disk yet. If a clear
                 // happened after the copy, do not resurrect pre-clear entries into the export.
                 writer.write("--- in-memory tail ---\n")
-                if (memoryGeneration == logGeneration.get()) {
-                    memoryEntries.forEach { writer.write(it.format() + "\n") }
+                if (memoryGeneration == entryBuffer.currentGeneration()) {
+                    memoryEntries.forEach {
+                        writer.write(it.format())
+                        writer.write("\n")
+                    }
                 }
             }
             cacheDir.listFiles()
@@ -199,18 +191,39 @@ object PocketLogger {
 
     private suspend fun runWriter(ctx: Context) {
         val dir = logDir(ctx)
-        dir.mkdirs()
+        synchronized(fileLock) {
+            dir.mkdirs()
+            migrateLegacyLogs(ctx)
+        }
         val file = logFile(ctx)
-        for (request in writeChannel) {
+        val batch = ArrayList<PersistRequest>(WRITE_BATCH_LIMIT)
+        for (first in writeChannel) {
+            batch.clear()
+            batch.add(first)
+            while (batch.size < WRITE_BATCH_LIMIT) {
+                val next = writeChannel.tryReceive().getOrNull() ?: break
+                batch.add(next)
+            }
             try {
-                synchronized(fileLock) {
-                    if (request.generation != logGeneration.get()) return@synchronized
-                    if (file.length() > MAX_FILE_BYTES) rotate(ctx)
-                    file.appendText(request.entry.format() + "\n", Charsets.UTF_8)
-                }
+                writeBatch(ctx, file, batch)
             } catch (io: IOException) {
                 // If file logging fails, fall back to Logcat-only mode silently.
                 Log.w(TAG, "log write failed: ${io.message}")
+            }
+        }
+    }
+
+    private fun writeBatch(ctx: Context, file: File, batch: List<PersistRequest>) {
+        synchronized(fileLock) {
+            val currentGeneration = entryBuffer.currentGeneration()
+            val validEntries = batch.filter { it.generation == currentGeneration }
+            if (validEntries.isEmpty()) return@synchronized
+            if (file.length() > MAX_FILE_BYTES) rotate(ctx)
+            FileOutputStream(file, true).bufferedWriter(Charsets.UTF_8).use { writer ->
+                validEntries.forEach { request ->
+                    writer.write(request.entry.format())
+                    writer.write("\n")
+                }
             }
         }
     }
@@ -251,7 +264,8 @@ object PocketLogger {
         legacyDir.delete()
     }
 
-    private fun sanitize(value: String): String {
+    internal fun sanitize(value: String): String {
+        if (':' !in value && '=' !in value) return value
         val cliRedacted = CLI_ARGUMENT_PATTERN.replace(value) { match ->
             "${match.groupValues[1]}<redacted>"
         }
@@ -262,8 +276,10 @@ object PocketLogger {
 
     private val CLI_ARGUMENT_PATTERN =
         Regex("""(?i)(/(?:p|u|d|v|drive):)(?:"[^"]*"|'[^']*'|\S+)""")
-    private val NAMED_VALUE_PATTERN =
-        Regex("""(?i)(\b(?:password|passwd|username|user|domain|host|endpoint|path)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)""")
+    private val NAMED_VALUE_PATTERN = Regex(
+        """(?i)(\b(?:password|passwd|username|user|domain|host|endpoint|path|""" +
+            """cookie|cert|certificate|thumbprint|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)""",
+    )
 
     private fun String.bounded(maxChars: Int): String =
         if (length <= maxChars) this else take(maxChars) + "\n<truncated>"

@@ -13,14 +13,18 @@ import com.hanfengruyue.pocketrdp.core.rdp.SessionKeepAliveFlag
 import com.hanfengruyue.pocketrdp.keepalive.OemKeepAlive
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -37,7 +41,7 @@ class AppViewModel @Inject constructor(
     val preferences: StateFlow<AppPreferences> = repository.preferences.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STATE_STOP_TIMEOUT_MS),
-        initialValue = AppPreferences(),
+        initialValue = repository.currentPreferencesOrDefault(),
     )
 
     val persistedLanguageTag: StateFlow<String?> = repository.preferences
@@ -49,26 +53,20 @@ class AppViewModel @Inject constructor(
             initialValue = null,
         )
 
-    val sessionSnapshot: StateFlow<RdpSessionRegistrySnapshot> = sessionRegistry.snapshot.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(STATE_STOP_TIMEOUT_MS),
-        initialValue = RdpSessionRegistrySnapshot(),
-    )
+    val sessionSnapshot: StateFlow<RdpSessionRegistrySnapshot> = sessionRegistry.snapshot
 
-    val livePreviews: StateFlow<Map<Long, Bitmap>> = flow {
-        while (currentCoroutineContext().isActive) {
-            emit(sessionRegistry.livePreviews(LIVE_PREVIEW_MAX_DIM))
-            delay(LIVE_PREVIEW_INTERVAL_MS)
-        }
-    }.flowOn(Dispatchers.Default)
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(
-                stopTimeoutMillis = 0L,
-                replayExpirationMillis = 0L,
-            ),
-            initialValue = emptyMap(),
-        )
+    val livePreviews: StateFlow<Map<Long, Bitmap>> = livePreviewsFlow(
+        snapshot = sessionRegistry.snapshot,
+        intervalMs = LIVE_PREVIEW_INTERVAL_MS,
+        capture = { sessionRegistry.livePreviews(LIVE_PREVIEW_MAX_DIM) },
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(
+            stopTimeoutMillis = 0L,
+            replayExpirationMillis = 0L,
+        ),
+        initialValue = emptyMap(),
+    )
 
     private val _showKeepAliveHint = MutableStateFlow(false)
     val showKeepAliveHint: StateFlow<Boolean> = _showKeepAliveHint.asStateFlow()
@@ -132,3 +130,24 @@ class AppViewModel @Inject constructor(
         const val LIVE_PREVIEW_MAX_DIM = 960
     }
 }
+
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun <T> livePreviewsFlow(
+    snapshot: StateFlow<RdpSessionRegistrySnapshot>,
+    intervalMs: Long,
+    capture: () -> Map<Long, T>,
+): Flow<Map<Long, T>> = snapshot
+    .map { it.connectedCount > 0 }
+    .distinctUntilChanged()
+    .flatMapLatest { hasConnected ->
+        if (!hasConnected) {
+            flowOf(emptyMap())
+        } else {
+            flow {
+                while (currentCoroutineContext().isActive) {
+                    emit(capture())
+                    delay(intervalMs)
+                }
+            }.flowOn(Dispatchers.Default)
+        }
+    }

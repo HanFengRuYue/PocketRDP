@@ -1,18 +1,16 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
 import android.os.SystemClock
-
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -34,52 +32,139 @@ import kotlin.math.hypot
  *   2-finger vertical pan   → wheel scroll (issue #7)
  *   3-finger tap            → middle click
  *
- * NOTE: there are NO picture-changing *gestures* (no pinch-zoom, no double-tap-to-reset). Per user
- * request the picture is zoomed ONLY via the zoom pill and panned ONLY via the move handle (both in
- * SessionScreen) — so every touch gesture is unambiguously a *control* gesture and can't fight the
- * view transform. This is also why a double-tap is now a clean remote double-click instead of being
- * eaten to reset the local zoom. The ONE exception is TRACKPAD cursor-follow: while zoomed, moving
- * the virtual cursor auto-pans the view to keep it visible (RdpInputController.followCursorWhenZoomed).
- * That is safe because the trackpad cursor is decoupled from the finger — it doesn't move where a tap
- * lands. NATIVE-TOUCH deliberately has NO view-follow (it broke taps; see RdpInputController.touchDown).
- *
- * Implementation notes:
- *  - `awaitEachGesture` + try/finally guarantees held buttons / touch contacts are released even
- *    if a pointer leaves the view mid-gesture.
- *  - TRACKPAD tracks the PEAK pointer count so a 3-finger tap is detected even if fingers don't
- *    lift simultaneously.
+ * Reusable primitive arrays eliminate per-gesture HashMap and per-frame List/boxing allocations.
  */
 private const val TAP_SLOP_PX = 16f
 private const val TAP_TIMEOUT_MS = 250L
 private const val DOUBLE_TAP_WINDOW_MS = 280L
 private const val LONG_PRESS_MS = 400L
 private const val MAX_TOUCH_CONTACTS = 10
+private const val AVERAGE_TWO_FACTOR = 0.5f
+
+private class NativeTouchScratch {
+    private val pointerIds = LongArray(MAX_TOUCH_CONTACTS)
+    private val lastX = FloatArray(MAX_TOUCH_CONTACTS)
+    private val lastY = FloatArray(MAX_TOUCH_CONTACTS)
+    private val slotUsed = BooleanArray(MAX_TOUCH_CONTACTS)
+    var activeCount: Int = 0
+
+    /**
+     * Returns -1 when all contact slots are taken (>MAX_TOUCH_CONTACTS simultaneous fingers).
+     * MUST NOT fall back to slot 0 — that would alias finger 0 and risk stuck contacts.
+     */
+    fun allocSlot(pointerId: Long, x: Float, y: Float): Int {
+        for (i in slotUsed.indices) {
+            if (!slotUsed[i]) {
+                slotUsed[i] = true
+                pointerIds[i] = pointerId
+                lastX[i] = x
+                lastY[i] = y
+                activeCount++
+                return i
+            }
+        }
+        return -1
+    }
+
+    fun processChange(change: PointerInputChange, controller: RdpInputController) {
+        val id = change.id.value
+        var existing = -1
+        for (i in slotUsed.indices) {
+            if (slotUsed[i] && pointerIds[i] == id) {
+                existing = i
+                break
+            }
+        }
+        if (change.pressed) {
+            if (existing < 0) {
+                val slot = allocSlot(id, change.position.x, change.position.y)
+                if (slot >= 0) controller.touchDown(slot, change.position.x, change.position.y)
+            } else if (change.positionChanged()) {
+                lastX[existing] = change.position.x
+                lastY[existing] = change.position.y
+                controller.touchMove(existing, change.position.x, change.position.y)
+            }
+            change.consume()
+        } else if (existing >= 0) {
+            slotUsed[existing] = false
+            activeCount--
+            controller.touchUp(existing, change.position.x, change.position.y)
+            change.consume()
+        }
+    }
+
+    fun releaseAll(controller: RdpInputController) {
+        for (i in slotUsed.indices) {
+            if (slotUsed[i]) {
+                slotUsed[i] = false
+                controller.touchUp(i, lastX[i], lastY[i])
+            }
+        }
+        activeCount = 0
+    }
+}
+
+private class TrackpadTravelScratch {
+    private val pointerIds = LongArray(MAX_TOUCH_CONTACTS)
+    private val travels = FloatArray(MAX_TOUCH_CONTACTS)
+    var count: Int = 0
+
+    fun addTravel(pointerId: Long, delta: Float): Float {
+        for (i in 0 until count) {
+            if (pointerIds[i] == pointerId) {
+                val updated = travels[i] + delta
+                travels[i] = updated
+                return updated
+            }
+        }
+        if (count < pointerIds.size) {
+            pointerIds[count] = pointerId
+            travels[count] = delta
+            count++
+        }
+        return delta
+    }
+}
+
+private class TrackpadGestureState(
+    val startMs: Long,
+    val startX: Float,
+    val startY: Float,
+    val doubleTapCandidate: Boolean,
+) {
+    var pointerCountPeak: Int = 1
+    var totalMove: Float = 0f
+    var maxPointerTravel: Float = 0f
+    var consumed: Boolean = false
+    var holdDragActive: Boolean = false
+    var longPressFired: Boolean = false
+    var twoActive: Boolean = false
+    var twoMove: Float = 0f
+    var twoPendingDy: Float = 0f
+    var gestureEndedNormally: Boolean = false
+}
 
 fun Modifier.sessionGestures(
     controller: RdpInputController,
 ): Modifier = pointerInput(controller) {
-    // Persisted across gestures (for double-tap detection).
+    // Persisted across gestures (for double-tap detection and zero-alloc scratch reuse).
     var lastSingleTapEndMs = 0L
     var lastSingleTapX = 0f
     var lastSingleTapY = 0f
+    val nativeScratch = NativeTouchScratch()
+    val travelScratch = TrackpadTravelScratch()
 
     awaitEachGesture {
-        // Wait for the finger to LAND first, THEN read the live mode. Reading mode after awaitFirstDown
-        // is what makes a top-bar 输入模式 toggle take effect on the very NEXT touch instead of one
-        // gesture late: pointerInput(controller) never restarts its coroutine (controller is stable), so
-        // if we branched into awaitTrackpadGesture / awaitNativeTouchGesture BEFORE awaitFirstDown, the
-        // coroutine would sit idle suspended INSIDE the handler chosen by the PREVIOUS mode reading.
-        // Toggling mode then touching would still run the old handler for that whole gesture, and only
-        // the gesture AFTER it picked up the change (field bug: 切换输入模式后第一下不生效/有延迟). Reading
-        // controller.mode.value the instant the finger lands always dispatches to the current handler.
-        // controller.mode is kept in sync with state.mode by LaunchedEffect(state.mode) → setMode.
+        // Wait for the finger to LAND first, THEN read the live mode so a top-bar input-mode
+        // toggle takes effect on the very next touch without a one-gesture lag.
         val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
         if (controller.mode.value == InputMode.TOUCH) {
-            awaitNativeTouchGesture(controller, first)
+            awaitNativeTouchGesture(controller, first, nativeScratch)
         } else {
             awaitTrackpadGesture(
                 controller = controller,
                 first = first,
+                travelScratch = travelScratch,
                 lastSingleTapEndMs = lastSingleTapEndMs,
                 lastSingleTapX = lastSingleTapX,
                 lastSingleTapY = lastSingleTapY,
@@ -92,83 +177,35 @@ fun Modifier.sessionGestures(
     }
 }
 
-/**
- * Forward raw multi-touch to Windows via RDPEI. Each Compose pointer is assigned a small finger
- * slot (RDPEI externalId); down→[RdpInputController.touchDown], move→touchMove, up→touchUp. The
- * finally block releases any contact still down if the gesture aborts (finger left the view).
- */
-private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitNativeTouchGesture(
+private suspend fun AwaitPointerEventScope.awaitNativeTouchGesture(
     controller: RdpInputController,
     first: PointerInputChange,
+    scratch: NativeTouchScratch,
 ) {
-    val fingerOf = HashMap<Long, Int>()           // PointerId.value → finger slot
-    val slotUsed = BooleanArray(MAX_TOUCH_CONTACTS)
-    val lastPos = HashMap<Int, Offset>()           // finger slot → last position
-
-    // Returns -1 when all contact slots are taken (>MAX_TOUCH_CONTACTS simultaneous fingers).
-    // MUST NOT fall back to slot 0 — that would alias finger 0, double-send its TouchBegin and, on
-    // the extra finger's lift, prematurely TouchEnd finger 0's still-active contact (stuck contact).
-    fun allocSlot(): Int {
-        for (i in slotUsed.indices) if (!slotUsed[i]) { slotUsed[i] = true; return i }
-        return -1
-    }
-
     try {
-        val f0 = allocSlot()
+        val f0 = scratch.allocSlot(first.id.value, first.position.x, first.position.y)
         if (f0 >= 0) {
-            fingerOf[first.id.value] = f0
-            lastPos[f0] = first.position
             controller.touchDown(f0, first.position.x, first.position.y)
         }
         first.consume()
 
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Main)
-            for (ch in event.changes) {
-                val id = ch.id.value
-                if (ch.pressed) {
-                    val existing = fingerOf[id]
-                    if (existing == null) {
-                        val slot = allocSlot()
-                        if (slot >= 0) {
-                            fingerOf[id] = slot
-                            lastPos[slot] = ch.position
-                            controller.touchDown(slot, ch.position.x, ch.position.y)
-                        }
-                        // slot < 0 → over the contact cap; ignore this finger entirely (still
-                        // consumed below so it doesn't leak to other handlers).
-                    } else if (ch.positionChanged()) {
-                        lastPos[existing] = ch.position
-                        controller.touchMove(existing, ch.position.x, ch.position.y)
-                    }
-                    ch.consume()
-                } else {
-                    val slot = fingerOf.remove(id)
-                    if (slot != null) {
-                        slotUsed[slot] = false
-                        lastPos.remove(slot)
-                        controller.touchUp(slot, ch.position.x, ch.position.y)
-                        ch.consume()
-                    }
-                }
+        while (scratch.activeCount > 0) {
+            val changes = awaitPointerEvent(PointerEventPass.Main).changes
+            for (i in changes.indices) {
+                scratch.processChange(changes[i], controller)
             }
-            if (fingerOf.isEmpty()) break
         }
     } finally {
-        // Release any contact still held (pointer left the view without an up event) so Windows
-        // doesn't keep a finger "stuck" on the desktop.
-        for ((id, slot) in fingerOf) {
-            val p = lastPos[slot] ?: Offset.Zero
-            controller.touchUp(slot, p.x, p.y)
-        }
+        // Release any contact still held so Windows never keeps a finger stuck on the desktop.
+        scratch.releaseAll(controller)
     }
 }
 
-/** TRACKPAD-mode mouse emulation. [commitTap] reports the (time,x,y) of a single tap for the
- *  caller's persistent double-tap bookkeeping. */
-private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awaitTrackpadGesture(
+@Suppress("LongParameterList")
+private suspend fun AwaitPointerEventScope.awaitTrackpadGesture(
     controller: RdpInputController,
     first: PointerInputChange,
+    travelScratch: TrackpadTravelScratch,
     lastSingleTapEndMs: Long,
     lastSingleTapX: Float,
     lastSingleTapY: Float,
@@ -177,151 +214,144 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.awa
     val gestureStartMs = SystemClock.uptimeMillis()
     val startX = first.position.x
     val startY = first.position.y
-
-    var pointerCountPeak = 1
-    var totalMove = 0f
-    var maxPointerTravel = 0f
-    val pointerTravel = HashMap<Long, Float>()
-    var consumed = false            // scroll consumed this gesture (→ no tap/click on release)
-    var holdDragActive = false      // we entered a held-button drag (double-tap OR long-press)
-    var longPressFired = false
-
-    // Two-finger phase tracking. Two fingers = wheel scroll ONLY (picture zoom/move live on the
-    // on-screen buttons now), so we only reset the scroll accumulator when the phase starts and gate
-    // scrolling on a small travel threshold so a 2-finger TAP still falls through to right-click.
-    var twoActive = false
-    var twoMove = 0f
-    var twoPendingDy = 0f
-    var gestureEndedNormally = false
-
     val sinceLastTap = gestureStartMs - lastSingleTapEndMs
     val nearLast = abs(startX - lastSingleTapX) + abs(startY - lastSingleTapY) < TAP_SLOP_PX * 2
     val doubleTapCandidate = sinceLastTap in 1L..DOUBLE_TAP_WINDOW_MS && nearLast
+    val state = TrackpadGestureState(gestureStartMs, startX, startY, doubleTapCandidate)
+    travelScratch.count = 0
 
     try {
-        while (true) {
-            // Arm a long-press timeout only while still a stationary single-finger press.
-            val armLongPress = !consumed && !holdDragActive && !longPressFired &&
-                pointerCountPeak == 1 && totalMove <= TAP_SLOP_PX
+        var tracking = true
+        while (tracking) {
+            val inactive = !state.consumed && !state.holdDragActive && !state.longPressFired
+            val armLongPress = inactive && state.pointerCountPeak == 1 && state.totalMove <= TAP_SLOP_PX
             val event = if (armLongPress) {
-                val remaining = (LONG_PRESS_MS - (SystemClock.uptimeMillis() - gestureStartMs)).coerceAtLeast(1L)
+                val remaining = (LONG_PRESS_MS - (SystemClock.uptimeMillis() - state.startMs)).coerceAtLeast(1L)
                 withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Main) }
             } else {
                 awaitPointerEvent(PointerEventPass.Main)
             }
 
             if (event == null) {
-                // Long-press fired: finger held still long enough → start a hold-left-button drag.
                 controller.beginDragHold()
-                holdDragActive = true
-                longPressFired = true
-                continue
-            }
-
-            // Include the final up event in travel accounting. Some devices coalesce the last
-            // movement and lift into one event; filtering to pressed pointers first would miss that
-            // movement and could misclassify a drag as a tap.
-            event.changes.forEach { change ->
-                val delta = change.positionChange()
-                val travel = pointerTravel.getOrDefault(change.id.value, 0f) +
-                    hypot(delta.x, delta.y)
-                pointerTravel[change.id.value] = travel
-                maxPointerTravel = maxOf(maxPointerTravel, travel)
-            }
-            val pressed = event.changes.filter { it.pressed }
-            val currentCount = pressed.size
-            if (currentCount == 0) {
-                gestureEndedNormally = true
-                break
-            }
-            pointerCountPeak = maxOf(pointerCountPeak, currentCount)
-
-            // Reset the 2-finger phase whenever we're not in it, so a 2→1→2 transition re-arms the
-            // scroll accumulator cleanly.
-            if (currentCount != 2) twoActive = false
-
-            when (currentCount) {
-                1 -> {
-                    val ch = pressed.first()
-                    val dx = ch.positionChange().x
-                    val dy = ch.positionChange().y
-                    totalMove += abs(dx) + abs(dy)
-                    if (!consumed && (totalMove > TAP_SLOP_PX || holdDragActive)) {
-                        // Double-tap-then-drag promotes to hold-drag on first move.
-                        if ((doubleTapCandidate || holdDragActive) && !longPressFired) {
-                            if (doubleTapCandidate && !holdDragActive) {
-                                controller.beginDragHold()
-                                holdDragActive = true
-                            }
-                        }
-                        controller.drag(dx, dy)
-                        ch.consume()
-                    }
-                }
-                2 -> {
-                    // Two fingers = wheel scroll, and nothing else. There is no pinch-zoom gesture
-                    // any more (picture zoom is the zoom pill), so scroll never has to fight it.
-                    if (!twoActive) {
-                        twoActive = true
-                        twoMove = 0f
-                        twoPendingDy = 0f
-                        controller.resetScrollAccum()
-                        if (holdDragActive) {
-                            controller.endDragHold()
-                            holdDragActive = false
-                        }
-                    }
-                    val avgDy = (pressed[0].positionChange().y + pressed[1].positionChange().y) * 0.5f
-                    twoMove += pressed.maxOf { change ->
-                        val delta = change.positionChange()
-                        hypot(delta.x, delta.y)
-                    }
-                    twoPendingDy += avgDy
-                    // Gate on a small travel so a still 2-finger TAP keeps `consumed` false and falls
-                    // through to the right-click path in the finally block. Once the gate is crossed,
-                    // flush the ACCUMULATED travel (incl. the pre-gate frames) so the first ~16 px of
-                    // a real scroll isn't dropped, then each later frame feeds its own delta.
-                    if (twoMove > TAP_SLOP_PX) {
-                        controller.scroll(twoPendingDy)
-                        twoPendingDy = 0f
-                        consumed = true
-                    }
-                    pressed.forEach { it.consume() }
-                }
-                3 -> {
-                    if (holdDragActive) {
-                        controller.endDragHold()
-                        holdDragActive = false
-                    }
-                }
-                else -> Unit // 4+ fingers: noise, ignore
+                state.holdDragActive = true
+                state.longPressFired = true
+            } else {
+                tracking = processTrackpadEvent(event.changes, controller, state, travelScratch)
             }
         }
     } finally {
-        if (holdDragActive) controller.endDragHold()
+        if (state.holdDragActive) controller.endDragHold()
+        dispatchTrackpadTap(controller, state, commitTap)
+    }
+}
 
-        val now = SystemClock.uptimeMillis()
-        val dur = now - gestureStartMs
-        if (gestureEndedNormally && !consumed && !holdDragActive && !longPressFired &&
-            dur < TAP_TIMEOUT_MS && maxPointerTravel < TAP_SLOP_PX) {
-            when (pointerCountPeak) {
-                1 -> {
-                    // Always a left click. Two taps in a row therefore land as a normal remote
-                    // double-click — the old "double-tap to reset local zoom" was removed because it
-                    // ate the remote double-click; zoom reset now lives only on the zoom pill.
-                    controller.tap()
-                    commitTap(now, startX, startY)
-                }
-                2 -> {
-                    controller.rightClick()
-                    commitTap(0L, startX, startY)
-                }
-                3 -> {
-                    controller.middleClick()
-                    commitTap(0L, startX, startY)
-                }
-                else -> Unit
-            }
+private fun dispatchTrackpadTap(
+    controller: RdpInputController,
+    state: TrackpadGestureState,
+    commitTap: (endMs: Long, x: Float, y: Float) -> Unit,
+) {
+    val now = SystemClock.uptimeMillis()
+    val clean = state.gestureEndedNormally && !state.consumed && !state.holdDragActive
+    val withinTapLimits = (now - state.startMs) < TAP_TIMEOUT_MS && state.maxPointerTravel < TAP_SLOP_PX
+    if (!clean || state.longPressFired || !withinTapLimits) return
+    when (state.pointerCountPeak) {
+        1 -> {
+            controller.tap()
+            commitTap(now, state.startX, state.startY)
+        }
+        2 -> {
+            controller.rightClick()
+            commitTap(0L, state.startX, state.startY)
+        }
+        3 -> {
+            controller.middleClick()
+            commitTap(0L, state.startX, state.startY)
+        }
+        else -> Unit
+    }
+}
+
+private fun processTrackpadEvent(
+    changes: List<PointerInputChange>,
+    controller: RdpInputController,
+    state: TrackpadGestureState,
+    travelScratch: TrackpadTravelScratch,
+): Boolean {
+    var currentCount = 0
+    var firstPressed: PointerInputChange? = null
+    var secondPressed: PointerInputChange? = null
+    for (i in changes.indices) {
+        val change = changes[i]
+        val delta = change.positionChange()
+        val travel = travelScratch.addTravel(change.id.value, hypot(delta.x, delta.y))
+        if (travel > state.maxPointerTravel) state.maxPointerTravel = travel
+        if (change.pressed) {
+            if (currentCount == 0) firstPressed = change else if (currentCount == 1) secondPressed = change
+            currentCount++
         }
     }
+    if (currentCount == 0) {
+        state.gestureEndedNormally = true
+        return false
+    }
+    if (currentCount > state.pointerCountPeak) state.pointerCountPeak = currentCount
+    if (currentCount != 2) state.twoActive = false
+
+    when (currentCount) {
+        1 -> handleSingleFingerTrackpad(checkNotNull(firstPressed), controller, state)
+        2 -> handleTwoFingerTrackpad(checkNotNull(firstPressed), checkNotNull(secondPressed), controller, state)
+        3 -> if (state.holdDragActive) {
+            controller.endDragHold()
+            state.holdDragActive = false
+        }
+        else -> Unit
+    }
+    return true
+}
+
+private fun handleSingleFingerTrackpad(
+    change: PointerInputChange,
+    controller: RdpInputController,
+    state: TrackpadGestureState,
+) {
+    val delta = change.positionChange()
+    state.totalMove += abs(delta.x) + abs(delta.y)
+    if (!state.consumed && (state.totalMove > TAP_SLOP_PX || state.holdDragActive)) {
+        if (state.doubleTapCandidate && !state.holdDragActive && !state.longPressFired) {
+            controller.beginDragHold()
+            state.holdDragActive = true
+        }
+        controller.drag(delta.x, delta.y)
+        change.consume()
+    }
+}
+
+private fun handleTwoFingerTrackpad(
+    first: PointerInputChange,
+    second: PointerInputChange,
+    controller: RdpInputController,
+    state: TrackpadGestureState,
+) {
+    if (!state.twoActive) {
+        state.twoActive = true
+        state.twoMove = 0f
+        state.twoPendingDy = 0f
+        controller.resetScrollAccum()
+        if (state.holdDragActive) {
+            controller.endDragHold()
+            state.holdDragActive = false
+        }
+    }
+    val d0 = first.positionChange()
+    val d1 = second.positionChange()
+    state.twoMove += maxOf(hypot(d0.x, d0.y), hypot(d1.x, d1.y))
+    state.twoPendingDy += (d0.y + d1.y) * AVERAGE_TWO_FACTOR
+    if (state.twoMove > TAP_SLOP_PX) {
+        controller.scroll(state.twoPendingDy)
+        state.twoPendingDy = 0f
+        state.consumed = true
+    }
+    first.consume()
+    second.consume()
 }

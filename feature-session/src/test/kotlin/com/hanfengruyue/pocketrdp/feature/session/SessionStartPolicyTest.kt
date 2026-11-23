@@ -255,10 +255,109 @@ class SessionStartPolicyTest {
     }
 
     @Test
+    fun monitorLayoutMatchHonorsAckToleranceAndRejectsInvalidDims() {
+        assertTrue(isMonitorLayoutMatchingRemote(1920, 1080, 1920, 1080))
+        assertTrue(isMonitorLayoutMatchingRemote(1920, 1080, 1918, 1082))
+        assertFalse(isMonitorLayoutMatchingRemote(1920, 1080, 1900, 1080))
+        assertFalse(isMonitorLayoutMatchingRemote(1920, 1080, 0, 1080))
+        assertFalse(isMonitorLayoutMatchingRemote(0, 1080, 1920, 1080))
+    }
+
+    @Test
     fun monitorLayoutRetryWaitsForAFullViewport() {
         assertFalse(shouldDispatchMonitorLayoutRetry(imeVisible = true, width = 1920, height = 540))
         assertFalse(shouldDispatchMonitorLayoutRetry(imeVisible = false, width = 0, height = 1080))
         assertTrue(shouldDispatchMonitorLayoutRetry(imeVisible = false, width = 1920, height = 1080))
+    }
+
+    @Test
+    fun autoReconnectPolicyRespectsSettingAndSessionGuards() {
+        assertTrue(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = true,
+                eventRetryable = true,
+                hasReconnectParams = true,
+                userInitiatedDisconnect = false,
+                certificateDecisionPending = false,
+            ),
+        )
+        assertFalse(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = false,
+                eventRetryable = true,
+                hasReconnectParams = true,
+                userInitiatedDisconnect = false,
+                certificateDecisionPending = false,
+            ),
+        )
+        assertFalse(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = true,
+                eventRetryable = false,
+                hasReconnectParams = true,
+                userInitiatedDisconnect = false,
+                certificateDecisionPending = false,
+            ),
+        )
+        assertFalse(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = true,
+                eventRetryable = true,
+                hasReconnectParams = false,
+                userInitiatedDisconnect = false,
+                certificateDecisionPending = false,
+            ),
+        )
+        assertFalse(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = true,
+                eventRetryable = true,
+                hasReconnectParams = true,
+                userInitiatedDisconnect = true,
+                certificateDecisionPending = false,
+            ),
+        )
+        assertFalse(
+            shouldScheduleAutoReconnect(
+                autoReconnectEnabled = true,
+                eventRetryable = true,
+                hasReconnectParams = true,
+                userInitiatedDisconnect = false,
+                certificateDecisionPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun cancellingPendingAutoReconnectExitsReconnectingStateCleanly() {
+        assertEquals(
+            SessionConnectionStatus.Disconnected(reason = null),
+            statusAfterAutoReconnectCancelled(
+                currentStatus = SessionConnectionStatus.Reconnecting,
+                lastError = null,
+            ),
+        )
+        assertEquals(
+            SessionConnectionStatus.Disconnected(reason = null),
+            statusAfterAutoReconnectCancelled(
+                currentStatus = SessionConnectionStatus.Reconnecting,
+                lastError = "   ",
+            ),
+        )
+        assertEquals(
+            SessionConnectionStatus.Failed("network reset"),
+            statusAfterAutoReconnectCancelled(
+                currentStatus = SessionConnectionStatus.Reconnecting,
+                lastError = "network reset",
+            ),
+        )
+        assertEquals(
+            SessionConnectionStatus.Connected,
+            statusAfterAutoReconnectCancelled(
+                currentStatus = SessionConnectionStatus.Connected,
+                lastError = "stale error",
+            ),
+        )
     }
 
     private fun state(status: SessionConnectionStatus): SessionUiState =

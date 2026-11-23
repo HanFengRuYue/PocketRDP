@@ -45,9 +45,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -66,14 +65,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 import com.hanfengruyue.pocketrdp.feature.connections.R
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 
 // Card geometry / styling tunables (kept as property declarations so detekt's MagicNumber rule,
 // which ignores property initializers, doesn't flag them).
@@ -106,6 +102,15 @@ data class KeepAliveHintActions(
     val onDismiss: () -> Unit = {},
 )
 
+@Immutable
+private data class ConnectionCardCallbacks(
+    val peekCachedThumbnail: (Long) -> Bitmap?,
+    val loadThumbnail: suspend (Long) -> Bitmap?,
+    val onEdit: (Long) -> Unit,
+    val onConnect: (Long) -> Unit,
+    val onDelete: (Long) -> Unit,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectionListScreen(
@@ -118,7 +123,16 @@ fun ConnectionListScreen(
 ) {
     val viewModel: ConnectionListViewModel = hiltViewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val thumbnailRevision by viewModel.thumbnailRevision.collectAsStateWithLifecycle()
+    val thumbnailRevisions by viewModel.thumbnailRevisions.collectAsStateWithLifecycle()
+    val callbacks = remember(viewModel, onEdit, onConnect) {
+        ConnectionCardCallbacks(
+            peekCachedThumbnail = viewModel::peekCachedThumbnail,
+            loadThumbnail = viewModel::loadThumbnail,
+            onEdit = onEdit,
+            onConnect = onConnect,
+            onDelete = viewModel::delete,
+        )
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -156,12 +170,9 @@ fun ConnectionListScreen(
             else -> ConnectionList(
                 items = state.connections,
                 padding = padding,
-                loadThumbnail = viewModel::loadThumbnail,
-                onEdit = onEdit,
-                onConnect = onConnect,
-                onDelete = viewModel::delete,
+                callbacks = callbacks,
                 connectionRuntime = connectionRuntime,
-                thumbnailRevision = thumbnailRevision,
+                thumbnailRevisions = thumbnailRevisions,
             )
         }
     }
@@ -249,19 +260,13 @@ private fun EmptyState(padding: PaddingValues) {
 
 @Composable
 private fun ConnectionList(
-    items: List<ConnectionEntity>,
+    items: List<ConnectionListItem>,
     padding: PaddingValues,
-    loadThumbnail: suspend (Long) -> Bitmap?,
-    onEdit: (Long) -> Unit,
-    onConnect: (Long) -> Unit,
-    onDelete: (ConnectionEntity) -> Unit,
+    callbacks: ConnectionCardCallbacks,
     connectionRuntime: ConnectionRuntimeState,
-    thumbnailRevision: Long,
+    thumbnailRevisions: Map<Long, Long>,
 ) {
-    // Bump on every ON_RESUME so cards reload their thumbnails when the user returns from a session
-    // (the session just saved a fresh snapshot, but the DB row didn't change so the list flow won't
-    // re-emit on its own).
-    val refreshKey = rememberThumbnailRefreshKey()
+    val animateRunningBadge = !connectionRuntime.isOccluded
     BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
         val useLandscapeLayout = maxWidth >= landscapeLayoutMinWidthDp && maxWidth > maxHeight
         LazyColumn(
@@ -285,75 +290,55 @@ private fun ConnectionList(
                 if (useLandscapeLayout) landscapeCardSpacingDp else 16.dp,
             ),
         ) {
-            items(items, key = { it.id }) { conn ->
+            items(items, key = { it.id }) { item ->
                 ConnectionCard(
-                    entity = conn,
-                    refreshKey = refreshKey,
+                    item = item,
                     useLandscapeLayout = useLandscapeLayout,
-                    loadThumbnail = loadThumbnail,
-                    actions = ConnectionCardActions(
-                        onEdit = { onEdit(conn.id) },
-                        onConnect = { onConnect(conn.id) },
-                        onDelete = { onDelete(conn) },
-                    ),
-                    connectionRuntime = connectionRuntime,
-                    thumbnailRevision = thumbnailRevision,
+                    liveThumbnail = connectionRuntime.liveThumbnails[item.id],
+                    isActive = connectionRuntime.activeSessionIds.contains(item.id),
+                    animateRunningBadge = animateRunningBadge,
+                    thumbnailRevision = thumbnailRevisions[item.id] ?: 0L,
+                    callbacks = callbacks,
                 )
             }
         }
     }
 }
 
-/** Counter that increments every time the host lifecycle resumes — keys thumbnail reloads. */
-@Composable
-private fun rememberThumbnailRefreshKey(): Int {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var key by remember { mutableIntStateOf(0) }
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) key++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    return key
-}
-
 @Composable
 private fun ConnectionCard(
-    entity: ConnectionEntity,
-    refreshKey: Int,
+    item: ConnectionListItem,
     useLandscapeLayout: Boolean,
-    loadThumbnail: suspend (Long) -> Bitmap?,
-    actions: ConnectionCardActions,
-    connectionRuntime: ConnectionRuntimeState,
+    liveThumbnail: Bitmap?,
+    isActive: Boolean,
+    animateRunningBadge: Boolean,
     thumbnailRevision: Long,
+    callbacks: ConnectionCardCallbacks,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     val diskThumbnail by produceState<Bitmap?>(
-        initialValue = null,
-        entity.id,
-        refreshKey,
+        initialValue = callbacks.peekCachedThumbnail(item.id),
+        item.id,
         thumbnailRevision,
     ) {
-        value = loadThumbnail(entity.id)
+        value = callbacks.peekCachedThumbnail(item.id) ?: callbacks.loadThumbnail(item.id)
     }
-    val thumbnail = chooseConnectionThumbnail(connectionRuntime.liveThumbnails[entity.id], diskThumbnail)
-    val isActive = connectionRuntime.activeSessionIds.contains(entity.id)
-    val animateRunningBadge = !connectionRuntime.isOccluded
+    val thumbnail = chooseConnectionThumbnail(liveThumbnail, diskThumbnail)
+    val onConnectClick = remember(callbacks, item.id) { { callbacks.onConnect(item.id) } }
+    val onEditClick = remember(callbacks, item.id) { { callbacks.onEdit(item.id) } }
 
     ElevatedCard(
-        onClick = actions.onConnect,
+        onClick = onConnectClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(if (useLandscapeLayout) landscapeCardCornerDp else cardCornerDp),
         elevation = CardDefaults.elevatedCardElevation(),
     ) {
         if (useLandscapeLayout) {
             LandscapeConnectionCardContent(
-                entity = entity,
+                item = item,
                 thumbnail = thumbnail,
-                onConnect = actions.onConnect,
-                onEdit = actions.onEdit,
+                onConnect = onConnectClick,
+                onEdit = onEditClick,
                 onDelete = { if (!isActive) confirmDelete = true },
                 isActive = isActive,
                 animateRunningBadge = animateRunningBadge,
@@ -361,18 +346,23 @@ private fun ConnectionCard(
         } else {
             DesktopThumbnail(
                 bitmap = thumbnail,
-                host = entity.host.takeIf { entity.name.isBlank() },
+                host = item.host.takeIf { item.name.isBlank() },
                 isActive = isActive,
                 animateRunningBadge = animateRunningBadge,
                 modifier = Modifier.fillMaxWidth().aspectRatio(DESKTOP_ASPECT),
             )
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ConnectionSummary(entity = entity, modifier = Modifier.weight(1f))
-                IconButton(onClick = actions.onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
+                ConnectionSummary(item = item, modifier = Modifier.weight(1f))
+                IconButton(onClick = onEditClick) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = stringResource(R.string.connection_action_edit),
+                    )
                 }
                 IconButton(
                     onClick = { confirmDelete = true },
@@ -394,22 +384,19 @@ private fun ConnectionCard(
 
     if (confirmDelete && !isActive) {
         DeleteConfirmDialog(
-            name = entity.name.ifBlank { entity.host },
-            onConfirm = { confirmDelete = false; actions.onDelete() },
+            name = item.name.ifBlank { item.host },
+            onConfirm = {
+                confirmDelete = false
+                callbacks.onDelete(item.id)
+            },
             onDismiss = { confirmDelete = false },
         )
     }
 }
 
-private data class ConnectionCardActions(
-    val onEdit: () -> Unit,
-    val onConnect: () -> Unit,
-    val onDelete: () -> Unit,
-)
-
 @Composable
 private fun LandscapeConnectionCardContent(
-    entity: ConnectionEntity,
+    item: ConnectionListItem,
     thumbnail: Bitmap?,
     onConnect: () -> Unit,
     onEdit: () -> Unit,
@@ -424,7 +411,7 @@ private fun LandscapeConnectionCardContent(
     ) {
         DesktopThumbnail(
             bitmap = thumbnail,
-            host = entity.host.takeIf { entity.name.isBlank() },
+            host = item.host.takeIf { item.name.isBlank() },
             isActive = isActive,
             animateRunningBadge = animateRunningBadge,
             modifier = Modifier
@@ -435,13 +422,13 @@ private fun LandscapeConnectionCardContent(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            ConnectionSummary(entity = entity, showLastUsed = false)
+            ConnectionSummary(item = item, showLastUsed = false)
             Surface(
                 shape = RoundedCornerShape(landscapeMetaPillCornerDp),
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = META_PILL_ALPHA),
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             ) {
-                val lastUsed = relativeLastUsed(entity.lastUsedAt)
+                val lastUsed = relativeLastUsed(item.lastUsedAt)
                 Text(
                     text = stringResource(R.string.connection_last_used_format, lastUsed),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -451,13 +438,25 @@ private fun LandscapeConnectionCardContent(
                 )
             }
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             IconButton(onClick = onConnect) {
-                Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.connection_action_connect))
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = stringResource(R.string.connection_action_connect),
+                )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.connection_action_edit))
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = stringResource(R.string.connection_action_edit),
+                    )
                 }
                 IconButton(onClick = onDelete, enabled = !isActive) {
                     Icon(
@@ -477,22 +476,22 @@ private fun LandscapeConnectionCardContent(
 
 @Composable
 private fun ConnectionSummary(
-    entity: ConnectionEntity,
+    item: ConnectionListItem,
     modifier: Modifier = Modifier,
     showLastUsed: Boolean = true,
 ) {
     Column(modifier = modifier) {
-        val noUser = stringResource(R.string.connection_no_user)
         Text(
-            text = entity.name.ifBlank { entity.host },
+            text = item.name.ifBlank { item.host },
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (entity.name.isBlank()) {
+        if (item.name.isBlank()) {
+            val noUser = stringResource(R.string.connection_no_user)
             Text(
-                text = "${entity.username.ifBlank { noUser }} @ ${entity.host}:${entity.port}",
+                text = "${item.username.ifBlank { noUser }} @ ${item.host}:${item.port}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -500,7 +499,7 @@ private fun ConnectionSummary(
             )
         }
         if (showLastUsed) {
-            val lastUsed = relativeLastUsed(entity.lastUsedAt)
+            val lastUsed = relativeLastUsed(item.lastUsedAt)
             Text(
                 text = stringResource(R.string.connection_last_used_format, lastUsed),
                 style = MaterialTheme.typography.labelSmall,
@@ -524,10 +523,17 @@ private fun DesktopThumbnail(
     animateRunningBadge: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val imageBitmap = remember(bitmap) { bitmap?.asImageBitmap() }
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val tertiaryContainer = MaterialTheme.colorScheme.tertiaryContainer
+    val placeholderBrush = remember(primaryContainer, tertiaryContainer) {
+        Brush.linearGradient(listOf(primaryContainer, tertiaryContainer))
+    }
+
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        if (bitmap != null) {
+        if (imageBitmap != null) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = imageBitmap,
                 contentDescription = stringResource(R.string.connection_remote_preview),
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -536,14 +542,7 @@ private fun DesktopThumbnail(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                            ),
-                        ),
-                    ),
+                    .background(placeholderBrush),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -551,7 +550,9 @@ private fun DesktopThumbnail(
                         imageVector = Icons.Default.Computer,
                         contentDescription = null,
                         modifier = Modifier.size(placeholderIconDp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = PLACEHOLDER_ICON_ALPHA),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(
+                            alpha = PLACEHOLDER_ICON_ALPHA,
+                        ),
                     )
                     if (!host.isNullOrBlank()) {
                         Spacer(Modifier.size(8.dp))
@@ -595,11 +596,16 @@ private fun DeleteConfirmDialog(name: String, onConfirm: () -> Unit, onDismiss: 
         text = { Text(stringResource(R.string.connection_delete_body, name)) },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text(stringResource(R.string.connection_action_delete), color = MaterialTheme.colorScheme.error)
+                Text(
+                    stringResource(R.string.connection_action_delete),
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.connection_action_cancel)) }
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.connection_action_cancel))
+            }
         },
     )
 }
@@ -630,8 +636,9 @@ private fun relativeLastUsed(ms: Long): String {
             pluralStringResource(R.plurals.connection_last_used_days_ago, days, days)
         }
         else -> {
-            val locale = LocalConfiguration.current.locales[0]
-            SimpleDateFormat("yyyy-MM-dd", locale).format(Date(ms))
+            val locales = LocalConfiguration.current.locales
+            val locale = if (!locales.isEmpty) locales[0] else Locale.ROOT
+            remember(ms, locale) { SimpleDateFormat("yyyy-MM-dd", locale).format(Date(ms)) }
         }
     }
 }

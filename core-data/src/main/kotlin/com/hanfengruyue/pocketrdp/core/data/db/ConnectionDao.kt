@@ -1,7 +1,6 @@
 package com.hanfengruyue.pocketrdp.core.data.db
 
 import androidx.room.Dao
-import androidx.room.Delete
 import androidx.room.Query
 import androidx.room.Upsert
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
@@ -18,8 +17,8 @@ interface ConnectionDao {
     @Upsert
     suspend fun upsert(entity: ConnectionEntity): Long
 
-    @Delete
-    suspend fun delete(entity: ConnectionEntity)
+    @Query("DELETE FROM connections WHERE id = :id")
+    suspend fun deleteById(id: Long)
 
     @Query("UPDATE connections SET last_used_at = :timestamp WHERE id = :id")
     suspend fun touchLastUsed(id: Long, timestamp: Long)

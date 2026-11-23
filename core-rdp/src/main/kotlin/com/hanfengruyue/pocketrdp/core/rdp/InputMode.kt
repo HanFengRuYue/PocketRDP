@@ -41,46 +41,69 @@ object RdpTouchAction {
  * transport/tunnel state, not merely on multitransport capability flags.
  */
 enum class RdpTransportPhase(val wireValue: Long) {
-    TCP(0),
-    NEGOTIATING(1),
-    WAITING_SOFT_SYNC(2),
-    ACTIVE(3),
-    UDP_FAILED(4),
-    RECONNECTING_TCP(5),
-    UNKNOWN(-1),
+    TCP(PHASE_WIRE_TCP),
+    NEGOTIATING(PHASE_WIRE_NEGOTIATING),
+    WAITING_SOFT_SYNC(PHASE_WIRE_WAITING_SOFT_SYNC),
+    ACTIVE(PHASE_WIRE_ACTIVE),
+    UDP_FAILED(PHASE_WIRE_UDP_FAILED),
+    RECONNECTING_TCP(PHASE_WIRE_RECONNECTING_TCP),
+    UNKNOWN(WIRE_UNKNOWN),
     ;
 
     companion object {
-        fun fromWire(value: Long): RdpTransportPhase = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+        fun fromWire(value: Long): RdpTransportPhase = when (value) {
+            PHASE_WIRE_TCP -> TCP
+            PHASE_WIRE_NEGOTIATING -> NEGOTIATING
+            PHASE_WIRE_WAITING_SOFT_SYNC -> WAITING_SOFT_SYNC
+            PHASE_WIRE_ACTIVE -> ACTIVE
+            PHASE_WIRE_UDP_FAILED -> UDP_FAILED
+            PHASE_WIRE_RECONNECTING_TCP -> RECONNECTING_TCP
+            else -> UNKNOWN
+        }
     }
 }
 
 enum class RdpUdpKind(val mask: Long) {
-    UDP_R(1),
-    UDP_L(2),
-    UDP2(4),
-    UNKNOWN(0),
+    UDP_R(UDP_KIND_MASK_UDP_R),
+    UDP_L(UDP_KIND_MASK_UDP_L),
+    UDP2(UDP_KIND_MASK_UDP2),
+    UNKNOWN(UDP_KIND_MASK_UNKNOWN),
     ;
 
     companion object {
-        fun fromMask(mask: Long): RdpUdpKind = entries.firstOrNull { it.mask == mask } ?: UNKNOWN
+        fun fromMask(mask: Long): RdpUdpKind = when (mask) {
+            UDP_KIND_MASK_UDP_R -> UDP_R
+            UDP_KIND_MASK_UDP_L -> UDP_L
+            UDP_KIND_MASK_UDP2 -> UDP2
+            else -> UNKNOWN
+        }
     }
 }
 
 enum class RdpUdpTunnelState(val wireValue: Long) {
-    IDLE(0),
-    SYN_SENT(1),
-    SECURITY_HANDSHAKE(2),
-    RDPEMT_CREATE(3),
-    READY(4),
-    ACTIVE(5),
-    FAILED(6),
-    CLOSED(7),
-    UNKNOWN(-1),
+    IDLE(TUNNEL_STATE_WIRE_IDLE),
+    SYN_SENT(TUNNEL_STATE_WIRE_SYN_SENT),
+    SECURITY_HANDSHAKE(TUNNEL_STATE_WIRE_SECURITY_HANDSHAKE),
+    RDPEMT_CREATE(TUNNEL_STATE_WIRE_RDPEMT_CREATE),
+    READY(TUNNEL_STATE_WIRE_READY),
+    ACTIVE(TUNNEL_STATE_WIRE_ACTIVE),
+    FAILED(TUNNEL_STATE_WIRE_FAILED),
+    CLOSED(TUNNEL_STATE_WIRE_CLOSED),
+    UNKNOWN(WIRE_UNKNOWN),
     ;
 
     companion object {
-        fun fromWire(value: Long): RdpUdpTunnelState = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+        fun fromWire(value: Long): RdpUdpTunnelState = when (value) {
+            TUNNEL_STATE_WIRE_IDLE -> IDLE
+            TUNNEL_STATE_WIRE_SYN_SENT -> SYN_SENT
+            TUNNEL_STATE_WIRE_SECURITY_HANDSHAKE -> SECURITY_HANDSHAKE
+            TUNNEL_STATE_WIRE_RDPEMT_CREATE -> RDPEMT_CREATE
+            TUNNEL_STATE_WIRE_READY -> READY
+            TUNNEL_STATE_WIRE_ACTIVE -> ACTIVE
+            TUNNEL_STATE_WIRE_FAILED -> FAILED
+            TUNNEL_STATE_WIRE_CLOSED -> CLOSED
+            else -> UNKNOWN
+        }
     }
 }
 
@@ -110,7 +133,42 @@ enum class RdpTransportFailure(val wireValue: Long) {
     ;
 
     companion object {
-        fun fromWire(value: Long): RdpTransportFailure = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+        private const val MAX_CORE_WIRE = 16L
+        private const val MIN_RUNTIME_WIRE = 101L
+        private const val MAX_RUNTIME_WIRE = 104L
+
+        private val BY_CORE_WIRE = arrayOf(
+            NONE,
+            UNSUPPORTED_PROTOCOL,
+            INVALID_ENDPOINT,
+            SOCKET_CONNECT,
+            SYN_SEND,
+            SYN_TIMEOUT,
+            SYN_RECEIVE,
+            SYN_PARSE,
+            RESOURCE_LIMIT,
+            FINAL_ACK,
+            UNSUPPORTED_VERSION,
+            SECURITY_HANDSHAKE,
+            RDPEMT_REQUEST,
+            RDPEMT_RESPONSE,
+            RDPEMT_REJECTED,
+            TRANSPORT_TIMEOUT,
+            UNSUPPORTED_ROUTE,
+        )
+
+        private val BY_RUNTIME_WIRE = arrayOf(
+            INVALID_DVC_ROUTE,
+            DVC_DELIVERY,
+            TUNNEL_POLL,
+            TUNNEL_WRITE,
+        )
+
+        fun fromWire(value: Long): RdpTransportFailure = when (value) {
+            in 0L..MAX_CORE_WIRE -> BY_CORE_WIRE[value.toInt()]
+            in MIN_RUNTIME_WIRE..MAX_RUNTIME_WIRE -> BY_RUNTIME_WIRE[(value - MIN_RUNTIME_WIRE).toInt()]
+            else -> UNKNOWN
+        }
     }
 }
 
@@ -198,3 +256,26 @@ data class RdpTransportSnapshot(
         private const val LOSSY_TUNNEL_OFFSET = 24
     }
 }
+
+private const val WIRE_UNKNOWN = -1L
+
+private const val PHASE_WIRE_TCP = 0L
+private const val PHASE_WIRE_NEGOTIATING = 1L
+private const val PHASE_WIRE_WAITING_SOFT_SYNC = 2L
+private const val PHASE_WIRE_ACTIVE = 3L
+private const val PHASE_WIRE_UDP_FAILED = 4L
+private const val PHASE_WIRE_RECONNECTING_TCP = 5L
+
+private const val UDP_KIND_MASK_UNKNOWN = 0L
+private const val UDP_KIND_MASK_UDP_R = 1L
+private const val UDP_KIND_MASK_UDP_L = 2L
+private const val UDP_KIND_MASK_UDP2 = 4L
+
+private const val TUNNEL_STATE_WIRE_IDLE = 0L
+private const val TUNNEL_STATE_WIRE_SYN_SENT = 1L
+private const val TUNNEL_STATE_WIRE_SECURITY_HANDSHAKE = 2L
+private const val TUNNEL_STATE_WIRE_RDPEMT_CREATE = 3L
+private const val TUNNEL_STATE_WIRE_READY = 4L
+private const val TUNNEL_STATE_WIRE_ACTIVE = 5L
+private const val TUNNEL_STATE_WIRE_FAILED = 6L
+private const val TUNNEL_STATE_WIRE_CLOSED = 7L

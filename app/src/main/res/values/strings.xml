@@ -9,6 +9,9 @@
     <string name="settings_logs_title">日志</string>
     <string name="settings_logs_subtitle">查看、导出或清空运行日志</string>
     <string name="settings_quick_actions_title">快捷入口</string>
+    <string name="settings_connection_title">连接</string>
+    <string name="settings_auto_reconnect_title">自动重连</string>
+    <string name="settings_auto_reconnect_subtitle">网络异常断开或连接失败时自动尝试重新连接</string>
     <string name="settings_appearance_title">外观与语言</string>
     <string name="settings_app_tagline">轻量、清晰、专注远程桌面的 Android RDP 客户端</string>
     <string name="settings_theme_title">主题颜色</string>

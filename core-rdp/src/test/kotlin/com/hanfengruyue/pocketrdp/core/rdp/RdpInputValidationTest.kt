@@ -82,6 +82,58 @@ class RdpInputValidationTest {
     }
 
     @Test
+    fun disablingAutoReconnectPreventsRetryingTransientFailures() {
+        assertTrue(
+            shouldAutoReconnectRdpFailure(
+                autoReconnectEnabled = true,
+                credentialsCancelled = false,
+                errorCode = 0L,
+            ),
+        )
+        assertFalse(
+            shouldAutoReconnectRdpFailure(
+                autoReconnectEnabled = false,
+                credentialsCancelled = false,
+                errorCode = 0L,
+            ),
+        )
+        assertFalse(
+            shouldAutoReconnectRdpFailure(
+                autoReconnectEnabled = true,
+                credentialsCancelled = true,
+                errorCode = 0L,
+            ),
+        )
+        assertFalse(
+            shouldAutoReconnectRdpFailure(
+                autoReconnectEnabled = true,
+                credentialsCancelled = false,
+                errorCode = 0x0002_0009L,
+            ),
+        )
+    }
+
+    @Test
+    fun disconnectReasonSuppressesFreeRdpZeroCodeSuccessString() {
+        assertEquals(
+            null,
+            disconnectReasonForError(errorCode = 0L, errorString = "Success.", retryable = false),
+        )
+        assertEquals(
+            null,
+            disconnectReasonForError(errorCode = 0x0001_0001L, errorString = "Admin disconnect", retryable = true),
+        )
+        assertEquals(
+            "Admin disconnect",
+            disconnectReasonForError(errorCode = 0x0001_0001L, errorString = " Admin disconnect ", retryable = false),
+        )
+        assertEquals(
+            null,
+            disconnectReasonForError(errorCode = 0x0001_0001L, errorString = "   ", retryable = false),
+        )
+    }
+
+    @Test
     fun fatalCertificateFailureCannotBeDowngradedByAnEarlierPrompt() {
         assertEquals(
             CertificateTerminalDisposition.NONE,

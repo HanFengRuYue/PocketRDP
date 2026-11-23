@@ -8,6 +8,9 @@
     <string name="settings_logs_title">로그</string>
     <string name="settings_logs_subtitle">실행 로그 보기, 내보내기 또는 지우기</string>
     <string name="settings_quick_actions_title">빠른 작업</string>
+    <string name="settings_connection_title">연결</string>
+    <string name="settings_auto_reconnect_title">자동 재연결</string>
+    <string name="settings_auto_reconnect_subtitle">연결이 예기치 않게 끊기거나 실패하면 자동으로 다시 연결합니다</string>
     <string name="settings_appearance_title">모양 및 언어</string>
     <string name="settings_app_tagline">원격 데스크톱에 집중한 가벼운 Android RDP 클라이언트</string>
     <string name="settings_theme_title">테마 색상</string>

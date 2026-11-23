@@ -1,16 +1,15 @@
 package com.hanfengruyue.pocketrdp.feature.session.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,26 +32,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -62,13 +54,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportFailure
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportPhase
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTransportSnapshot
@@ -76,10 +67,8 @@ import com.hanfengruyue.pocketrdp.core.rdp.RdpUdpKind
 import com.hanfengruyue.pocketrdp.core.rdp.RdpUdpTunnelSnapshot
 import com.hanfengruyue.pocketrdp.feature.session.R
 import com.hanfengruyue.pocketrdp.feature.session.SessionConnectionStatus
-import com.hanfengruyue.pocketrdp.feature.session.input.UserTransform
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
+import com.hanfengruyue.pocketrdp.feature.session.SessionMetricsUiState
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Compact session-status indicator for the TopAppBar title slot.
@@ -88,58 +77,39 @@ import kotlin.math.roundToInt
  * Tapping anywhere on the row opens a dropdown with the session metrics
  * (resolution, frame rate, control latency, transport, sticky modifiers, last error).
  *
- * Latency breakdown (2026 操控延迟 audit): instead of one merged scalar, the dropdown now shows the
- * pipeline split so "is it network / server / decode / display?" is answerable in the field —
- * **操控延迟**（输入→解码), **显示延迟**（解码→上屏, the part the felt-latency metric structurally can't
- * measure), **网络往返** (raw RTT, no longer folded into the control number — the clamp was dropped),
- * and a **采样** row (accepted vs discarded discrete-input samples: a high discard ratio means presses
- * aren't producing frames, i.e. the cost is server-side/inert-screen, not the client).
+ * [metricsFlow] is collected ONLY while the dropdown popup is expanded, so 1 Hz telemetry updates
+ * never recompose the collapsed TopAppBar or SessionScreen.
  */
-@Suppress("LongMethod", "LongParameterList") // One cohesive, scrollable session-status surface.
+@Suppress("LongParameterList")
 @Composable
-fun SessionStatusTitle(
+internal fun SessionStatusTitle(
     status: SessionConnectionStatus,
     connectionName: String,
     connectionId: Long,
     remoteWidth: Int,
     remoteHeight: Int,
-    fps: Int,
-    controlLatencyMs: Int,
-    presentLagMs: Int,
-    networkRttMs: Int,
-    latencyAccepted: Int,
-    latencyDiscarded: Int,
-    transportSnapshot: RdpTransportSnapshot,
+    metricsFlow: StateFlow<SessionMetricsUiState>,
     host: String?,
     stickyModifierLabels: List<String>,
     lastError: String?,
-    menuContainerColor: Color = Color.Black.copy(alpha = 0.7f),
+    menuContainerColor: Color = DEFAULT_MENU_CONTAINER_COLOR,
     menuContentColor: Color = Color.White,
-    glassBuffer: BitmapBuffer? = null,
-    glassViewportSize: IntSize = IntSize.Zero,
-    glassViewportPositionOnScreen: Offset = Offset.Zero,
-    glassTransformState: State<UserTransform>? = null,
+    glass: FloatingGlassContext? = null,
+    onExpandedChange: (Boolean) -> Unit = {},
     onReconnect: () -> Unit = {},
     onErrorClick: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var statusTitleTopInWindowPx by remember { mutableFloatStateOf(0f) }
-    var menuPositionOnScreen by remember { mutableStateOf(Offset.Zero) }
+    val currentOnExpandedChange = rememberUpdatedState(onExpandedChange)
+    LaunchedEffect(expanded) { currentOnExpandedChange.value(expanded) }
+    DisposableEffect(Unit) { onDispose { currentOnExpandedChange.value(false) } }
+
     val density = LocalDensity.current
-    val windowHeightPx = LocalWindowInfo.current.containerSize.height
     val popupOffset = remember(density) {
         with(density) { IntOffset(0, STATUS_MENU_VERTICAL_OFFSET.roundToPx()) }
     }
-    val menuMaxHeight = with(density) {
-        computeStatusMenuMaxHeightPx(
-            windowHeightPx = windowHeightPx,
-            anchorTopInWindowPx = statusTitleTopInWindowPx,
-            verticalOffsetPx = STATUS_MENU_VERTICAL_OFFSET.toPx(),
-            edgePaddingPx = STATUS_MENU_SCREEN_EDGE_PADDING.toPx(),
-        ).toDp()
-    }
     val titleText = connectionName.ifBlank { stringResource(R.string.session_status_title_fallback, connectionId) }
-    val totalLatency = latencyLabel(computeTotalLatencyMs(controlLatencyMs, presentLagMs))
     Box(
         modifier = Modifier.onGloballyPositioned {
             statusTitleTopInWindowPx = it.positionInWindow().y
@@ -169,221 +139,281 @@ fun SessionStatusTitle(
             )
         }
         if (expanded) {
+            val windowHeightPx = LocalWindowInfo.current.containerSize.height
+            val menuMaxHeight = with(density) {
+                computeStatusMenuMaxHeightPx(
+                    windowHeightPx = windowHeightPx,
+                    anchorTopInWindowPx = statusTitleTopInWindowPx,
+                    verticalOffsetPx = STATUS_MENU_VERTICAL_OFFSET.toPx(),
+                    edgePaddingPx = STATUS_MENU_SCREEN_EDGE_PADDING.toPx(),
+                ).toDp()
+            }
             Popup(
                 alignment = Alignment.TopStart,
                 offset = popupOffset,
                 onDismissRequest = { expanded = false },
                 properties = PopupProperties(focusable = true),
             ) {
-                Box(
-                    modifier = Modifier
-                        .widthIn(min = STATUS_MENU_MIN_WIDTH, max = STATUS_MENU_MAX_WIDTH)
-                        .onGloballyPositioned { menuPositionOnScreen = it.positionOnScreen() }
-                        .clip(STATUS_MENU_SHAPE),
+                SessionStatusPopupContent(
+                    status = status,
+                    remoteWidth = remoteWidth,
+                    remoteHeight = remoteHeight,
+                    metricsFlow = metricsFlow,
+                    host = host,
+                    stickyModifierLabels = stickyModifierLabels,
+                    lastError = lastError,
+                    menuMaxHeight = menuMaxHeight,
+                    menuContainerColor = menuContainerColor,
+                    menuContentColor = menuContentColor,
+                    glass = glass,
+                    onDismiss = { expanded = false },
+                    onReconnect = onReconnect,
+                    onErrorClick = onErrorClick,
+                )
+            }
+        }
+    }
+}
+
+@Suppress("LongMethod", "LongParameterList")
+@Composable
+private fun SessionStatusPopupContent(
+    status: SessionConnectionStatus,
+    remoteWidth: Int,
+    remoteHeight: Int,
+    metricsFlow: StateFlow<SessionMetricsUiState>,
+    host: String?,
+    stickyModifierLabels: List<String>,
+    lastError: String?,
+    menuMaxHeight: Dp,
+    menuContainerColor: Color,
+    menuContentColor: Color,
+    glass: FloatingGlassContext?,
+    onDismiss: () -> Unit,
+    onReconnect: () -> Unit,
+    onErrorClick: () -> Unit,
+) {
+    val menuPositionOnScreen = remember { mutableStateOf(Offset.Zero) }
+    val metrics by metricsFlow.collectAsStateWithLifecycle()
+    val totalLatency = latencyLabel(computeTotalLatencyMs(metrics.controlLatencyMs, metrics.presentLagMs))
+    Box(
+        modifier = Modifier
+            .widthIn(min = STATUS_MENU_MIN_WIDTH, max = STATUS_MENU_MAX_WIDTH)
+            .onGloballyPositioned { menuPositionOnScreen.value = it.positionOnScreen() }
+            .clip(STATUS_MENU_SHAPE),
+    ) {
+        StatusMenuGlassBackground(
+            glass = if (status is SessionConnectionStatus.Connected) glass else null,
+            menuPositionOnScreen = { menuPositionOnScreen.value },
+            containerColor = menuContainerColor,
+            cornerRadius = STATUS_MENU_CORNER_RADIUS,
+            modifier = Modifier.matchParentSize(),
+        )
+        Column(
+            modifier = Modifier
+                .heightIn(max = menuMaxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 8.dp),
+        ) {
+            StatusMenuItem(
+                leadingIcon = { StatusDot(status) },
+                onClick = onDismiss,
+            ) {
+                Text(
+                    statusFullLabel(status),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = menuContentColor,
+                )
+            }
+            if (status is SessionConnectionStatus.Failed ||
+                status is SessionConnectionStatus.Disconnected
+            ) {
+                StatusMenuItem(
+                    leadingIcon = { MenuRowIcon(Icons.Default.Refresh, menuContentColor) },
+                    onClick = {
+                        onDismiss()
+                        onReconnect()
+                    },
                 ) {
-                    StatusMenuGlassBackground(
-                        buffer = if (status is SessionConnectionStatus.Connected) glassBuffer else null,
-                        viewportSize = glassViewportSize,
-                        viewportPositionOnScreen = glassViewportPositionOnScreen,
-                        transformState = glassTransformState,
-                        menuPositionOnScreen = menuPositionOnScreen,
-                        containerColor = menuContainerColor,
-                        modifier = Modifier.matchParentSize(),
+                    Text(
+                        text = stringResource(R.string.session_action_reconnect),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = menuContentColor,
                     )
-                    Column(
-                        modifier = Modifier
-                            .heightIn(max = menuMaxHeight)
-                            .verticalScroll(rememberScrollState())
-                            .padding(vertical = 8.dp),
-                    ) {
-                        StatusMenuItem(
-                            leadingIcon = { StatusDot(status) },
-                            onClick = { expanded = false },
-                        ) {
-                            Text(
-                                statusFullLabel(status),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = menuContentColor,
-                            )
-                        }
-                        if (status is SessionConnectionStatus.Failed ||
-                            status is SessionConnectionStatus.Disconnected
-                        ) {
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.Refresh, menuContentColor) },
-                                onClick = {
-                                    expanded = false
-                                    onReconnect()
-                                },
-                            ) {
-                                Text(
-                                    text = stringResource(R.string.session_action_reconnect),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = menuContentColor,
-                                )
-                            }
-                        }
-                        if (!host.isNullOrBlank()) {
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.Dns, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(stringResource(R.string.session_status_host, host), menuContentColor)
-                            }
-                        }
-                        if (remoteWidth > 0 && remoteHeight > 0) {
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.AspectRatio, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(
-                                    stringResource(R.string.session_status_resolution, remoteWidth, remoteHeight),
-                                    menuContentColor,
-                                )
-                            }
-                        }
-                        if (status is SessionConnectionStatus.Connected) {
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.Speed, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(stringResource(R.string.session_status_fps, fps), menuContentColor)
-                            }
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.SettingsEthernet, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(
-                                    stringResource(
-                                        R.string.session_status_transport,
-                                        transportLabel(transportSnapshot),
-                                    ),
-                                    menuContentColor,
-                                )
-                            }
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.Bolt, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(
-                                    stringResource(R.string.session_status_total_latency, totalLatency),
-                                    menuContentColor,
-                                )
-                            }
-                            StatusMetricRow(
-                                icon = Icons.Default.Bolt,
-                                text = stringResource(
-                                    R.string.session_status_control_latency,
-                                    latencyLabel(controlLatencyMs.takeIf { it >= 0 }),
-                                ),
-                                contentColor = menuContentColor,
-                                onClick = { expanded = false },
-                            )
-                            StatusMetricRow(
-                                icon = Icons.Default.Speed,
-                                text = stringResource(
-                                    R.string.session_status_display_latency,
-                                    latencyLabel(presentLagMs.takeIf { it >= 0 }),
-                                ),
-                                contentColor = menuContentColor,
-                                onClick = { expanded = false },
-                            )
-                            StatusMetricRow(
-                                icon = Icons.Default.SettingsEthernet,
-                                text = stringResource(
-                                    R.string.session_status_network_rtt,
-                                    latencyLabel(networkRttMs.takeIf { it >= 0 }),
-                                ),
-                                contentColor = menuContentColor,
-                                onClick = { expanded = false },
-                            )
-                            if (latencyAccepted > 0 || latencyDiscarded > 0) {
-                                StatusMetricRow(
-                                    icon = Icons.Default.Speed,
-                                    text = stringResource(
-                                        R.string.session_status_samples,
-                                        latencyAccepted,
-                                        latencyDiscarded,
-                                    ),
-                                    contentColor = menuContentColor,
-                                    onClick = { expanded = false },
-                                )
-                            }
-                            val reliable = transportSnapshot.reliable
-                            val lossy = transportSnapshot.lossy
-                            if (reliable.kind != RdpUdpKind.UNKNOWN) {
-                                StatusMetricRow(
-                                    icon = Icons.Default.SettingsEthernet,
-                                    text = tunnelDiagnostic(reliable),
-                                    contentColor = menuContentColor,
-                                    maxLines = Int.MAX_VALUE,
-                                    onClick = { expanded = false },
-                                )
-                            }
-                            if (lossy.kind != RdpUdpKind.UNKNOWN) {
-                                StatusMetricRow(
-                                    icon = Icons.Default.SettingsEthernet,
-                                    text = tunnelDiagnostic(lossy),
-                                    contentColor = menuContentColor,
-                                    maxLines = Int.MAX_VALUE,
-                                    onClick = { expanded = false },
-                                )
-                            }
-                            if (transportSnapshot.hasFailureDetails()) {
-                                StatusMetricRow(
-                                    icon = Icons.Default.ErrorOutline,
-                                    text = stringResource(
-                                        R.string.session_status_transport_error,
-                                        transportSnapshot.failure.name,
-                                        java.lang.Long.toHexString(transportSnapshot.tunnelHresult),
-                                        transportSnapshot.socketError,
-                                    ),
-                                    contentColor = menuContentColor,
-                                    maxLines = Int.MAX_VALUE,
-                                    onClick = { expanded = false },
-                                )
-                            }
-                        }
-                        if (stickyModifierLabels.isNotEmpty()) {
-                            StatusMenuItem(
-                                leadingIcon = { MenuRowIcon(Icons.Default.Keyboard, menuContentColor) },
-                                onClick = { expanded = false },
-                            ) {
-                                MenuText(
-                                    stringResource(
-                                        R.string.session_status_sticky_modifiers,
-                                        stickyModifierLabels.joinToString("+"),
-                                    ),
-                                    menuContentColor,
-                                )
-                            }
-                        }
-                        if (!lastError.isNullOrBlank()) {
-                            StatusMenuItem(
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.ErrorOutline,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.error,
-                                    )
-                                },
-                                onClick = {
-                                    expanded = false
-                                    onErrorClick()
-                                },
-                            ) {
-                                Text(
-                                    stringResource(R.string.session_status_last_error, lastError),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFFFFCDD2),
-                                )
-                            }
-                        }
-                    }
+                }
+            }
+            if (!host.isNullOrBlank()) {
+                StatusMetricRow(
+                    icon = Icons.Default.Dns,
+                    text = stringResource(R.string.session_status_host, host),
+                    contentColor = menuContentColor,
+                    onClick = onDismiss,
+                )
+            }
+            if (remoteWidth > 0 && remoteHeight > 0) {
+                StatusMetricRow(
+                    icon = Icons.Default.AspectRatio,
+                    text = stringResource(R.string.session_status_resolution, remoteWidth, remoteHeight),
+                    contentColor = menuContentColor,
+                    onClick = onDismiss,
+                )
+            }
+            if (status is SessionConnectionStatus.Connected) {
+                ConnectedStatusMetricsRows(
+                    metrics = metrics,
+                    totalLatency = totalLatency,
+                    menuContentColor = menuContentColor,
+                    onDismiss = onDismiss,
+                )
+            }
+            if (stickyModifierLabels.isNotEmpty()) {
+                StatusMetricRow(
+                    icon = Icons.Default.Keyboard,
+                    text = stringResource(
+                        R.string.session_status_sticky_modifiers,
+                        stickyModifierLabels.joinToString("+"),
+                    ),
+                    contentColor = menuContentColor,
+                    onClick = onDismiss,
+                )
+            }
+            if (!lastError.isNullOrBlank()) {
+                StatusMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                    onClick = {
+                        onDismiss()
+                        onErrorClick()
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.session_status_last_error, lastError),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = STATUS_ERROR_TEXT_COLOR,
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ConnectedStatusMetricsRows(
+    metrics: SessionMetricsUiState,
+    totalLatency: String,
+    menuContentColor: Color,
+    onDismiss: () -> Unit,
+) {
+    val transportSnapshot = metrics.transportSnapshot
+    StatusMetricRow(
+        icon = Icons.Default.Speed,
+        text = stringResource(R.string.session_status_fps, metrics.fps),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    StatusMetricRow(
+        icon = Icons.Default.SettingsEthernet,
+        text = stringResource(R.string.session_status_transport, transportLabel(transportSnapshot)),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    StatusMetricRow(
+        icon = Icons.Default.Bolt,
+        text = stringResource(R.string.session_status_total_latency, totalLatency),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    StatusMetricRow(
+        icon = Icons.Default.Bolt,
+        text = stringResource(
+            R.string.session_status_control_latency,
+            latencyLabel(metrics.controlLatencyMs.takeIf { it >= 0 }),
+        ),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    StatusMetricRow(
+        icon = Icons.Default.Speed,
+        text = stringResource(
+            R.string.session_status_display_latency,
+            latencyLabel(metrics.presentLagMs.takeIf { it >= 0 }),
+        ),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    StatusMetricRow(
+        icon = Icons.Default.SettingsEthernet,
+        text = stringResource(
+            R.string.session_status_network_rtt,
+            latencyLabel(metrics.latencyMs.takeIf { it >= 0 }),
+        ),
+        contentColor = menuContentColor,
+        onClick = onDismiss,
+    )
+    if (metrics.latencyAccepted > 0 || metrics.latencyDiscarded > 0) {
+        StatusMetricRow(
+            icon = Icons.Default.Speed,
+            text = stringResource(
+                R.string.session_status_samples,
+                metrics.latencyAccepted,
+                metrics.latencyDiscarded,
+            ),
+            contentColor = menuContentColor,
+            onClick = onDismiss,
+        )
+    }
+    TransportDiagnosticRows(
+        transportSnapshot = transportSnapshot,
+        menuContentColor = menuContentColor,
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+private fun TransportDiagnosticRows(
+    transportSnapshot: RdpTransportSnapshot,
+    menuContentColor: Color,
+    onDismiss: () -> Unit,
+) {
+    val reliable = transportSnapshot.reliable
+    val lossy = transportSnapshot.lossy
+    if (reliable.kind != RdpUdpKind.UNKNOWN) {
+        StatusMetricRow(
+            icon = Icons.Default.SettingsEthernet,
+            text = tunnelDiagnostic(reliable),
+            contentColor = menuContentColor,
+            maxLines = Int.MAX_VALUE,
+            onClick = onDismiss,
+        )
+    }
+    if (lossy.kind != RdpUdpKind.UNKNOWN) {
+        StatusMetricRow(
+            icon = Icons.Default.SettingsEthernet,
+            text = tunnelDiagnostic(lossy),
+            contentColor = menuContentColor,
+            maxLines = Int.MAX_VALUE,
+            onClick = onDismiss,
+        )
+    }
+    if (transportSnapshot.hasFailureDetails()) {
+        StatusMetricRow(
+            icon = Icons.Default.ErrorOutline,
+            text = stringResource(
+                R.string.session_status_transport_error,
+                transportSnapshot.failure.name,
+                java.lang.Long.toHexString(transportSnapshot.tunnelHresult),
+                transportSnapshot.socketError,
+            ),
+            contentColor = menuContentColor,
+            maxLines = Int.MAX_VALUE,
+            onClick = onDismiss,
+        )
     }
 }
 
@@ -421,109 +451,6 @@ private fun tunnelDiagnostic(tunnel: RdpUdpTunnelSnapshot): String = buildString
     append(", FEC ")
     append(tunnel.fecRecovered)
 }
-
-@Composable
-private fun StatusMenuGlassBackground(
-    buffer: BitmapBuffer?,
-    viewportSize: IntSize,
-    viewportPositionOnScreen: Offset,
-    transformState: State<UserTransform>?,
-    menuPositionOnScreen: Offset,
-    containerColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    val hasPublishedFrame = buffer?.hasPublishedFrame?.collectAsStateWithLifecycle(initialValue = false)?.value == true
-    var framePair by remember { mutableStateOf<Pair<IntSize, ImageBitmap>?>(null) }
-    val maxDim = maxOf(viewportSize.width, viewportSize.height)
-        .coerceIn(1, STATUS_MENU_BACKDROP_MAX_DIM)
-    LaunchedEffect(buffer, hasPublishedFrame, maxDim) {
-        if (buffer == null || !hasPublishedFrame) {
-            framePair = null
-            return@LaunchedEffect
-        }
-        val snapped = withContext(Dispatchers.Default) {
-            buffer.snapshot(maxDim)
-        }
-        framePair = snapped?.let { IntSize(it.width, it.height) to it.asImageBitmap() }
-    }
-    val hasViewport = viewportSize.width > 0 && viewportSize.height > 0
-    val currentFrame = framePair
-    Box(modifier = modifier) {
-        if (containerColor.alpha > 0f && hasViewport && currentFrame != null) {
-            val (frameSize, frameImage) = currentFrame
-            Canvas(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blur(STATUS_MENU_BACKDROP_BLUR_RADIUS),
-            ) {
-                val scale = minOf(
-                    viewportSize.width.toFloat() / frameSize.width.toFloat(),
-                    viewportSize.height.toFloat() / frameSize.height.toFloat(),
-                )
-                val baseWidth = frameSize.width * scale
-                val baseHeight = frameSize.height * scale
-                val baseLeft = (viewportSize.width - baseWidth) / 2f
-                val baseTop = (viewportSize.height - baseHeight) / 2f
-                val transform = transformState?.value ?: UserTransform()
-                val centerX = viewportSize.width / 2f
-                val centerY = viewportSize.height / 2f
-                val transformedLeft = centerX + (baseLeft - centerX) * transform.zoom + transform.panX
-                val transformedTop = centerY + (baseTop - centerY) * transform.zoom +
-                    transform.panY + transform.offsetY
-                val transformedWidth = (baseWidth * transform.zoom).roundToInt().coerceAtLeast(1)
-                val transformedHeight = (baseHeight * transform.zoom).roundToInt().coerceAtLeast(1)
-                drawImage(
-                    image = frameImage,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = frameSize,
-                    dstOffset = IntOffset(
-                        transformedLeft.roundToInt() -
-                            (menuPositionOnScreen.x - viewportPositionOnScreen.x).roundToInt(),
-                        transformedTop.roundToInt() -
-                            (menuPositionOnScreen.y - viewportPositionOnScreen.y).roundToInt(),
-                    ),
-                    dstSize = IntSize(transformedWidth, transformedHeight),
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .statusMenuGlassTint(containerColor),
-        )
-    }
-}
-
-private fun Modifier.statusMenuGlassTint(containerColor: Color): Modifier =
-    this
-        .background(
-            containerColor.copy(
-                alpha = (containerColor.alpha * STATUS_MENU_TINT_MULTIPLIER).coerceIn(0f, 0.72f),
-            ),
-        )
-        .background(
-            Brush.verticalGradient(
-                listOf(
-                    Color.White.copy(alpha = STATUS_MENU_HIGHLIGHT_ALPHA * containerColor.alpha),
-                    Color.White.copy(alpha = STATUS_MENU_HIGHLIGHT_ALPHA * 0.38f * containerColor.alpha),
-                    Color.Black.copy(alpha = STATUS_MENU_SHADOW_ALPHA * containerColor.alpha),
-                ),
-            ),
-        )
-        .drawBehind {
-            val stroke = 1.dp.toPx()
-            val radius = STATUS_MENU_CORNER_RADIUS.toPx()
-            drawRoundRect(
-                color = Color.White.copy(alpha = STATUS_MENU_EDGE_ALPHA * containerColor.alpha),
-                topLeft = Offset(stroke / 2f, stroke / 2f),
-                size = Size(
-                    width = (size.width - stroke).coerceAtLeast(0f),
-                    height = (size.height - stroke).coerceAtLeast(0f),
-                ),
-                cornerRadius = CornerRadius(radius, radius),
-                style = Stroke(stroke),
-            )
-        }
 
 @Composable
 private fun StatusMenuItem(
@@ -578,9 +505,11 @@ private fun MenuText(
     )
 }
 
-internal fun computeTotalLatencyMs(controlLatencyMs: Int, presentLagMs: Int): Int? {
-    val valid = listOf(controlLatencyMs, presentLagMs).filter { it >= 0 }
-    return if (valid.isEmpty()) null else valid.sum()
+internal fun computeTotalLatencyMs(controlLatencyMs: Int, presentLagMs: Int): Int? = when {
+    controlLatencyMs >= 0 && presentLagMs >= 0 -> controlLatencyMs + presentLagMs
+    controlLatencyMs >= 0 -> controlLatencyMs
+    presentLagMs >= 0 -> presentLagMs
+    else -> null
 }
 
 internal fun computeStatusMenuMaxHeightPx(
@@ -623,13 +552,13 @@ internal fun transportCombinationLabel(snapshot: RdpTransportSnapshot): String =
 @Composable
 private fun StatusDot(status: SessionConnectionStatus) {
     val color = when (status) {
-        SessionConnectionStatus.Idle -> Color(0xFF9E9E9E)
+        SessionConnectionStatus.Idle -> STATUS_DOT_IDLE
         SessionConnectionStatus.Connecting,
         SessionConnectionStatus.Reconnecting,
-        -> Color(0xFFFFB300)
-        SessionConnectionStatus.Connected -> Color(0xFF43A047)
-        is SessionConnectionStatus.Disconnected -> Color(0xFF9E9E9E)
-        is SessionConnectionStatus.Failed -> Color(0xFFE53935)
+        -> STATUS_DOT_CONNECTING
+        SessionConnectionStatus.Connected -> STATUS_DOT_CONNECTED
+        is SessionConnectionStatus.Disconnected -> STATUS_DOT_IDLE
+        is SessionConnectionStatus.Failed -> STATUS_DOT_FAILED
     }
     Box(
         modifier = Modifier
@@ -656,17 +585,17 @@ private fun statusFullLabel(status: SessionConnectionStatus): String = when (sta
     is SessionConnectionStatus.Failed -> stringResource(R.string.session_status_failed)
 }
 
+private val DEFAULT_MENU_CONTAINER_COLOR = Color.Black.copy(alpha = 0.7f)
+private val STATUS_DOT_IDLE = Color(0xFF9E9E9E)
+private val STATUS_DOT_CONNECTING = Color(0xFFFFB300)
+private val STATUS_DOT_CONNECTED = Color(0xFF43A047)
+private val STATUS_DOT_FAILED = Color(0xFFE53935)
+private val STATUS_ERROR_TEXT_COLOR = Color(0xFFFFCDD2)
 private val STATUS_MENU_SHAPE = RoundedCornerShape(18.dp)
 private val STATUS_MENU_CORNER_RADIUS = 18.dp
-private val STATUS_MENU_BACKDROP_BLUR_RADIUS = 10.dp
-private const val STATUS_MENU_BACKDROP_MAX_DIM = 480
 private val STATUS_MENU_VERTICAL_OFFSET = 36.dp
 private val STATUS_MENU_SCREEN_EDGE_PADDING = 8.dp
 private val STATUS_MENU_MIN_WIDTH = 220.dp
 private val STATUS_MENU_MAX_WIDTH = 320.dp
 private val STATUS_MENU_ITEM_MIN_HEIGHT = 44.dp
-private const val STATUS_MENU_TINT_MULTIPLIER = 0.7f
-private const val STATUS_MENU_EDGE_ALPHA = 0.28f
-private const val STATUS_MENU_HIGHLIGHT_ALPHA = 0.14f
-private const val STATUS_MENU_SHADOW_ALPHA = 0.18f
 private const val MICROS_PER_MILLISECOND = 1000L

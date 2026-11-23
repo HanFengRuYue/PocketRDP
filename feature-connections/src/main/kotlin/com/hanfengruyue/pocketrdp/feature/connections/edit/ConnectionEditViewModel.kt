@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hanfengruyue.pocketrdp.core.data.model.ConnectionEntity
 import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionRepository
+import com.hanfengruyue.pocketrdp.core.data.repository.ConnectionSaveDraft
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -141,7 +143,8 @@ class ConnectionEditViewModel @Inject constructor(
                             it.copy(isLoading = false, failure = ConnectionEditFailure.NOT_FOUND)
                         }
                     }
-                }.onFailure {
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
                     _state.update {
                         it.copy(isLoading = false, failure = ConnectionEditFailure.LOAD_FAILED)
                     }
@@ -311,35 +314,46 @@ class ConnectionEditViewModel @Inject constructor(
             runCatching {
                 repository.save(
                     existing = existing,
-                    name = s.name.trim(),
-                    host = s.host.trim(),
-                    port = s.port.toInt(),
-                    username = s.username.trim(),
-                    domain = s.domain.trim(),
-                    plainPassword = s.password,
-                    colorDepth = s.colorDepth,
-                    useH264 = s.useH264,
-                    preferAvc420 = s.preferAvc420,
-                    useGfx = s.useGfx,
-                    dynamicResolution = s.dynamicResolution,
-                    // Persisted as-is; a stale cap (e.g. set, then custom-res enabled) is harmless because
-                    // SessionViewModel only applies it when dynamic resolution is actually in effect.
-                    dynamicResMax = s.dynamicResMax,
-                    useMultitransport = s.useMultitransport,
-                    redirectClipboard = s.redirectClipboard,
-                    redirectFiles = s.redirectFiles,
-                    sharedFolderUri = existing?.sharedFolderUri,
-                    soundMode = s.soundMode,
-                    desktopScaleFactor = s.desktopScaleFactor,
-                    customWidth = if (s.useCustomResolution) s.customWidth.toIntOrNull() ?: 0 else 0,
-                    customHeight = if (s.useCustomResolution) s.customHeight.toIntOrNull() ?: 0 else 0,
-                    defaultInputMode = s.defaultInputMode,
-                    targetFrameRate = s.targetFrameRate,
-                    performanceFlags = s.performanceFlags,
+                    draft = ConnectionSaveDraft(
+                        name = s.name.trim(),
+                        host = s.host.trim(),
+                        port = s.port.toInt(),
+                        username = s.username.trim(),
+                        domain = s.domain.trim(),
+                        plainPassword = s.password,
+                        colorDepth = s.colorDepth,
+                        useH264 = s.useH264,
+                        preferAvc420 = s.preferAvc420,
+                        useGfx = s.useGfx,
+                        dynamicResolution = s.dynamicResolution,
+                        // Persisted as-is; a stale cap (e.g. set, then custom-res enabled) is
+                        // harmless because SessionViewModel only applies it when dynamic
+                        // resolution is actually in effect.
+                        dynamicResMax = s.dynamicResMax,
+                        useMultitransport = s.useMultitransport,
+                        redirectClipboard = s.redirectClipboard,
+                        redirectFiles = s.redirectFiles,
+                        soundMode = s.soundMode,
+                        desktopScaleFactor = s.desktopScaleFactor,
+                        customWidth = if (s.useCustomResolution) {
+                            s.customWidth.toIntOrNull() ?: 0
+                        } else {
+                            0
+                        },
+                        customHeight = if (s.useCustomResolution) {
+                            s.customHeight.toIntOrNull() ?: 0
+                        } else {
+                            0
+                        },
+                        defaultInputMode = s.defaultInputMode,
+                        targetFrameRate = s.targetFrameRate,
+                        performanceFlags = s.performanceFlags,
+                    ),
                 )
             }.onSuccess {
                 _state.update { it.copy(saving = false, saved = true, failure = null) }
-            }.onFailure {
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
                 _state.update {
                     it.copy(saving = false, failure = ConnectionEditFailure.SAVE_FAILED)
                 }

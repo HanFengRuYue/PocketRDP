@@ -85,6 +85,20 @@ class BitmapBuffer {
      */
     fun commitFrame(x: Int, y: Int, w: Int, h: Int) = frames.commitFrame(x, y, w, h)
 
+    /**
+     * Copy [x,y,w,h] (plus the previous stale rect when not covered) into the back buffer and
+     * commit the completed frame in one allocation-free path.
+     */
+    internal fun updateBackBuffer(
+        inst: Long,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        commitTimeMs: Long,
+        copyRegion: (Long, Bitmap, Int, Int, Int, Int) -> Boolean,
+    ): Boolean = frames.updateBackBuffer(inst, x, y, w, h, commitTimeMs, copyRegion)
+
     fun release() = frames.release()
 }
 
@@ -97,12 +111,16 @@ internal class DoubleBufferedFrames<F : Any, R : Any>(
     private val nowMillis: () -> Long,
 ) {
     private val lock = Any()
-    private var front: F? = null
+    @Volatile private var front: F? = null
     private var back: F? = null
-    // Region updated in the previously-published frame. The back buffer is exactly one published
-    // generation behind (that update went to the other buffer), so it must be re-synced over this
-    // rect before the next swap or the published frame would be missing it.
-    private var lastRect: R? = null
+    // Region updated in the previously-published frame, stored as primitive bounds to avoid
+    // per-frame Rect allocations. The back buffer is one published generation behind, so it must
+    // be re-synced over this region before the next swap unless the new update covers it.
+    private var hasStaleRect: Boolean = false
+    private var staleLeft: Int = 0
+    private var staleTop: Int = 0
+    private var staleRight: Int = 0
+    private var staleBottom: Int = 0
 
     // Monotonic publish sequence + the uptime each front frame was committed.
     @Volatile private var frontSeq: Long = 0L
@@ -113,9 +131,12 @@ internal class DoubleBufferedFrames<F : Any, R : Any>(
 
     fun nativeBuffer(): F? = synchronized(lock) { back }
 
-    fun staleRect(): R? = synchronized(lock) { lastRect }
+    fun staleRect(): R? = synchronized(lock) {
+        if (hasStaleRect) makeRect(staleLeft, staleTop, staleRight, staleBottom) else null
+    }
 
-    fun peekFront(): F? = synchronized(lock) { front }
+    /** Lock-free read so Main-thread rendering never stalls behind off-thread [snapshot] scaling. */
+    fun peekFront(): F? = front
 
     fun peekFrontSeq(): Long = frontSeq
 
@@ -144,30 +165,84 @@ internal class DoubleBufferedFrames<F : Any, R : Any>(
         synchronized(lock) {
             front = newFront
             back = newBack
-            lastRect = null
+            hasStaleRect = false
             _hasPublishedFrame.value = false
         }
         // Deliberately do NOT recycle old frames — let GC reclaim them after RenderThread finishes.
         return newFront
     }
 
-    fun commitFrame(x: Int, y: Int, w: Int, h: Int) {
+    fun commitFrame(x: Int, y: Int, w: Int, h: Int, commitTimeMs: Long = nowMillis()) {
         synchronized(lock) {
             val tmp = front
-            front = back
+            val nextFront = back
+            front = nextFront
             back = tmp
-            lastRect = makeRect(x, y, x + w, y + h)
+            if (nextFront != null) {
+                hasStaleRect = true
+                staleLeft = x
+                staleTop = y
+                staleRight = x + w
+                staleBottom = y + h
+            } else {
+                hasStaleRect = false
+            }
+            // Write frontCommitMs before incrementing frontSeq so readers observing a new
+            // sequence number see the matching front buffer and commit timestamp.
+            frontCommitMs = commitTimeMs
             frontSeq++
-            frontCommitMs = nowMillis()
-            _hasPublishedFrame.value = front != null
+            _hasPublishedFrame.value = nextFront != null
         }
+    }
+
+    fun updateBackBuffer(
+        token: Long,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        commitTimeMs: Long = nowMillis(),
+        copyRegion: (Long, F, Int, Int, Int, Int) -> Boolean,
+    ): Boolean {
+        val target: F
+        val needStale: Boolean
+        val sLeft: Int
+        val sTop: Int
+        val sWidth: Int
+        val sHeight: Int
+        synchronized(lock) {
+            target = back ?: return false
+            if (hasStaleRect) {
+                sLeft = staleLeft
+                sTop = staleTop
+                sWidth = staleRight - sLeft
+                sHeight = staleBottom - sTop
+                val isEmpty = sWidth <= 0 || sHeight <= 0
+                val coversOrigin = x <= sLeft && y <= sTop
+                val coversExtent = x.toLong() + w >= staleRight.toLong() &&
+                    y.toLong() + h >= staleBottom.toLong()
+                needStale = !isEmpty && !(coversOrigin && coversExtent)
+            } else {
+                sLeft = 0
+                sTop = 0
+                sWidth = 0
+                sHeight = 0
+                needStale = false
+            }
+        }
+        val copied = copyRegion(token, target, x, y, w, h) &&
+            (!needStale || copyRegion(token, target, sLeft, sTop, sWidth, sHeight))
+        if (copied) {
+            commitFrame(x, y, w, h, commitTimeMs)
+        }
+        return copied
     }
 
     fun release() {
         synchronized(lock) {
             front = null
             back = null
-            lastRect = null
+            hasStaleRect = false
             _hasPublishedFrame.value = false
         }
     }

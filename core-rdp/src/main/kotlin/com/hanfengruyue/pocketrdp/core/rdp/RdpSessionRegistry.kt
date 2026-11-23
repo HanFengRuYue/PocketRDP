@@ -29,8 +29,12 @@ data class RdpSessionRegistrySnapshot(
     val sessions: List<RdpSessionInfo> = emptyList(),
 ) {
     val hasActiveSessions: Boolean get() = activeCount > 0
-    val activeConnectionIds: Set<Long> get() = sessions.mapNotNullTo(mutableSetOf()) { info ->
-        info.connectionId.takeIf { it > 0L }
+    val activeConnectionIds: Set<Long> = if (sessions.isEmpty()) {
+        emptySet()
+    } else {
+        sessions.mapNotNullTo(LinkedHashSet(sessions.size)) { info ->
+            info.connectionId.takeIf { it > 0L }
+        }
     }
 }
 
@@ -38,6 +42,7 @@ data class RdpSessionRegistrySnapshot(
 class RdpSessionRegistry @Inject constructor() {
     private val lock = Any()
     private val sessions = IdentityHashMap<RdpClient, RdpSessionInfo>()
+    private val previewCache = LivePreviewCache<RdpClient, Bitmap>(lock)
     private val _snapshot = MutableStateFlow(RdpSessionRegistrySnapshot())
     val snapshot: StateFlow<RdpSessionRegistrySnapshot> = _snapshot.asStateFlow()
 
@@ -61,8 +66,17 @@ class RdpSessionRegistry @Inject constructor() {
 
     fun unregister(client: RdpClient) {
         synchronized(lock) {
+            previewCache.removeLocked(client)
             if (sessions.remove(client) != null) publishLocked()
         }
+    }
+
+    fun unregisterIfReconnecting(client: RdpClient): Boolean = synchronized(lock) {
+        if (sessions[client]?.state != RdpSessionRuntimeState.RECONNECTING) return@synchronized false
+        previewCache.removeLocked(client)
+        sessions.remove(client)
+        publishLocked()
+        true
     }
 
     fun contains(client: RdpClient): Boolean = synchronized(lock) {
@@ -90,14 +104,33 @@ class RdpSessionRegistry @Inject constructor() {
     }
 
     fun livePreviews(maxDimension: Int): Map<Long, Bitmap> {
-        val buffers = synchronized(lock) {
-            sessions.entries
-                .filter { (_, info) -> info.state == RdpSessionRuntimeState.CONNECTED && info.connectionId > 0L }
-                .map { (client, info) -> info.connectionId to client.buffer }
+        val connected = synchronized(lock) {
+            if (sessions.isEmpty()) return emptyMap()
+            val active = ArrayList<Pair<RdpClient, Long>>(sessions.size)
+            for ((client, info) in sessions) {
+                if (info.state == RdpSessionRuntimeState.CONNECTED && info.connectionId > 0L) {
+                    active.add(client to info.connectionId)
+                }
+            }
+            active
         }
-        return buffers.mapNotNull { (id, buffer) ->
-            buffer.snapshot(maxDimension)?.let { id to it }
-        }.toMap()
+        if (connected.isEmpty()) return emptyMap()
+        val previews = LinkedHashMap<Long, Bitmap>(connected.size)
+        for ((client, connectionId) in connected) {
+            val buffer = client.buffer
+            val preview = previewCache.getOrCreate(
+                key = client,
+                hasPublishedFrame = buffer.hasPublishedFrame.value,
+                frontSeq = buffer.peekFrontSeq(),
+                maxDimension = maxDimension,
+                isKeyValidLocked = { sessions[client]?.state == RdpSessionRuntimeState.CONNECTED },
+                create = { buffer.snapshot(maxDimension) },
+            )
+            if (preview != null) {
+                previews[connectionId] = preview
+            }
+        }
+        return previews
     }
 
     private fun update(
@@ -109,6 +142,9 @@ class RdpSessionRegistry @Inject constructor() {
     ) {
         synchronized(lock) {
             val previous = sessions[client]
+            if (state != RdpSessionRuntimeState.CONNECTED) {
+                previewCache.removeLocked(client)
+            }
             sessions[client] = RdpSessionInfo(
                 connectionId = connectionId ?: previous?.connectionId ?: 0L,
                 displayName = displayName ?: previous?.displayName.orEmpty(),
@@ -128,5 +164,58 @@ class RdpSessionRegistry @Inject constructor() {
             reconnectingCount = values.count { it.state == RdpSessionRuntimeState.RECONNECTING },
             sessions = values.sortedWith(compareBy<RdpSessionInfo> { it.connectionId }.thenBy { it.displayName }),
         )
+    }
+}
+
+/**
+ * Caches the latest scaled preview per session keyed by `(frontSeq, maxDimension)` so static
+ * desktops avoid redundant bitmap scaling and allocations on periodic preview ticks.
+ *
+ * Cached preview bitmaps are never `recycle()`d — Compose / RenderThread may still draw the
+ * previously returned reference; let GC reclaim replaced bitmaps safely.
+ */
+internal class LivePreviewCache<K : Any, F : Any>(
+    private val lock: Any = Any(),
+) {
+    private data class Entry<F : Any>(
+        val frontSeq: Long,
+        val maxDimension: Int,
+        val preview: F,
+    )
+
+    private val entries = IdentityHashMap<K, Entry<F>>()
+
+    fun getOrCreate(
+        key: K,
+        hasPublishedFrame: Boolean,
+        frontSeq: Long,
+        maxDimension: Int,
+        isKeyValidLocked: () -> Boolean = { true },
+        create: () -> F?,
+    ): F? {
+        if (!hasPublishedFrame || maxDimension <= 0) {
+            synchronized(lock) { entries.remove(key) }
+            return null
+        }
+        val cached = synchronized(lock) { entries[key] }
+        if (cached != null && cached.frontSeq == frontSeq && cached.maxDimension == maxDimension) {
+            return cached.preview
+        }
+        val fresh = create() ?: run {
+            synchronized(lock) { entries.remove(key) }
+            return null
+        }
+        synchronized(lock) {
+            if (isKeyValidLocked()) {
+                entries[key] = Entry(frontSeq = frontSeq, maxDimension = maxDimension, preview = fresh)
+            } else {
+                entries.remove(key)
+            }
+        }
+        return fresh
+    }
+
+    fun removeLocked(key: K) {
+        entries.remove(key)
     }
 }

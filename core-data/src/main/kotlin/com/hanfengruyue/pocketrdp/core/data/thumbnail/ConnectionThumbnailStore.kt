@@ -41,9 +41,23 @@ class ConnectionThumbnailStore @Inject constructor(
     // concurrently, and so a delete cannot race a still-running save.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val _revision = MutableStateFlow(0L)
+    private val _revisionsById = MutableStateFlow<Map<Long, Long>>(emptyMap())
+
+    // Bounded in-memory LRU cache; evicted bitmaps are never recycled because Compose /
+    // RenderThread may still draw a reference.
+    private val memoryCache = ThumbnailMemoryCache<Bitmap>(
+        maxBytes = (Runtime.getRuntime().maxMemory() / CACHE_HEAP_DIVISOR)
+            .coerceIn(MIN_CACHE_BYTES, MAX_CACHE_BYTES)
+            .toInt(),
+    ) { bitmap ->
+        bitmap.allocationByteCount.coerceAtLeast(1)
+    }
 
     /** Advances only after a save/delete completes, allowing visible cards to invalidate immediately. */
     val revision: StateFlow<Long> = _revision.asStateFlow()
+
+    /** Per-connection revision map so updating one thumbnail does not invalidate unrelated cards. */
+    val revisionsById: StateFlow<Map<Long, Long>> = _revisionsById.asStateFlow()
 
     private val directory: File by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         File(context.noBackupFilesDir, THUMB_DIR).apply {
@@ -51,8 +65,6 @@ class ConnectionThumbnailStore @Inject constructor(
             migrateLegacyThumbnails(this)
         }
     }
-
-    private fun dir(): File = directory
 
     private fun migrateLegacyThumbnails(targetDir: File) {
         val legacyDir = File(context.filesDir, THUMB_DIR)
@@ -73,7 +85,10 @@ class ConnectionThumbnailStore @Inject constructor(
     }
 
     /** Deterministic file for a connection id (may not exist yet). */
-    fun fileFor(id: Long): File = File(dir(), "conn_$id.jpg")
+    fun fileFor(id: Long): File = File(directory, "conn_$id.jpg")
+
+    /** Synchronously inspect the in-memory thumbnail cache without touching disk. */
+    fun peekCached(id: Long): Bitmap? = if (id > 0L) memoryCache.get(id) else null
 
     /**
      * Persist [source] (already downscaled by [com.hanfengruyue.pocketrdp.core.rdp.BitmapBuffer.snapshot])
@@ -101,7 +116,8 @@ class ConnectionThumbnailStore @Inject constructor(
                     }
                 }
             }.onSuccess {
-                _revision.update { revision -> revision + 1L }
+                memoryCache.putAndAdvanceVersion(id, source)
+                bumpRevision(id)
             }.onFailure {
                 tmp.delete()
                 PocketLogger.w(TAG, "thumbnail save failed for id=$id: ${it.message}")
@@ -111,19 +127,34 @@ class ConnectionThumbnailStore @Inject constructor(
 
     /** Decode the thumbnail for [id] or null if absent / unreadable. Call off the main thread. */
     fun load(id: Long): Bitmap? {
-        val f = fileFor(id)
-        if (!f.exists()) return null
-        return runCatching { BitmapFactory.decodeFile(f.absolutePath) }
-            .onFailure { PocketLogger.w(TAG, "thumbnail load failed for id=$id: ${it.message}") }
-            .getOrNull()
+        if (id <= 0L) return null
+        val lookup = memoryCache.getOrVersion(id)
+        if (lookup.value != null) return lookup.value
+        val decoded = fileFor(id).takeIf(File::exists)?.let { file ->
+            runCatching { BitmapFactory.decodeFile(file.absolutePath) }
+                .onFailure { PocketLogger.w(TAG, "thumbnail load failed for id=$id: ${it.message}") }
+                .getOrNull()
+        }
+        return decoded?.let { memoryCache.putIfVersionMatches(id, lookup.version, it) }
     }
 
     /** Remove a connection's thumbnail (called when the connection itself is deleted). */
     fun delete(id: Long) {
+        if (id <= 0L) return
         scope.launch {
-            runCatching { fileFor(id).delete() }
-                .onSuccess { _revision.update { revision -> revision + 1L } }
+            val deletedFile = runCatching { fileFor(id).delete() }.getOrDefault(false)
+            val hadCached = memoryCache.removeAndAdvanceVersion(id)
+            if (hadCached || deletedFile) {
+                bumpRevision(id)
+            }
         }
+    }
+
+    private fun bumpRevision(id: Long) {
+        _revisionsById.update { current ->
+            current + (id to ((current[id] ?: 0L) + 1L))
+        }
+        _revision.update { revision -> revision + 1L }
     }
 
     companion object {
@@ -134,5 +165,8 @@ class ConnectionThumbnailStore @Inject constructor(
         // full screen width, so the old 640px/q80 JPEG was upscaled ~2× and looked soft; 1280px/q92
         // displays ~1:1 on phones. ~100–200 KB per thumbnail — still trivially small.
         private const val JPEG_QUALITY = 92
+        private const val CACHE_HEAP_DIVISOR = 16L
+        private const val MIN_CACHE_BYTES = 4L * 1024L * 1024L
+        private const val MAX_CACHE_BYTES = 24L * 1024L * 1024L
     }
 }

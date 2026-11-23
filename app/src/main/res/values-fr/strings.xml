@@ -8,6 +8,9 @@
     <string name="settings_logs_title">Journaux</string>
     <string name="settings_logs_subtitle">Afficher, exporter ou effacer les journaux</string>
     <string name="settings_quick_actions_title">Accès rapides</string>
+    <string name="settings_connection_title">Connexion</string>
+    <string name="settings_auto_reconnect_title">Reconnexion automatique</string>
+    <string name="settings_auto_reconnect_subtitle">Réessayer automatiquement en cas de coupure ou d’échec de connexion</string>
     <string name="settings_appearance_title">Apparence et langue</string>
     <string name="settings_app_tagline">Client RDP Android léger, centré sur le bureau distant</string>
     <string name="settings_theme_title">Couleur du thème</string>

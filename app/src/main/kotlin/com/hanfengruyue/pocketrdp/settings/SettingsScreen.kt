@@ -1,6 +1,5 @@
 package com.hanfengruyue.pocketrdp.settings
 
-import android.content.Context
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +21,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -38,8 +38,10 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Opacity
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.SettingsEthernet
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -50,10 +52,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -66,14 +70,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hanfengruyue.pocketrdp.BuildConfig
 import com.hanfengruyue.pocketrdp.R
 import com.hanfengruyue.pocketrdp.core.data.preferences.LANGUAGE_SYSTEM
 import com.hanfengruyue.pocketrdp.core.data.preferences.MAX_SIMULATED_CURSOR_SCALE
@@ -92,9 +97,8 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
-    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    val appVersion = remember(context.packageName) { packageVersionName(context) }
+    val appVersion = BuildConfig.VERSION_NAME
     val repositoryUrl = stringResource(R.string.settings_about_repository_url)
     val authorUrl = stringResource(R.string.settings_about_author_homepage_url)
 
@@ -146,6 +150,19 @@ fun SettingsScreen(
             }
 
             SettingsGroup(
+                title = stringResource(R.string.settings_connection_title),
+                icon = Icons.Default.SettingsEthernet,
+            ) {
+                SwitchRow(
+                    icon = Icons.Default.Sync,
+                    title = stringResource(R.string.settings_auto_reconnect_title),
+                    subtitle = stringResource(R.string.settings_auto_reconnect_subtitle),
+                    checked = prefs.autoReconnect,
+                    onCheckedChange = viewModel::setAutoReconnect,
+                )
+            }
+
+            SettingsGroup(
                 title = stringResource(R.string.settings_appearance_title),
                 icon = Icons.Default.Palette,
             ) {
@@ -190,15 +207,23 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_chrome_alpha_title),
                 icon = Icons.Default.Opacity,
             ) {
-                AlphaSlider(
+                PercentageSlider(
                     title = stringResource(R.string.settings_toolbar_alpha_title),
                     value = prefs.toolbarAlpha,
+                    valueRange = 0f..1f,
+                    valueFormatRes = R.string.settings_alpha_value,
+                    minLabel = stringResource(R.string.settings_alpha_min),
+                    maxLabel = stringResource(R.string.settings_alpha_max),
                     onChange = viewModel::setToolbarAlpha,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                AlphaSlider(
+                PercentageSlider(
                     title = stringResource(R.string.settings_controls_alpha_title),
                     value = prefs.controlAlpha,
+                    valueRange = 0f..1f,
+                    valueFormatRes = R.string.settings_alpha_value,
+                    minLabel = stringResource(R.string.settings_alpha_min),
+                    maxLabel = stringResource(R.string.settings_alpha_max),
                     onChange = viewModel::setControlAlpha,
                 )
             }
@@ -207,8 +232,13 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_cursor_group_title),
                 icon = Icons.Default.Mouse,
             ) {
-                CursorSizeSlider(
+                PercentageSlider(
+                    title = stringResource(R.string.settings_cursor_size_title),
                     value = prefs.simulatedCursorScale,
+                    valueRange = MIN_SIMULATED_CURSOR_SCALE..MAX_SIMULATED_CURSOR_SCALE,
+                    valueFormatRes = R.string.settings_cursor_size_value,
+                    minLabel = stringResource(R.string.settings_cursor_size_min),
+                    maxLabel = stringResource(R.string.settings_cursor_size_max),
                     onChange = viewModel::setSimulatedCursorScale,
                 )
             }
@@ -348,6 +378,7 @@ private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClic
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             leadingContent = { RowIcon(icon = icon) },
             headlineContent = {
                 Text(
@@ -370,6 +401,48 @@ private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClic
                     contentDescription = null,
                 )
             },
+        )
+    }
+}
+
+@Composable
+private fun SwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    ListItem(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(SectionShape)
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            ),
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        leadingContent = { RowIcon(icon = icon) },
+        supportingContent = {
+            Text(
+                text = subtitle,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        trailingContent = {
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
+            )
+        },
+    ) {
+        Text(
+            text = title,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -415,61 +488,15 @@ private fun SelectableSettingChip(selected: Boolean, label: String, onClick: () 
 }
 
 @Composable
-private fun CursorSizeSlider(value: Float, onChange: (Float) -> Unit) {
-    var pendingValue by remember(value) { mutableFloatStateOf(value) }
-    val percent = (pendingValue * 100).roundToInt()
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = stringResource(R.string.settings_cursor_size_title),
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_cursor_size_value, percent),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-        Slider(
-            value = pendingValue,
-            onValueChange = { pendingValue = it },
-            onValueChangeFinished = { onChange(pendingValue) },
-            valueRange = MIN_SIMULATED_CURSOR_SCALE..MAX_SIMULATED_CURSOR_SCALE,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = stringResource(R.string.settings_cursor_size_min),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = stringResource(R.string.settings_cursor_size_max),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) {
+private fun PercentageSlider(
+    title: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    @StringRes valueFormatRes: Int,
+    minLabel: String,
+    maxLabel: String,
+    onChange: (Float) -> Unit,
+) {
     var pendingValue by remember(value) { mutableFloatStateOf(value) }
     val percent = (pendingValue * 100).roundToInt()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -491,7 +518,7 @@ private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) 
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             ) {
                 Text(
-                    text = stringResource(R.string.settings_alpha_value, percent),
+                    text = stringResource(valueFormatRes, percent),
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
@@ -502,19 +529,19 @@ private fun AlphaSlider(title: String, value: Float, onChange: (Float) -> Unit) 
             value = pendingValue,
             onValueChange = { pendingValue = it },
             onValueChangeFinished = { onChange(pendingValue) },
-            valueRange = 0f..1f,
+            valueRange = valueRange,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = stringResource(R.string.settings_alpha_min),
+                text = minLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = stringResource(R.string.settings_alpha_max),
+                text = maxLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -583,10 +610,6 @@ private fun themeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.LIGHT -> R.string.settings_theme_light
     ThemeMode.DARK -> R.string.settings_theme_dark
 }
-
-@Suppress("DEPRECATION")
-private fun packageVersionName(context: Context): String =
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
 
 private data class LanguageOption(val tag: String, @StringRes val labelRes: Int)
 

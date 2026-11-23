@@ -27,6 +27,7 @@ kotlin {
 }
 
 dependencies {
-    api(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
 }

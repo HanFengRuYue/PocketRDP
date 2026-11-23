@@ -34,11 +34,15 @@ internal fun buildRdpCommandLine(
     args += "/multitouch"
     if (p.dynamicResolution) args += "/dynamic-resolution"
     args += if (p.useMultitransport) "/multitransport" else "-multitransport"
-    args += "/auto-reconnect"
-    // FreeRDP otherwise retries a network drop 20 times before returning control to the app's own
-    // bounded exponential-backoff policy. Five native attempts preserve short transient recovery
-    // without holding a dead session for minutes or multiplying authentication failures.
-    args += "/auto-reconnect-max-retries:5"
+    if (p.autoReconnect) {
+        args += "/auto-reconnect"
+        // FreeRDP otherwise retries a network drop 20 times before returning control to the app's own
+        // bounded exponential-backoff policy. Five native attempts preserve short transient recovery
+        // without holding a dead session for minutes or multiplying authentication failures.
+        args += "/auto-reconnect-max-retries:5"
+    } else {
+        args += "-auto-reconnect"
+    }
 
     if (p.performanceFlags and RdpClient.PERF_LOW_LATENCY_VISUALS != 0) {
         args += listOf(

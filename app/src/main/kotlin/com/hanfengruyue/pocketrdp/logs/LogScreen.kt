@@ -57,11 +57,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
-private val TIME_FMT = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 private val LogWarnColorLight = Color(0xFF9A5B00)
 private val LogWarnColorDark = Color(0xFFFFB74D)
 private const val DARK_SURFACE_LUMINANCE_THRESHOLD = 0.5f
@@ -78,6 +74,11 @@ fun LogScreen(onClose: () -> Unit) {
     val exportFailed = stringResource(R.string.logs_export_failed)
     val scope = rememberCoroutineScope()
     var exporting by remember { mutableStateOf(false) }
+    val warnColor = if (MaterialTheme.colorScheme.surface.luminance() < DARK_SURFACE_LUMINANCE_THRESHOLD) {
+        LogWarnColorDark
+    } else {
+        LogWarnColorLight
+    }
 
     val filtered = remember(entries, levelFilter) {
         val f = levelFilter
@@ -153,11 +154,8 @@ fun LogScreen(onClose: () -> Unit) {
                     state = listState,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
-                    // Timestamps are millisecond-granular and identical log lines can arrive in
-                    // the same millisecond, so a content-derived key is not guaranteed unique and
-                    // can make LazyColumn throw. Log rows are stateless; index identity is safe.
-                    items(filtered) { entry ->
-                        LogRow(entry)
+                    items(filtered, key = { it.id }) { entry ->
+                        LogRow(entry = entry, warnColor = warnColor)
                     }
                 }
             }
@@ -251,22 +249,14 @@ private fun LevelFilterRow(current: PocketLogger.Level?, onPick: (PocketLogger.L
 }
 
 @Composable
-private fun LogRow(entry: PocketLogger.Entry) {
-    val isDarkSurface = MaterialTheme.colorScheme.surface.luminance() < DARK_SURFACE_LUMINANCE_THRESHOLD
+private fun LogRow(entry: PocketLogger.Entry, warnColor: Color) {
     val color = when (entry.level) {
         PocketLogger.Level.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
         PocketLogger.Level.INFO -> MaterialTheme.colorScheme.onSurface
-        PocketLogger.Level.WARN -> if (isDarkSurface) LogWarnColorDark else LogWarnColorLight
+        PocketLogger.Level.WARN -> warnColor
         PocketLogger.Level.ERROR -> MaterialTheme.colorScheme.error
     }
-    val time = remember(entry.timestampMillis) { TIME_FMT.format(Date(entry.timestampMillis)) }
-    val text = buildString {
-        append(time); append(' ')
-        append(entry.level.tag); append('/')
-        append(entry.tag); append(": ")
-        append(entry.message)
-        entry.throwableText?.let { append('\n'); append(it) }
-    }
+    val text = remember(entry.id) { entry.format() }
     Text(
         text = text,
         color = color,

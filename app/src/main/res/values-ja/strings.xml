@@ -8,6 +8,9 @@
     <string name="settings_logs_title">ログ</string>
     <string name="settings_logs_subtitle">実行ログの表示、エクスポート、消去</string>
     <string name="settings_quick_actions_title">クイック操作</string>
+    <string name="settings_connection_title">接続</string>
+    <string name="settings_auto_reconnect_title">自動再接続</string>
+    <string name="settings_auto_reconnect_subtitle">接続が予期せず切断または失敗したときに自動で再接続する</string>
     <string name="settings_appearance_title">外観と言語</string>
     <string name="settings_app_tagline">リモートデスクトップに集中した軽量 Android RDP クライアント</string>
     <string name="settings_theme_title">テーマカラー</string>

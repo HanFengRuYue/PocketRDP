@@ -40,7 +40,7 @@ val ciVersionCode = providers.environmentVariable("POCKETRDP_VERSION_CODE").orNu
 if ((ciVersionName == null) != (ciVersionCode == null)) {
     throw GradleException("POCKETRDP_VERSION_NAME and POCKETRDP_VERSION_CODE must be provided together.")
 }
-val releaseVersionName = ciVersionName ?: "1.0.2"
+val releaseVersionName = ciVersionName ?: "1.1.0"
 val releaseVersionMatch = Regex(
     "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)",
 ).matchEntire(releaseVersionName) ?: throw GradleException(
@@ -134,6 +134,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -172,16 +173,13 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
-
-    val composeBom = platform(libs.androidx.compose.bom)
-    implementation(composeBom)
-    implementation(libs.androidx.compose.ui)
-    implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material.icons)
     implementation(libs.androidx.navigation.compose)
 
-    implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.hilt.lifecycle.viewmodel.compose)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+
+    testImplementation(libs.junit)
 }

@@ -46,8 +46,36 @@ class RdpTransportDiagnosticsTest {
         val later = activeSnapshot(receivedBytes = 200, sentPackets = 5)
 
         assertEquals(first.controlDiagnostic(), later.controlDiagnostic())
+        assertTrue(first.hasSameControlStateAs(later))
         assertTrue(later.trafficDiagnostic().contains("rxBytes=200"))
         assertTrue(later.trafficDiagnostic().contains("txPackets=5"))
+    }
+
+    @Test
+    fun hasSameControlStateDetectsEveryControlFieldTransition() {
+        val base = activeSnapshot(receivedBytes = 100, sentPackets = 2)
+        assertFalse(base.hasSameControlStateAs(null))
+        assertFalse(base.hasSameControlStateAs(base.copy(phase = RdpTransportPhase.TCP)))
+        assertFalse(base.hasSameControlStateAs(base.copy(requestedMask = RdpTransportSnapshot.MASK_UDP_R)))
+        assertFalse(base.hasSameControlStateAs(base.copy(readyMask = 0L)))
+        assertFalse(base.hasSameControlStateAs(base.copy(activeMask = 0L)))
+        assertFalse(base.hasSameControlStateAs(base.copy(softSyncMask = 0L)))
+        assertFalse(base.hasSameControlStateAs(base.copy(flags = RdpTransportSnapshot.FLAG_DOWNGRADED_TO_TCP)))
+        assertFalse(base.hasSameControlStateAs(base.copy(securityProtocol = 2L)))
+        assertFalse(base.hasSameControlStateAs(base.copy(routedDvcCount = 3L)))
+        assertFalse(base.hasSameControlStateAs(base.copy(failure = RdpTransportFailure.TUNNEL_POLL)))
+        assertFalse(base.hasSameControlStateAs(base.copy(tunnelHresult = 0x80004004)))
+        assertFalse(base.hasSameControlStateAs(base.copy(socketError = 110L)))
+        assertFalse(
+            base.hasSameControlStateAs(
+                base.copy(reliable = base.reliable.copy(state = RdpUdpTunnelState.FAILED)),
+            ),
+        )
+        assertFalse(
+            base.hasSameControlStateAs(
+                base.copy(lossy = base.lossy.copy(kind = RdpUdpKind.UDP_L)),
+            ),
+        )
     }
 
     @Test

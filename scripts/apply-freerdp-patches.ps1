@@ -15,8 +15,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $freeRdpDir = Join-Path $repoRoot "third_party/FreeRDP"
 $patchPath = Join-Path $repoRoot "patches/freerdp/pocketrdp-3.33.patch"
 $expectedBase = "65bcca1913a28cbdd7eb913599f692bd2b707991"
-$expectedIntegratedCommit = "3429055cda491e6f1db489be2daaf86b01a1c7dc"
-$expectedPatchSha256 = "d116e5edd1d5d0a0121dc2ddce3adcab96d2bef9b2128f605ed9ad1e2dad24f3"
+$expectedIntegratedCommit = "afeea4c3e64795e59db43396a0fdde2185b7bbde"
+$expectedPatchSha256 = "0adde5afe13d7dccbb9c8a46b08212b257623c1677c8b212b420456b23085617"
 
 if (-not (Test-Path -LiteralPath (Join-Path $freeRdpDir ".git"))) {
     throw "FreeRDP submodule is not initialized. Run: git submodule update --init third_party/FreeRDP"

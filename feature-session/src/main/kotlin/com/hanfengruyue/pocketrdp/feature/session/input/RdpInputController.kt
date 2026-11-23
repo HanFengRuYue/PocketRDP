@@ -1,7 +1,8 @@
 package com.hanfengruyue.pocketrdp.feature.session.input
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
 import com.hanfengruyue.pocketrdp.core.rdp.InputMode
-import com.hanfengruyue.pocketrdp.core.rdp.RdpCursor
 import com.hanfengruyue.pocketrdp.core.rdp.RdpPointerFlags
 import com.hanfengruyue.pocketrdp.core.rdp.RdpTouchAction
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,9 +29,7 @@ import kotlin.math.roundToInt
  *
  * [toRemote] therefore has to undo BOTH the centred fit-to-view scale that [RdpSurface] applies
  * AND the user's zoom-pill/pan-handle transform (graphicsLayer, origin = view centre) so a touch on a
- * visually-zoomed pixel lands on the correct remote pixel. (This used to be a no-op for the user
- * zoom — fine while touch-mode zoom was unused, but wrong now that the zoom button magnifies the
- * touch surface in both modes.)
+ * visually-zoomed pixel lands on the correct remote pixel.
  *
  * Local zoom is owned here as a [userTransform] StateFlow; SessionScreen reads it DEFERRED inside a
  * graphicsLayer lambda so a gesture frame re-records only the GPU layer (no recomposition). EVERY
@@ -38,21 +37,14 @@ import kotlin.math.roundToInt
  */
 class RdpInputController(
     private val sendCursor: (x: Int, y: Int, flags: Int) -> Unit,
-    private val sendKey: (vk: Int, down: Boolean) -> Unit,
-    private val sendUnicode: (codePoint: Int, down: Boolean) -> Unit,
     private val sendTouch: (contactId: Int, x: Int, y: Int, action: Int) -> Unit = { _, _, _, _ -> },
-    private val isUnicodeSupported: () -> Boolean = { true },
 ) {
     private val _mode = MutableStateFlow(InputMode.TRACKPAD)
     val mode: StateFlow<InputMode> = _mode.asStateFlow()
 
-    private val _virtualPosition = MutableStateFlow(0f to 0f)
+    private val _virtualPosition = MutableStateFlow(Offset.Zero)
     /** Current trackpad cursor in REMOTE coordinates. Used by the overlay to draw a pointer. */
-    val virtualPosition: StateFlow<Pair<Float, Float>> = _virtualPosition.asStateFlow()
-
-    private val _remoteCursor = MutableStateFlow<RdpCursor>(RdpCursor.Default)
-    /** Current remote pointer shape sent by FreeRDP pointer callbacks. */
-    val remoteCursor: StateFlow<RdpCursor> = _remoteCursor.asStateFlow()
+    val virtualPosition: StateFlow<Offset> = _virtualPosition.asStateFlow()
 
     private val _userTransform = MutableStateFlow(UserTransform())
     /** Local zoom-pill/pan-handle transform, published on EVERY change for the graphicsLayer. */
@@ -101,13 +93,11 @@ class RdpInputController(
         publishVirtual()
     }
 
-    fun setRemoteCursor(cursor: RdpCursor) {
-        _remoteCursor.value = cursor
-    }
-
     /** Update the fit-to-view transform. dx/dy are letterbox offsets in view pixels. */
     fun setViewport(scale: Float, dx: Float, dy: Float) {
-        viewportScale = if (scale > 0f) scale else 1f
+        val nextScale = if (scale > 0f) scale else 1f
+        if (nextScale == viewportScale && dx == viewportDx && dy == viewportDy) return
+        viewportScale = nextScale
         viewportDx = dx
         viewportDy = dy
         // Re-clamp + republish so the keyboard lift (which depends on the picture's on-screen bottom)
@@ -120,7 +110,7 @@ class RdpInputController(
     /**
      * Set the total bottom occlusion (soft keyboard + the function-key toolbar that floats above it),
      * in screen px, so the framebuffer is lifted just clear of it. 0 = nothing covering the bottom.
-     * Driven by SessionScreen from WindowInsets.ime. See [computeImeOffset].
+     * Driven by SessionScreen from WindowInsets.ime.
      */
     fun setBottomOcclusion(px: Float) {
         if (px == bottomOcclusionPx) return
@@ -150,13 +140,13 @@ class RdpInputController(
     fun userPanX(): Float = userPanX
     fun userPanY(): Float = userPanY
 
-    /** Reset local magnification to 100% (used by the zoom pill's double-tap). */
-    fun resetZoom() = resetUserTransform()
-
     /** Record the view size so [clampPan] can keep the scaled framebuffer on-screen. */
     fun setViewSize(width: Int, height: Int) {
-        viewW = width.toFloat()
-        viewH = height.toFloat()
+        val nextW = width.toFloat()
+        val nextH = height.toFloat()
+        if (nextW == viewW && nextH == viewH) return
+        viewW = nextW
+        viewH = nextH
         clampPan()
         publishTransform()
     }
@@ -176,19 +166,13 @@ class RdpInputController(
      * overflow: (zoom - 1) * size / 2.
      */
     private fun clampPan() {
-        val horizontalBounds = panBoundsForFittedImage(
+        userPanX = clampPanAxis(
+            value = userPanX,
             viewSize = viewW,
             fittedStart = viewportDx,
             fittedSize = remoteWidth * viewportScale,
             zoom = userZoom,
         )
-        val verticalBounds = panBoundsForFittedImage(
-            viewSize = viewH,
-            fittedStart = viewportDy,
-            fittedSize = remoteHeight * viewportScale,
-            zoom = userZoom,
-        )
-        userPanX = userPanX.coerceIn(horizontalBounds.start, horizontalBounds.endInclusive)
         // When the soft keyboard occludes the bottom, the framebuffer is auto-lifted UP (offsetY, see
         // [autoLift]) which pushes its TOP off-screen. Allow extra DOWNWARD pan (positive panY) up to
         // that lift amount so the user can pull the picture back down and see the top — at zoom 1 maxY
@@ -197,9 +181,13 @@ class RdpInputController(
         // downward drag actually moves the picture instead of being cancelled by a growing auto-lift.
         // At panY == liftRoom: translationY = panY + offsetY = liftRoom + (-liftRoom) = 0 → fit origin.
         val liftRoom = -autoLift()
-        userPanY = userPanY.coerceIn(
-            verticalBounds.start,
-            verticalBounds.endInclusive + liftRoom,
+        userPanY = clampPanAxis(
+            value = userPanY,
+            viewSize = viewH,
+            fittedStart = viewportDy,
+            fittedSize = remoteHeight * viewportScale,
+            zoom = userZoom,
+            extraMax = liftRoom,
         )
     }
 
@@ -234,12 +222,6 @@ class RdpInputController(
         return -needed
     }
 
-    fun toggleMode() {
-        // Mode switch with dragHeld active would leave the remote button stuck — release first.
-        if (dragHeld) endDragHold()
-        _mode.value = if (_mode.value == InputMode.TRACKPAD) InputMode.TOUCH else InputMode.TRACKPAD
-    }
-
     fun setMode(mode: InputMode) {
         if (dragHeld && mode != _mode.value) endDragHold()
         _mode.value = mode
@@ -272,13 +254,10 @@ class RdpInputController(
      * keyboard has auto-lifted it the view auto-pans to keep the cursor on-screen — see
      * [followCursorWhenZoomed]. That is the restored "缩放后画面跟随光标" behaviour and is TRACKPAD-ONLY
      * (drag is never called in native-touch mode).
-     * It is safe here precisely because the trackpad cursor is decoupled from the finger: panning the
-     * view does NOT move where the next click lands (clicks use virtualX/Y in remote space), unlike
-     * native touch where view-follow between a tap's down/up turned taps into drags.
      */
     fun drag(dx: Float, dy: Float) {
         val s = (viewportScale * userZoom).let { if (it > 0f) it else 1f }
-        val accel = if (abs(dx) + abs(dy) > 25f) 1.6f else 1.0f
+        val accel = if (abs(dx) + abs(dy) > TRACKPAD_ACCEL_THRESHOLD_PX) TRACKPAD_ACCEL_FACTOR else 1.0f
         virtualX = (virtualX + dx * accel / s).coerceIn(0f, remoteWidth - 1f)
         virtualY = (virtualY + dy * accel / s).coerceIn(0f, remoteHeight - 1f)
         publishVirtual()
@@ -293,21 +272,12 @@ class RdpInputController(
      * Pan the view so the virtual cursor stays visible ("缩放后画面跟随光标") — the TRACKPAD-only auto-pan.
      * Active when there is something to pan: either the picture is magnified (zoom > 1), OR the soft
      * keyboard has auto-lifted it ([imeOffsetY] < 0) so that even at 100% zoom dragging the cursor toward
-     * the now-off-screen top pulls it back down into view (用户需求: 模拟鼠标模式下呼出键盘仍用光标跟随移动
-     * 画面，而不是切到移动杆). Uses a centred dead-zone: the view only moves once the cursor pushes past a
-     * margin band near an edge, so small cursor moves don't jitter the picture. The cursor can still reach
-     * the framebuffer's own edges — [clampPan] caps the pan, after which the cursor travels the remaining
-     * gap to the true edge. TRACKPAD-only (see [drag]).
-     *
-     * Keyboard-aware in two ways: (1) the cursor's on-screen Y includes [imeOffsetY], because the
-     * crosshair/framebuffer layer draws at translationY = panY + offsetY — without it the dead-zone was
-     * computed against the un-lifted frame and a follow could slip the cursor behind the keyboard; and
-     * (2) the bottom of the follow band is the keyboard's top edge ([bottomOcclusionPx]), NOT the view
-     * bottom, so the cursor is always kept in the strip that's actually visible above the keyboard.
+     * the now-off-screen top pulls it back down into view.
      */
     private fun followCursorWhenZoomed() {
         val lifted = imeOffsetY < 0f
-        if ((userZoom <= 1f && !lifted) || viewW <= 0f || viewH <= 0f) return
+        if (userZoom <= 1f && !lifted) return
+        if (viewW <= 0f || viewH <= 0f) return
         val cx = viewW / 2f
         val cy = viewH / 2f
         // Where the cursor currently sits on screen under the viewport + user transform + keyboard lift:
@@ -318,11 +288,6 @@ class RdpInputController(
         // viewH when nothing occludes the bottom, so off-keyboard behaviour is unchanged.
         val visibleBottom = (viewH - bottomOcclusionPx).coerceAtLeast(1f)
         val marginX = viewW * FOLLOW_MARGIN_FRAC
-        // marginY is a fraction of the VISIBLE band (NOT viewH) so the dead-zone is always the central
-        // 50% of what's actually visible above the keyboard — same relative feel as off-keyboard. Using
-        // viewH here would be a bug: under a tall keyboard (occl > viewH/2) a viewH-based margin exceeds
-        // visibleBottom/2, so the top guard (sy < marginY) and bottom guard (sy > visibleBottom - marginY)
-        // cross and the cursor oscillates between them. A visibleBottom-based margin can never invert.
         val marginY = visibleBottom * FOLLOW_MARGIN_FRAC
         var changed = false
         when {
@@ -353,7 +318,9 @@ class RdpInputController(
         // RDP wheel: one notch = 120. Negative (scroll down) sets PTR_FLAGS_WHEEL_NEGATIVE and puts
         // the magnitude's low byte (0x100 - 120 = 0x88) in the low 8 bits.
         val flags = if (down) {
-            RdpPointerFlags.WHEEL or RdpPointerFlags.WHEEL_NEGATIVE or ((0x100 - WHEEL_NOTCH) and 0xFF)
+            RdpPointerFlags.WHEEL or
+                RdpPointerFlags.WHEEL_NEGATIVE or
+                ((WHEEL_NEGATIVE_BASE - WHEEL_NOTCH) and WHEEL_BYTE_MASK)
         } else {
             RdpPointerFlags.WHEEL or WHEEL_NOTCH
         }
@@ -377,122 +344,92 @@ class RdpInputController(
         sendCursor(virtualX.roundToInt(), virtualY.roundToInt(), RdpPointerFlags.BUTTON1)
     }
 
-    fun isDragHeld(): Boolean = dragHeld
-
     // ============================================================
     // TOUCH (native Windows multi-touch via RDPEI) gestures
     // ============================================================
 
-    /**
-     * Finger down → RDPEI TouchBegin at the mapped remote pixel. [fingerId] tracks it across moves.
-     * No view auto-follow: the picture only moves via the on-screen move handle, so a finger's down
-     * and up map to the SAME remote pixel — that's what keeps a stationary tap registering as a
-     * click (the old auto-follow shifted the view between down and up, so Windows saw a tiny drag
-     * instead of a tap and the click did nothing).
-     */
+    /** Finger down → RDPEI TouchBegin at the mapped remote pixel. */
     fun touchDown(fingerId: Int, localX: Float, localY: Float) {
-        val (rx, ry) = toRemote(localX, localY)
-        sendTouch(fingerId, rx, ry, RdpTouchAction.DOWN)
+        val remote = toRemote(localX, localY)
+        sendTouch(fingerId, remote.x, remote.y, RdpTouchAction.DOWN)
     }
 
     /** Finger move → RDPEI TouchUpdate. */
     fun touchMove(fingerId: Int, localX: Float, localY: Float) {
-        val (rx, ry) = toRemote(localX, localY)
-        sendTouch(fingerId, rx, ry, RdpTouchAction.MOVE)
+        val remote = toRemote(localX, localY)
+        sendTouch(fingerId, remote.x, remote.y, RdpTouchAction.MOVE)
     }
 
     /** Finger up → RDPEI TouchEnd. */
     fun touchUp(fingerId: Int, localX: Float, localY: Float) {
-        val (rx, ry) = toRemote(localX, localY)
-        sendTouch(fingerId, rx, ry, RdpTouchAction.UP)
-    }
-
-    // ============================================================
-    // Keyboard
-    // ============================================================
-
-    fun typeText(text: String) {
-        TextInputEncoder.type(
-            text = text,
-            unicodeSupported = isUnicodeSupported(),
-            sendKey = sendKey,
-            sendUnicode = sendUnicode,
-        )
-    }
-
-    fun pressKey(vk: Int) {
-        sendKey(vk, true)
-        sendKey(vk, false)
-    }
-
-    fun ctrlAltDel() {
-        val ctrl = ScancodeMap.VK.LCONTROL
-        val alt = ScancodeMap.VK.LMENU
-        val del = ScancodeMap.VK.DELETE
-        sendKey(ctrl, true)
-        sendKey(alt, true)
-        sendKey(del, true)
-        sendKey(del, false)
-        sendKey(alt, false)
-        sendKey(ctrl, false)
+        val remote = toRemote(localX, localY)
+        sendTouch(fingerId, remote.x, remote.y, RdpTouchAction.UP)
     }
 
     /**
      * Convert a touch in view pixels into remote-framebuffer pixels, undoing BOTH the centred
      * fit-to-view scale ([RdpSurface]) AND the local zoom-pill/pan-handle transform (graphicsLayer,
-     * origin = view centre). The gesture modifier sits above graphicsLayer, so [localX]/[localY]
-     * arrive as the actual on-screen finger position; we invert the layer transform to find which
-     * displayed (and possibly magnified) framebuffer pixel is under the finger.
+     * origin = view centre). Uses value class [IntOffset] so hot-path touch moves do zero boxing.
      */
-    private fun toRemote(localX: Float, localY: Float): Pair<Int, Int> {
-        // Step 1: undo the user zoom/pan (screen → base/pre-zoom view pixels). graphicsLayer maps a
-        // base point B to screen S = C + z*(B - C) + pan, so B = C + (S - C - pan)/z, C = view centre.
+    private fun toRemote(localX: Float, localY: Float): IntOffset {
         var bx = localX
         var by = localY
         if (userZoom > 0f && viewW > 0f && viewH > 0f) {
             val cx = viewW / 2f
             val cy = viewH / 2f
             bx = cx + (localX - cx - userPanX) / userZoom
-            // Undo the keyboard lift too (it's an extra screen-space Y translation layered with panY),
-            // so a touch still lands on the correct remote pixel while the picture is lifted.
             by = cy + (localY - cy - userPanY - imeOffsetY) / userZoom
         }
-        // Step 2: undo the fit-to-view letterbox + scale (base view pixels → remote pixels).
         val s = if (viewportScale > 0f) viewportScale else 1f
         val rx = ((bx - viewportDx) / s).toInt().coerceIn(0, remoteWidth - 1)
         val ry = ((by - viewportDy) / s).toInt().coerceIn(0, remoteHeight - 1)
-        return rx to ry
+        return IntOffset(rx, ry)
     }
 
     private fun publishVirtual() {
-        _virtualPosition.value = virtualX to virtualY
+        _virtualPosition.value = Offset(virtualX, virtualY)
     }
 
     companion object {
         private const val MAX_ZOOM = 4f
+        private const val TRACKPAD_ACCEL_THRESHOLD_PX = 25f
+        private const val TRACKPAD_ACCEL_FACTOR = 1.6f
         // Dead-zone for cursor-follow when zoomed: the view pans only once the cursor is within this
-        // fraction of a view edge (0.25 → central 50% is a no-move zone). Keeps the cursor visible
-        // without the picture jittering on every small move.
+        // fraction of a view edge (0.25 → central 50% is a no-move zone).
         private const val FOLLOW_MARGIN_FRAC = 0.25f
         // View pixels of two-finger drag per wheel notch.
         private const val SCROLL_NOTCH_PX = 28f
         // RDP wheel rotation magnitude for one notch.
         private const val WHEEL_NOTCH = 0x78 // 120
+        private const val WHEEL_NEGATIVE_BASE = 0x100
+        private const val WHEEL_BYTE_MASK = 0xFF
     }
 }
 
-internal fun panBoundsForFittedImage(
+internal fun clampPanAxis(
+    value: Float,
     viewSize: Float,
     fittedStart: Float,
     fittedSize: Float,
     zoom: Float,
-): ClosedFloatingPointRange<Float> {
-    if (viewSize <= 0f || fittedSize <= 0f || zoom <= 0f) return 0f..0f
+    extraMax: Float = 0f,
+): Float {
+    if (viewSize <= 0f || fittedSize <= 0f || zoom <= 0f) {
+        return value.coerceIn(0f, extraMax.coerceAtLeast(0f))
+    }
     val centre = viewSize / 2f
     val transformedStart = centre + zoom * (fittedStart - centre)
     val transformedEnd = centre + zoom * (fittedStart + fittedSize - centre)
-    if (transformedEnd - transformedStart <= viewSize) return 0f..0f
-    return (viewSize - transformedEnd)..(-transformedStart)
+    val minBound: Float
+    val maxBound: Float
+    if (transformedEnd - transformedStart <= viewSize) {
+        minBound = 0f
+        maxBound = 0f
+    } else {
+        minBound = viewSize - transformedEnd
+        maxBound = -transformedStart
+    }
+    return value.coerceIn(minBound, maxBound + extraMax)
 }
 
 /** Local view transform applied by SessionScreen's graphicsLayer (control-driven zoom + pan, in view px).

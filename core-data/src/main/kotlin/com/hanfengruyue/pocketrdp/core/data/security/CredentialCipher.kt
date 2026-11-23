@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.core.data.security
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -18,21 +19,34 @@ import javax.inject.Singleton
  * be persisted to allow decrypt().
  */
 @Singleton
-class CredentialCipher @Inject constructor() {
+class CredentialCipher internal constructor(
+    private val keyLoader: () -> SecretKey,
+) {
+    @Inject
+    constructor() : this(::loadOrCreateAndroidKeyStoreKey)
+
+    @Volatile
+    private var cachedKey: SecretKey? = null
 
     data class Sealed(val ciphertext: ByteArray, val iv: ByteArray)
 
     fun encrypt(plaintext: ByteArray, aad: ByteArray = ByteArray(0)): Sealed {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val cipher = initCipher { key ->
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.ENCRYPT_MODE, key)
+            }
+        }
         if (aad.isNotEmpty()) cipher.updateAAD(aad)
         val ct = cipher.doFinal(plaintext)
         return Sealed(ciphertext = ct, iv = cipher.iv)
     }
 
     fun decrypt(sealed: Sealed, aad: ByteArray = ByteArray(0)): ByteArray {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, sealed.iv))
+        val cipher = initCipher { key ->
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, sealed.iv))
+            }
+        }
         if (aad.isNotEmpty()) cipher.updateAAD(aad)
         return cipher.doFinal(sealed.ciphertext)
     }
@@ -55,30 +69,36 @@ class CredentialCipher @Inject constructor() {
         }
     }
 
+    private fun initCipher(initBlock: (SecretKey) -> Cipher): Cipher {
+        val cached = cachedKey
+        if (cached != null) {
+            try {
+                return initBlock(cached)
+            } catch (ignored: GeneralSecurityException) {
+                clearCachedKey(cached)
+            }
+        }
+        return initBlock(getOrCreateKey())
+    }
+
     /**
      * Key creation must be serialized. Two first-use saves racing through an empty keystore could
      * otherwise both generate the same alias; the second generation may replace the key after the
      * first caller has already encrypted a credential, making that ciphertext permanently
      * undecryptable.
      */
-    @Synchronized
     private fun getOrCreateKey(): SecretKey {
-        val keystore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        (keystore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        cachedKey?.let { return it }
+        return synchronized(this) {
+            cachedKey ?: keyLoader().also { cachedKey = it }
+        }
+    }
 
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
-        val spec = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256)
-            .setRandomizedEncryptionRequired(true)
-            .setUserAuthenticationRequired(false)
-            .build()
-        generator.init(spec)
-        return generator.generateKey()
+    @Synchronized
+    private fun clearCachedKey(staleKey: SecretKey) {
+        if (cachedKey === staleKey) {
+            cachedKey = null
+        }
     }
 
     companion object {
@@ -86,5 +106,25 @@ class CredentialCipher @Inject constructor() {
         private const val KEY_ALIAS = "pocketrdp_master_v1"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val TAG_BITS = 128
+        private const val KEY_SIZE_BITS = 256
+
+        private fun loadOrCreateAndroidKeyStoreKey(): SecretKey {
+            val keystore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+            (keystore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+
+            val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
+            val spec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(KEY_SIZE_BITS)
+                .setRandomizedEncryptionRequired(true)
+                .setUserAuthenticationRequired(false)
+                .build()
+            generator.init(spec)
+            return generator.generateKey()
+        }
     }
 }

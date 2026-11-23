@@ -2,6 +2,7 @@ package com.hanfengruyue.pocketrdp.nav
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -16,6 +17,7 @@ import com.hanfengruyue.pocketrdp.feature.connections.nav.ConnectionsRoutes
 import com.hanfengruyue.pocketrdp.keepalive.KeepAliveGuideScreen
 import com.hanfengruyue.pocketrdp.logs.LogScreen
 import com.hanfengruyue.pocketrdp.settings.SettingsScreen
+import kotlinx.coroutines.flow.StateFlow
 
 object AppRoutes {
     const val LOGS = "logs"
@@ -26,7 +28,7 @@ object AppRoutes {
 @Composable
 fun PocketRdpNavHost(
     activeSessionIds: Set<Long>,
-    liveThumbnails: Map<Long, Bitmap>,
+    livePreviewsFlow: StateFlow<Map<Long, Bitmap>>,
     isOccluded: Boolean,
     showKeepAliveHint: Boolean,
     onDismissKeepAliveHint: () -> Unit,
@@ -38,6 +40,13 @@ fun PocketRdpNavHost(
         startDestination = ConnectionsRoutes.LIST,
     ) {
         composable(ConnectionsRoutes.LIST) {
+            // Collect live memory previews strictly while the connection list destination is
+            // composed and unoccluded, preventing background 1 Hz captures in Settings/Edit/Logs.
+            val liveThumbnails = if (!isOccluded) {
+                livePreviewsFlow.collectAsStateWithLifecycle().value
+            } else {
+                emptyMap()
+            }
             ConnectionListScreen(
                 onAddNew = { navController.navigateSingleTop(ConnectionsRoutes.edit()) },
                 onEdit = { id -> navController.navigateSingleTop(ConnectionsRoutes.edit(id)) },
